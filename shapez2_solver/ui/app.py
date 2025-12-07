@@ -56,8 +56,8 @@ class SolverApp:
         self.selected_operations: List[Type[Operation]] = list(OPERATION_OPTIONS.values())
         self.population_size: int = 50
         self.generations: int = 100
-        self.input_shape_code: str = "CuCuCuCu"
-        self.target_shape_code: str = "CrCrCrCr"
+        self.input_shape_code: str = "CrRgSbWy"
+        self.target_shape_code: str = "WyCrRgSb"  # 90 degree rotation
 
         # Pygame elements
         self._screen = None
@@ -341,6 +341,25 @@ class SolverApp:
         except (ValueError, Exception):
             pass
 
+    def _check_color_change(self, input_shape: Shape, target_shape: Shape) -> bool:
+        """Check if transformation requires color changes (not currently supported)."""
+        input_colors = set()
+        target_colors = set()
+
+        for layer in input_shape.layers:
+            for part in layer.parts:
+                if not part.is_empty():
+                    input_colors.add(part.color)
+
+        for layer in target_shape.layers:
+            for part in layer.parts:
+                if not part.is_empty():
+                    target_colors.add(part.color)
+
+        # Check if target has colors not in input
+        new_colors = target_colors - input_colors
+        return len(new_colors) > 0
+
     def _run_console_mode(self) -> None:
         """Run the solver in console mode (no pygame)."""
         print("=" * 50)
@@ -358,6 +377,15 @@ class SolverApp:
         except ValueError as e:
             print(f"Error parsing shape codes: {e}")
             return
+
+        # Check for unsupported transformations
+        if self._check_color_change(input_shape, target_shape):
+            print("\n*** WARNING ***")
+            print("The target shape contains colors not present in the input.")
+            print("Color changes (painting) require a color input source,")
+            print("which is not yet supported. The solver may not find a solution.")
+            print("Supported operations: cut, rotate, stack, unstack, swap")
+            print("***************\n")
 
         foundation = get_foundation(self.selected_foundation)
 

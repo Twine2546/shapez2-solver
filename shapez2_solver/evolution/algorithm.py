@@ -9,6 +9,9 @@ from ..shapes.shape import Shape, Color
 from ..simulator.design import Design
 from ..foundations.foundation import Foundation, Port, PortDirection
 from ..operations.base import Operation
+from ..operations.cutter import CutOperation, HalfDestroyerOperation, SwapperOperation
+from ..operations.rotator import RotateOperation
+from ..operations.stacker import StackOperation, UnstackOperation
 from .candidate import Candidate
 from .fitness import FitnessFunction, ShapeMatchFitness
 from .operators import (
@@ -22,6 +25,20 @@ from .operators import (
     UniformCrossover,
     AVAILABLE_OPERATIONS,
 )
+
+# Operations that only need shape inputs (no color required)
+SHAPE_ONLY_OPERATIONS: List[Type[Operation]] = [
+    HalfDestroyerOperation,
+    CutOperation,
+    RotateOperation,
+    UnstackOperation,
+]
+
+# Operations that need 2 shape inputs
+TWO_INPUT_OPERATIONS: List[Type[Operation]] = [
+    SwapperOperation,
+    StackOperation,
+]
 
 
 @dataclass
@@ -117,21 +134,28 @@ class EvolutionaryAlgorithm:
             output_id = design.add_output(port)
             output_ids.append(output_id)
 
-        # Add random operations
-        num_ops = random.randint(1, self.config.max_operations)
+        # Filter to shape-only operations (exclude painter which needs color)
+        shape_ops = [op for op in self.config.allowed_operations
+                     if op in SHAPE_ONLY_OPERATIONS or op in TWO_INPUT_OPERATIONS]
+
+        if not shape_ops:
+            shape_ops = SHAPE_ONLY_OPERATIONS.copy()
+
+        # Add random operations (fewer for simpler solutions)
+        num_ops = random.randint(0, min(3, self.config.max_operations))
         op_ids = []
 
         for _ in range(num_ops):
-            op_class = random.choice(self.config.allowed_operations)
-            if op_class.__name__ == 'RotateOperation':
+            op_class = random.choice(shape_ops)
+            if op_class == RotateOperation:
                 operation = op_class(steps=random.randint(1, 3))
             else:
                 operation = op_class()
             op_id = design.add_operation(operation)
             op_ids.append(op_id)
 
-        # Create random connections
-        self._create_random_connections(design, input_ids, op_ids, output_ids)
+        # Create valid connections ensuring data flows from input to output
+        self._create_valid_connections(design, input_ids, op_ids, output_ids)
 
         return design
 
@@ -166,6 +190,44 @@ class EvolutionaryAlgorithm:
         for out_id in output_ids:
             if sources:
                 source = random.choice(sources)
+                design.connect(source[0], source[1], out_id, 0)
+
+    def _create_valid_connections(
+        self,
+        design: Design,
+        input_ids: List[str],
+        op_ids: List[str],
+        output_ids: List[str]
+    ) -> None:
+        """Create valid connections ensuring proper data flow."""
+        # Track available signal sources (node_id, output_index)
+        available_sources = [(inp_id, 0) for inp_id in input_ids]
+
+        # Process operations in order, connecting inputs and adding outputs
+        for op_id in op_ids:
+            op_node = design.get_node(op_id)
+            if not op_node:
+                continue
+
+            op = op_node.operation
+
+            # Connect required inputs from available sources
+            for input_idx in range(op.num_inputs):
+                if available_sources:
+                    # Prefer using the most recent source
+                    source = random.choice(available_sources)
+                    design.connect(source[0], source[1], op_id, input_idx)
+
+            # Add this operation's outputs to available sources
+            for output_idx in range(op.num_outputs):
+                available_sources.append((op_id, output_idx))
+
+        # Connect to output ports - use the last available source for direct path
+        for out_id in output_ids:
+            if available_sources:
+                # Try to use the most recently added source (likely operation output)
+                # or fall back to input if no operations
+                source = available_sources[-1] if len(available_sources) > len(input_ids) else available_sources[0]
                 design.connect(source[0], source[1], out_id, 0)
 
     def _evaluate_population(self) -> None:
