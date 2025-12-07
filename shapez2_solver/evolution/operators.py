@@ -263,9 +263,13 @@ class UniformCrossover(CrossoverOperator):
         for op in parent2.operations:
             all_operations.append(op.operation)
 
-        # Select a subset of operations
+        # Select operations - prefer at least as many as the larger parent
         if all_operations:
-            num_ops = random.randint(1, len(all_operations))
+            min_ops = max(len(parent1.operations), len(parent2.operations))
+            max_ops = len(all_operations)
+            # Bias towards keeping more operations
+            num_ops = random.randint(min_ops, max_ops) if min_ops <= max_ops else max_ops
+            num_ops = max(1, num_ops)  # At least 1 operation
             selected = random.sample(all_operations, min(num_ops, len(all_operations)))
             for op in selected:
                 child.add_operation(op)

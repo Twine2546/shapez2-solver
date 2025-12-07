@@ -111,9 +111,16 @@ class EvolutionaryAlgorithm:
         self.best_candidate: Optional[Candidate] = None
         self.history: List[Dict] = []
 
+        # Adaptive parameters for plateau detection
+        self.stagnation_counter = 0
+        self.last_best_fitness = 0.0
+        self.current_mutation_rate = self.config.mutation_rate
+        self.min_operations = 1  # Minimum ops to encourage in new designs
+
         # Callbacks
         self.on_generation: Optional[Callable[[int, List[Candidate]], None]] = None
         self.on_new_best: Optional[Callable[[Candidate], None]] = None
+        self.on_top_solutions: Optional[Callable[[List[Candidate]], None]] = None  # Show top solutions
 
     def initialize_population(self) -> None:
         """Initialize the population with random designs."""
@@ -165,8 +172,8 @@ class EvolutionaryAlgorithm:
         if not shape_ops:
             shape_ops = SHAPE_ONLY_OPERATIONS.copy()
 
-        # Add random operations - use wider range to explore more complex solutions
-        num_ops = random.randint(1, min(5, self.config.max_operations))
+        # Add random operations - use adaptive minimum for exploration
+        num_ops = random.randint(self.min_operations, min(self.min_operations + 4, self.config.max_operations))
         op_ids = []
         painter_ops = []  # Track painter operations for color connections
 
@@ -366,17 +373,38 @@ class EvolutionaryAlgorithm:
         # Sort population by fitness
         sorted_pop = sorted(self.population, reverse=True)
 
+        # Plateau detection - check if we've improved
+        current_best = sorted_pop[0].fitness if sorted_pop else 0.0
+        if current_best > self.last_best_fitness + 0.001:  # Small threshold for improvement
+            self.stagnation_counter = 0
+            self.last_best_fitness = current_best
+        else:
+            self.stagnation_counter += 1
+
+        # Adaptive parameters when stagnating
+        if self.stagnation_counter >= 15:  # 15 generations without improvement
+            # Increase mutation rate
+            self.current_mutation_rate = min(0.8, self.current_mutation_rate + 0.1)
+            # Increase minimum operations to explore more complex solutions
+            self.min_operations = min(self.config.max_operations - 2, self.min_operations + 1)
+            self.stagnation_counter = 0  # Reset counter after adaptation
+            # Inject more diversity when adapting
+            diversity_boost = max(3, self.config.population_size // 5)
+        else:
+            diversity_boost = 0
+
         # Elitism: keep best candidates
         new_population = [c.copy() for c in sorted_pop[:self.config.elitism_count]]
 
-        # Inject fresh diversity every 10 generations (10% of population)
-        diversity_count = 0
+        # Inject fresh diversity (regular + boost when stagnating)
+        diversity_count = diversity_boost
         if self.generation % 10 == 0:
-            diversity_count = max(1, self.config.population_size // 10)
-            for _ in range(diversity_count):
-                design = self._create_random_design()
-                candidate = Candidate(design=design, generation=self.generation)
-                new_population.append(candidate)
+            diversity_count += max(1, self.config.population_size // 10)
+
+        for _ in range(diversity_count):
+            design = self._create_random_design()
+            candidate = Candidate(design=design, generation=self.generation)
+            new_population.append(candidate)
 
         # Fill rest of population
         while len(new_population) < self.config.population_size:
@@ -392,9 +420,9 @@ class EvolutionaryAlgorithm:
             else:
                 child_design = parent1.design.copy()
 
-            # Mutation
+            # Mutation with adaptive rate
             child_design = self.mutation_operator.mutate(
-                child_design, self.config.mutation_rate
+                child_design, self.current_mutation_rate
             )
 
             child = Candidate(design=child_design, generation=self.generation)
@@ -403,18 +431,29 @@ class EvolutionaryAlgorithm:
         self.population = new_population
         self._evaluate_population()
 
-        # Record history
+        # Record history with additional stats
         best_fitness = max(c.fitness for c in self.population)
         avg_fitness = sum(c.fitness for c in self.population) / len(self.population)
+        avg_ops = sum(len(c.design.operations) for c in self.population) / len(self.population)
+        max_ops = max(len(c.design.operations) for c in self.population)
         self.history.append({
             'generation': self.generation,
             'best_fitness': best_fitness,
             'avg_fitness': avg_fitness,
+            'avg_ops': avg_ops,
+            'max_ops': max_ops,
+            'mutation_rate': self.current_mutation_rate,
+            'min_ops': self.min_operations,
         })
 
-        # Callback
+        # Callback for generation
         if self.on_generation:
             self.on_generation(self.generation, self.population)
+
+        # Callback to show top solutions
+        if self.on_top_solutions:
+            top_3 = sorted_pop[:3]
+            self.on_top_solutions(top_3)
 
     def _tournament_select(self) -> Candidate:
         """Select a candidate using tournament selection."""

@@ -73,10 +73,26 @@ def run_cli(args):
     print("=" * 60)
 
     def progress(gen: int, fitness: float) -> bool:
+        stats = algorithm.history[-1] if algorithm.history else {}
+        avg_ops = stats.get('avg_ops', 0)
+        max_ops = stats.get('max_ops', 0)
+        mut_rate = stats.get('mutation_rate', config.mutation_rate)
+
         if gen % 10 == 0 or fitness >= 1.0:
-            print(f"Generation {gen:4d} | Best fitness: {fitness:.4f}")
+            print(f"Gen {gen:4d} | Fitness: {fitness:.4f} | Ops: avg={avg_ops:.1f} max={max_ops} | MutRate: {mut_rate:.2f}")
         return True
 
+    def show_top_solutions(top_candidates):
+        # Show top solutions every 20 generations
+        if algorithm.generation % 20 == 0:
+            print("\n--- Top Solutions ---")
+            for i, candidate in enumerate(top_candidates[:3]):
+                ops = [op.operation.__class__.__name__.replace("Operation", "")
+                       for op in candidate.design.operations]
+                print(f"  #{i+1}: Fitness={candidate.fitness:.4f}, Ops={len(ops)}: {', '.join(ops) or 'none'}")
+            print("---------------------\n")
+
+    algorithm.on_top_solutions = show_top_solutions
     result = algorithm.run(callback=progress)
 
     print("\n" + "=" * 60)
