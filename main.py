@@ -94,6 +94,11 @@ def run_cli(args):
             print("\nGood solution found.")
         else:
             print("\nPartial solution found.")
+
+        # Display the solution pipeline
+        from shapez2_solver.visualization.solution_display import display_solution
+        print("\n")
+        display_solution(result.design, {"in_0": input_shape})
     else:
         print("No solution found.")
 

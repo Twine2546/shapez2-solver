@@ -63,6 +63,7 @@ class SolverApp:
         self.generations: int = 100
         self.input_shape_code: str = "CrRgSbWy"
         self.target_shape_code: str = "WyCrRgSb"  # 90 degree rotation
+        self.enable_painting: bool = False
 
         # Pygame elements
         self._screen = None
@@ -222,6 +223,14 @@ class SolverApp:
         self._ui_elements['target_shape'].set_text(self.target_shape_code)
         y += 50
 
+        # Painting checkbox (using button as toggle)
+        self._ui_elements['painting_button'] = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect((20, y), (panel_width - 40, 30)),
+            text="Painting: OFF",
+            manager=self._manager
+        )
+        y += 50
+
         # Start button
         self._ui_elements['start_button'] = pygame_gui.elements.UIButton(
             relative_rect=pygame.Rect((20, y), (panel_width - 40, 40)),
@@ -243,6 +252,11 @@ class SolverApp:
             self._start_evolution()
         elif event.ui_element == self._ui_elements.get('stop_button'):
             self._stop_evolution()
+        elif event.ui_element == self._ui_elements.get('painting_button'):
+            self.enable_painting = not self.enable_painting
+            self._ui_elements['painting_button'].set_text(
+                f"Painting: {'ON' if self.enable_painting else 'OFF'}"
+            )
 
     def _handle_text_entry(self, event) -> None:
         """Handle text entry completion."""
@@ -284,6 +298,7 @@ class SolverApp:
             population_size=self.population_size,
             generations=self.generations,
             allowed_operations=self.selected_operations,
+            enable_painting=self.enable_painting,
         )
 
         algorithm = EvolutionaryAlgorithm(
@@ -391,14 +406,14 @@ class SolverApp:
             print(f"Error parsing shape codes: {e}")
             return
 
-        # Check for unsupported transformations
-        if self._check_color_change(input_shape, target_shape):
-            print("\n*** WARNING ***")
+        # Check if painting is needed
+        needs_painting = self._check_color_change(input_shape, target_shape)
+        if needs_painting:
+            print("\n*** PAINTING MODE ENABLED ***")
             print("The target shape contains colors not present in the input.")
-            print("Color changes (painting) require a color input source,")
-            print("which is not yet supported. The solver may not find a solution.")
-            print("Supported operations: cut, rotate, stack, unstack, swap")
-            print("***************\n")
+            print("Enabling painting mode with all available colors.")
+            print("*****************************\n")
+            self.enable_painting = True
 
         foundation = get_foundation(self.selected_foundation)
 
@@ -407,6 +422,7 @@ class SolverApp:
             generations=self.generations,
             allowed_operations=self.selected_operations,
             parallel_evaluation=True,
+            enable_painting=self.enable_painting,
         )
 
         algorithm = EvolutionaryAlgorithm(
@@ -430,6 +446,11 @@ class SolverApp:
             print(f"Best fitness: {result.fitness:.4f}")
             print(f"Operations: {len(result.design.operations)}")
             print(f"Connections: {len(result.design.connections)}")
+
+            # Display the solution pipeline
+            from ..visualization.solution_display import display_solution
+            print("\n")
+            display_solution(result.design, {"in_0": input_shape})
         else:
             print("\nNo solution found.")
 

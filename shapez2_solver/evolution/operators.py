@@ -44,7 +44,7 @@ class MutationOperator(ABC):
 
 
 class AddOperationMutation(MutationOperator):
-    """Mutation that adds a random operation."""
+    """Mutation that adds a random operation and connects it."""
 
     def __init__(self, allowed_operations: Optional[List[Type[Operation]]] = None):
         self.allowed_operations = allowed_operations or AVAILABLE_OPERATIONS
@@ -65,7 +65,41 @@ class AddOperationMutation(MutationOperator):
             operation = op_class()
 
         # Add the operation
-        new_design.add_operation(operation)
+        op_id = new_design.add_operation(operation)
+
+        # Connect the new operation to existing graph
+        # Get all possible sources for inputs
+        possible_sources = []
+        for inp in new_design.inputs:
+            possible_sources.append((inp.node_id, 0))
+        for op in new_design.operations:
+            if op.node_id != op_id:  # Don't connect to self
+                for i in range(op.operation.num_outputs):
+                    possible_sources.append((op.node_id, i))
+
+        # Connect inputs of new operation
+        if possible_sources:
+            op_node = new_design.get_node(op_id)
+            if op_node:
+                for input_idx in range(op_node.operation.num_inputs):
+                    source = random.choice(possible_sources)
+                    new_design.connect(source[0], source[1], op_id, input_idx)
+
+        # Randomly connect this operation's output to something
+        possible_targets = []
+        for op in new_design.operations:
+            if op.node_id != op_id:
+                for i in range(op.operation.num_inputs):
+                    possible_targets.append((op.node_id, i))
+        for out in new_design.outputs:
+            possible_targets.append((out.node_id, 0))
+
+        if possible_targets and random.random() < 0.5:
+            target = random.choice(possible_targets)
+            op_node = new_design.get_node(op_id)
+            if op_node:
+                output_idx = random.randint(0, op_node.operation.num_outputs - 1)
+                new_design.connect(op_id, output_idx, target[0], target[1])
 
         return new_design
 

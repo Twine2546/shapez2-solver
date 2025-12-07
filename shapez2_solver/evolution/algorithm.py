@@ -12,6 +12,7 @@ from ..operations.base import Operation
 from ..operations.cutter import CutOperation, HalfDestroyerOperation, SwapperOperation
 from ..operations.rotator import RotateOperation
 from ..operations.stacker import StackOperation, UnstackOperation
+from ..operations.painter import PaintOperation
 from .candidate import Candidate
 from .fitness import FitnessFunction, ShapeMatchFitness
 from .operators import (
@@ -40,6 +41,10 @@ TWO_INPUT_OPERATIONS: List[Type[Operation]] = [
     StackOperation,
 ]
 
+# All available colors for painting
+ALL_COLORS = [Color.RED, Color.GREEN, Color.BLUE, Color.CYAN,
+              Color.MAGENTA, Color.YELLOW, Color.WHITE]
+
 
 @dataclass
 class EvolutionConfig:
@@ -53,6 +58,8 @@ class EvolutionConfig:
     max_operations: int = 10
     parallel_evaluation: bool = True
     allowed_operations: List[Type[Operation]] = field(default_factory=lambda: AVAILABLE_OPERATIONS.copy())
+    enable_painting: bool = False  # Enable painting operations with color inputs
+    available_colors: List[Color] = field(default_factory=lambda: ALL_COLORS.copy())
 
     def __post_init__(self):
         if self.elitism_count >= self.population_size:
@@ -86,13 +93,16 @@ class EvolutionaryAlgorithm:
         self.config = config or EvolutionConfig()
         self.fitness_function = fitness_function or ShapeMatchFitness()
 
-        # Setup operators
-        self.mutation_operator = CompositeMutation([
-            AddOperationMutation(self.config.allowed_operations),
-            RemoveOperationMutation(),
-            ModifyConnectionMutation(),
-            AddConnectionMutation(),
-        ])
+        # Setup operators - weight towards adding operations and connections
+        self.mutation_operator = CompositeMutation(
+            operators=[
+                AddOperationMutation(self.config.allowed_operations),
+                RemoveOperationMutation(),
+                ModifyConnectionMutation(),
+                AddConnectionMutation(),
+            ],
+            weights=[0.4, 0.1, 0.2, 0.3]  # Favor adding operations and connections
+        )
         self.crossover_operator = UniformCrossover()
 
         # State
@@ -120,12 +130,21 @@ class EvolutionaryAlgorithm:
         """Create a random design."""
         design = Design(self.foundation)
 
-        # Add input ports
-        input_ids = []
+        # Add shape input ports
+        shape_input_ids = []
         for name in self.input_shapes.keys():
-            port = Port(PortDirection.WEST, floor=0, position=len(input_ids))
+            port = Port(PortDirection.WEST, floor=0, position=len(shape_input_ids))
             input_id = design.add_input(port)
-            input_ids.append(input_id)
+            shape_input_ids.append(input_id)
+
+        # Add color input ports if painting is enabled
+        color_input_ids = []
+        if self.config.enable_painting and self.config.available_colors:
+            # Add one color input for each available color
+            for i, color in enumerate(self.config.available_colors):
+                port = Port(PortDirection.SOUTH, floor=0, position=i, is_input=True)
+                color_id = design.add_input(port)
+                color_input_ids.append(color_id)
 
         # Add output ports
         output_ids = []
@@ -134,16 +153,22 @@ class EvolutionaryAlgorithm:
             output_id = design.add_output(port)
             output_ids.append(output_id)
 
-        # Filter to shape-only operations (exclude painter which needs color)
-        shape_ops = [op for op in self.config.allowed_operations
-                     if op in SHAPE_ONLY_OPERATIONS or op in TWO_INPUT_OPERATIONS]
+        # Build list of available operations
+        if self.config.enable_painting:
+            # Include all operations including painter
+            shape_ops = SHAPE_ONLY_OPERATIONS + TWO_INPUT_OPERATIONS + [PaintOperation]
+        else:
+            # Filter to shape-only operations (exclude painter which needs color)
+            shape_ops = [op for op in self.config.allowed_operations
+                         if op in SHAPE_ONLY_OPERATIONS or op in TWO_INPUT_OPERATIONS]
 
         if not shape_ops:
             shape_ops = SHAPE_ONLY_OPERATIONS.copy()
 
-        # Add random operations (fewer for simpler solutions)
-        num_ops = random.randint(0, min(3, self.config.max_operations))
+        # Add random operations - use wider range to explore more complex solutions
+        num_ops = random.randint(1, min(5, self.config.max_operations))
         op_ids = []
+        painter_ops = []  # Track painter operations for color connections
 
         for _ in range(num_ops):
             op_class = random.choice(shape_ops)
@@ -153,9 +178,13 @@ class EvolutionaryAlgorithm:
                 operation = op_class()
             op_id = design.add_operation(operation)
             op_ids.append(op_id)
+            if op_class == PaintOperation:
+                painter_ops.append(op_id)
 
-        # Create valid connections ensuring data flows from input to output
-        self._create_valid_connections(design, input_ids, op_ids, output_ids)
+        # Create valid connections
+        self._create_valid_connections_with_colors(
+            design, shape_input_ids, color_input_ids, op_ids, painter_ops, output_ids
+        )
 
         return design
 
@@ -230,12 +259,65 @@ class EvolutionaryAlgorithm:
                 source = available_sources[-1] if len(available_sources) > len(input_ids) else available_sources[0]
                 design.connect(source[0], source[1], out_id, 0)
 
+    def _create_valid_connections_with_colors(
+        self,
+        design: Design,
+        shape_input_ids: List[str],
+        color_input_ids: List[str],
+        op_ids: List[str],
+        painter_ops: List[str],
+        output_ids: List[str]
+    ) -> None:
+        """Create valid connections including color inputs for painters."""
+        # Track available shape sources (node_id, output_index)
+        shape_sources = [(inp_id, 0) for inp_id in shape_input_ids]
+
+        # Process operations in order
+        for op_id in op_ids:
+            op_node = design.get_node(op_id)
+            if not op_node:
+                continue
+
+            op = op_node.operation
+
+            if op_id in painter_ops:
+                # Painter needs shape input (index 0) and color input (index 1)
+                if shape_sources:
+                    source = random.choice(shape_sources)
+                    design.connect(source[0], source[1], op_id, 0)  # Shape input
+
+                if color_input_ids:
+                    color_source = random.choice(color_input_ids)
+                    design.connect(color_source, 0, op_id, 1)  # Color input
+            else:
+                # Regular operation - connect shape inputs
+                for input_idx in range(op.num_inputs):
+                    if shape_sources:
+                        source = random.choice(shape_sources)
+                        design.connect(source[0], source[1], op_id, input_idx)
+
+            # Add operation's outputs to available shape sources
+            for output_idx in range(op.num_outputs):
+                shape_sources.append((op_id, output_idx))
+
+        # Connect to output ports
+        for out_id in output_ids:
+            if shape_sources:
+                source = shape_sources[-1] if len(shape_sources) > len(shape_input_ids) else shape_sources[0]
+                design.connect(source[0], source[1], out_id, 0)
+
     def _evaluate_population(self) -> None:
         """Evaluate fitness for all candidates in the population."""
         # Create input/output mappings
         inputs = {}
         for i, (name, value) in enumerate(self.input_shapes.items()):
             inputs[f"in_{i}"] = value
+
+        # Add color inputs if painting is enabled
+        if self.config.enable_painting and self.config.available_colors:
+            shape_input_count = len(self.input_shapes)
+            for j, color in enumerate(self.config.available_colors):
+                inputs[f"in_{shape_input_count + j}"] = color
 
         expected = {}
         for i, (name, value) in enumerate(self.expected_outputs.items()):
@@ -286,6 +368,15 @@ class EvolutionaryAlgorithm:
 
         # Elitism: keep best candidates
         new_population = [c.copy() for c in sorted_pop[:self.config.elitism_count]]
+
+        # Inject fresh diversity every 10 generations (10% of population)
+        diversity_count = 0
+        if self.generation % 10 == 0:
+            diversity_count = max(1, self.config.population_size // 10)
+            for _ in range(diversity_count):
+                design = self._create_random_design()
+                candidate = Candidate(design=design, generation=self.generation)
+                new_population.append(candidate)
 
         # Fill rest of population
         while len(new_population) < self.config.population_size:
