@@ -176,3 +176,186 @@ class ComplexityPenaltyFitness(FitnessFunction):
         penalized = max(0.0, base_score - op_penalty - conn_penalty)
 
         return penalized
+
+
+class ParsimonyFitness(FitnessFunction):
+    """
+    Fitness function with parsimony pressure.
+
+    Correct solutions are always preferred over incorrect ones.
+    Among equally correct solutions, simpler ones score higher.
+    """
+
+    def __init__(
+        self,
+        base_fitness: Optional[FitnessFunction] = None,
+        max_operations: int = 10,
+        simplicity_weight: float = 0.1
+    ):
+        """
+        Initialize the fitness function.
+
+        Args:
+            base_fitness: The base fitness function (default: ShapeMatchFitness)
+            max_operations: Maximum expected operations (for normalization)
+            simplicity_weight: Weight for simplicity bonus (0.0 to 1.0)
+        """
+        self.base_fitness = base_fitness or ShapeMatchFitness()
+        self.max_operations = max_operations
+        self.simplicity_weight = simplicity_weight
+
+    def evaluate(
+        self,
+        design: Design,
+        inputs: Dict[str, Union[Shape, Color]],
+        expected_outputs: Dict[str, Optional[Union[Shape, Color]]]
+    ) -> float:
+        """
+        Evaluate fitness with parsimony pressure.
+
+        Score = correctness + (simplicity_bonus * simplicity_weight)
+
+        Correctness is in range [0, 1].
+        Simplicity bonus is in range [0, 1] based on operation count.
+
+        This ensures correct solutions always beat incorrect ones,
+        but simpler correct solutions beat complex correct ones.
+        """
+        correctness = self.base_fitness.evaluate(design, inputs, expected_outputs)
+
+        # Calculate simplicity bonus (fewer ops = higher bonus)
+        num_ops = len(design.operations)
+        if num_ops >= self.max_operations:
+            simplicity_bonus = 0.0
+        else:
+            simplicity_bonus = 1.0 - (num_ops / self.max_operations)
+
+        # Combine: correctness is primary, simplicity is secondary
+        # Scale simplicity to be a small fraction so it doesn't override correctness
+        score = correctness + (simplicity_bonus * self.simplicity_weight)
+
+        return score
+
+
+class SolutionMinimizer:
+    """
+    Post-processing to find minimal solutions.
+
+    After finding a working solution, tries to remove operations
+    one by one while maintaining correctness.
+    """
+
+    def __init__(self, fitness_function: Optional[FitnessFunction] = None):
+        self.fitness_function = fitness_function or ShapeMatchFitness()
+
+    def minimize(
+        self,
+        design: Design,
+        inputs: Dict[str, Union[Shape, Color]],
+        expected_outputs: Dict[str, Optional[Union[Shape, Color]]],
+        threshold: float = 0.999
+    ) -> Design:
+        """
+        Minimize a solution by removing unnecessary operations.
+
+        Args:
+            design: The solution design to minimize
+            inputs: Input values
+            expected_outputs: Expected outputs
+            threshold: Fitness threshold for valid solution (default: 0.999)
+
+        Returns:
+            Minimized design
+        """
+        current = design.copy()
+        current_fitness = self.fitness_function.evaluate(current, inputs, expected_outputs)
+
+        if current_fitness < threshold:
+            return current  # Not a valid solution to minimize
+
+        improved = True
+        while improved:
+            improved = False
+
+            # Try removing each operation
+            for i in range(len(current.operations) - 1, -1, -1):
+                candidate = self._remove_operation(current, i)
+                if candidate is None:
+                    continue
+
+                candidate_fitness = self.fitness_function.evaluate(
+                    candidate, inputs, expected_outputs
+                )
+
+                if candidate_fitness >= threshold:
+                    current = candidate
+                    improved = True
+                    break  # Restart from beginning
+
+        return current
+
+    def _remove_operation(self, design: Design, op_index: int) -> Optional[Design]:
+        """
+        Remove an operation and rewire connections.
+
+        Returns None if removal would break the design.
+        """
+        if op_index >= len(design.operations):
+            return None
+
+        new_design = design.copy()
+        removed_op = new_design.operations[op_index]
+        removed_id = removed_op.node_id
+
+        # Find incoming connections to this operation
+        incoming = [c for c in new_design.connections if c.target_id == removed_id]
+
+        # Find outgoing connections from this operation
+        outgoing = [c for c in new_design.connections if c.source_id == removed_id]
+
+        # If no outgoing connections, just remove
+        if not outgoing:
+            new_design.connections = [
+                c for c in new_design.connections
+                if c.source_id != removed_id and c.target_id != removed_id
+            ]
+            new_design.operations.pop(op_index)
+            new_design._rebuild_lookup()
+            return new_design
+
+        # If no incoming connections, can't rewire properly
+        if not incoming:
+            new_design.connections = [
+                c for c in new_design.connections
+                if c.source_id != removed_id and c.target_id != removed_id
+            ]
+            new_design.operations.pop(op_index)
+            new_design._rebuild_lookup()
+            return new_design
+
+        # Rewire: connect each outgoing target to the first incoming source
+        primary_source = incoming[0]
+        new_connections = []
+
+        for conn in new_design.connections:
+            if conn.source_id == removed_id:
+                # Rewire to primary source
+                from ..simulator.design import Connection
+                new_conn = Connection(
+                    primary_source.source_id,
+                    primary_source.source_output_idx,
+                    conn.target_id,
+                    conn.target_input_idx
+                )
+                new_connections.append(new_conn)
+            elif conn.target_id == removed_id:
+                # Skip incoming connections to removed op
+                pass
+            else:
+                new_connections.append(conn)
+
+        new_design.connections = new_connections
+        new_design.operations.pop(op_index)
+        new_design._rebuild_lookup()
+
+        return new_design

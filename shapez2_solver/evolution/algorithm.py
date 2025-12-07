@@ -14,7 +14,7 @@ from ..operations.rotator import RotateOperation
 from ..operations.stacker import StackOperation, UnstackOperation
 from ..operations.painter import PaintOperation
 from .candidate import Candidate
-from .fitness import FitnessFunction, ShapeMatchFitness
+from .fitness import FitnessFunction, ShapeMatchFitness, ParsimonyFitness, SolutionMinimizer
 from .operators import (
     MutationOperator,
     CrossoverOperator,
@@ -60,6 +60,9 @@ class EvolutionConfig:
     allowed_operations: List[Type[Operation]] = field(default_factory=lambda: AVAILABLE_OPERATIONS.copy())
     enable_painting: bool = False  # Enable painting operations with color inputs
     available_colors: List[Color] = field(default_factory=lambda: ALL_COLORS.copy())
+    # Minimization options
+    prefer_simple: bool = True  # Use parsimony fitness (prefer simpler solutions)
+    minimize_solution: bool = True  # Post-process to remove unnecessary operations
 
     def __post_init__(self):
         if self.elitism_count >= self.population_size:
@@ -91,7 +94,20 @@ class EvolutionaryAlgorithm:
         self.input_shapes = input_shapes
         self.expected_outputs = expected_outputs
         self.config = config or EvolutionConfig()
-        self.fitness_function = fitness_function or ShapeMatchFitness()
+
+        # Setup fitness function
+        if fitness_function:
+            self.fitness_function = fitness_function
+        elif self.config.prefer_simple:
+            self.fitness_function = ParsimonyFitness(
+                max_operations=self.config.max_operations,
+                simplicity_weight=0.1
+            )
+        else:
+            self.fitness_function = ShapeMatchFitness()
+
+        # For minimization, we need base fitness without parsimony
+        self._base_fitness = ShapeMatchFitness()
 
         # Setup operators - weight towards adding operations and connections
         self.mutation_operator = CompositeMutation(
@@ -472,7 +488,7 @@ class EvolutionaryAlgorithm:
                      Return False to stop early.
 
         Returns:
-            The best candidate found
+            The best candidate found (minimized if configured)
         """
         self.initialize_population()
 
@@ -488,7 +504,39 @@ class EvolutionaryAlgorithm:
             if self.best_candidate and self.best_candidate.fitness >= 1.0:
                 break
 
+        # Minimize the solution if configured
+        if self.best_candidate and self.config.minimize_solution:
+            self.best_candidate = self._minimize_solution(self.best_candidate)
+
         return self.best_candidate
+
+    def _minimize_solution(self, candidate: Candidate) -> Candidate:
+        """Minimize a solution by removing unnecessary operations."""
+        # Build inputs dict including color inputs
+        inputs = {}
+        for i, (name, value) in enumerate(self.input_shapes.items()):
+            inputs[f"in_{i}"] = value
+
+        if self.config.enable_painting and self.config.available_colors:
+            shape_input_count = len(self.input_shapes)
+            for j, color in enumerate(self.config.available_colors):
+                inputs[f"in_{shape_input_count + j}"] = color
+
+        expected = {}
+        for i, (name, value) in enumerate(self.expected_outputs.items()):
+            expected[f"out_{i}"] = value
+
+        minimizer = SolutionMinimizer(self._base_fitness)
+        minimized_design = minimizer.minimize(candidate.design, inputs, expected)
+
+        # Create new candidate with minimized design
+        result = Candidate(
+            design=minimized_design,
+            generation=candidate.generation,
+        )
+        result.fitness = self._base_fitness.evaluate(minimized_design, inputs, expected)
+
+        return result
 
     def get_statistics(self) -> Dict:
         """Get statistics about the evolution run."""
