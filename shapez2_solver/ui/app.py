@@ -3,12 +3,17 @@
 from typing import Dict, List, Optional, Type
 import sys
 
+PYGAME_AVAILABLE = False
+_PYGAME_ERROR = ""
+
 try:
     import pygame
     import pygame_gui
     PYGAME_AVAILABLE = True
-except ImportError:
-    PYGAME_AVAILABLE = False
+except ImportError as e:
+    _PYGAME_ERROR = str(e)
+except Exception as e:
+    _PYGAME_ERROR = str(e)
 
 from ..shapes.shape import Shape, Color
 from ..shapes.parser import ShapeCodeParser
@@ -78,8 +83,13 @@ class SolverApp:
     def run(self) -> None:
         """Run the application main loop."""
         if not PYGAME_AVAILABLE:
-            print("Error: pygame and pygame_gui are required for the UI")
-            print("Install with: pip install pygame pygame_gui")
+            print("Error: pygame_gui is required for the GUI")
+            if _PYGAME_ERROR:
+                print(f"Import error: {_PYGAME_ERROR}")
+            print("\nTo fix, try:")
+            print("  pip uninstall pygame pygame-ce pygame_gui")
+            print("  pip install pygame-ce pygame_gui")
+            print("\nFalling back to console mode...")
             self._run_console_mode()
             return
 
