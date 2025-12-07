@@ -1,0 +1,12 @@
+# Shapez 2 Solver - Requirements
+
+# Core dependencies (required)
+# None - uses only Python standard library for core functionality
+
+# Optional: Graphical interface
+pygame>=2.5.0
+pygame_gui>=0.6.9
+
+# Optional: Development/testing
+pytest>=7.0.0
+pytest-cov>=4.0.0

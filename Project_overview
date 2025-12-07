@@ -1,0 +1,27 @@
+we want to make a solver for shapes 2 based for given the platforms, blueprints and input shape.
+
+focus on programmatic implementation of the following:
+-research shapes 2 game play.
+-research platform sizes.
+-research blueprint codes.
+-research shape codes.
+-research blueprint codes.
+-research shape functions 
+-research floors.
+
+we need a simulate a given design with an input shape and desired output shape/s each port on the foundation should be labeled input/outputs. on each level of the foundation as well.
+
+i want to be able to specify an input shape/s and output shape/s and have the program evolve/design a solution using the basic shape operations and blueprint code.
+
+i would like a graphical representation of the solutions currently being explored.
+
+should be an evolutionary algorithm unless there is a better search function you can use.
+
+put notes into joplin a new notebook called games -> shapes2 -> solver
+
+For each programming function try to decouple as much as possible, that is the simulator should not depend on the method used to search solutions vis versa. 
+
+I should be able to specify the canditate pool size.
+
+Foundation used for canditate solutions should be selected from a radio select box selected by the user, same as the type of functions used.
+ 
