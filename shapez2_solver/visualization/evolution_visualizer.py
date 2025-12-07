@@ -73,9 +73,12 @@ class EvolutionVisualizer:
 
     def close(self) -> None:
         """Close the visualizer."""
-        if PYGAME_AVAILABLE:
-            pygame.quit()
         self._running = False
+        # Don't call pygame.quit() - let the caller handle that
+        # Just close the display
+        if PYGAME_AVAILABLE and self._screen:
+            pygame.display.quit()
+            self._screen = None
 
     def update(
         self,

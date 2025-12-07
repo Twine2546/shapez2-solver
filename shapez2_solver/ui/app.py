@@ -296,7 +296,7 @@ class SolverApp:
         self.evolution_running = True
         self.current_algorithm = algorithm
 
-        # Run with visualization
+        # Run with visualization (this will close pygame when done)
         from ..visualization.evolution_visualizer import run_with_visualization
         result = run_with_visualization(algorithm, input_shape, target_shape)
 
@@ -305,6 +305,9 @@ class SolverApp:
         if result:
             print(f"Best solution found: Fitness={result.fitness:.4f}")
             print(f"Operations: {len(result.design.operations)}")
+
+        # Reinitialize the main UI after visualization closes
+        self._initialize()
 
     def _stop_evolution(self) -> None:
         """Stop the current evolution run."""
