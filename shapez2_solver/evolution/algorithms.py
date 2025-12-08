@@ -32,8 +32,14 @@ class AlgorithmType(Enum):
 
 def _get_foundation_classes():
     """Lazy import to avoid circular dependency."""
-    from .foundation_evolution import PlacedBuilding, Candidate
-    return PlacedBuilding, Candidate
+    from .foundation_evolution import PlacedBuilding, Candidate, OPERATION_BUILDINGS
+    return PlacedBuilding, Candidate, OPERATION_BUILDINGS
+
+
+def _get_router():
+    """Lazy import router to avoid circular dependency."""
+    from .router import BeltRouter, Connection
+    return BeltRouter, Connection
 
 
 class BaseAlgorithm(ABC):
@@ -45,11 +51,13 @@ class BaseAlgorithm(ABC):
         evaluate_fn: Callable,  # Candidate -> float
         valid_buildings: List[BuildingType],
         max_buildings: int = 20,
+        use_routing: bool = True,
     ):
         self.config = config
         self.evaluate_fn = evaluate_fn
         self.valid_buildings = valid_buildings
         self.max_buildings = max_buildings
+        self.use_routing = use_routing
         self.best_solution = None
         self.history: List[Dict[str, Any]] = []
         self._occupied: Set[Tuple[int, int, int]] = set()
@@ -60,23 +68,206 @@ class BaseAlgorithm(ABC):
         pass
 
     def _create_random_candidate(self):
-        """Create a random candidate solution with collision detection."""
-        PlacedBuilding, Candidate = _get_foundation_classes()
+        """Create a random candidate solution with collision detection and routing."""
+        PlacedBuilding, Candidate, OPERATION_BUILDINGS = _get_foundation_classes()
         buildings = []
         self._occupied = set()
-        num_buildings = random.randint(3, min(self.max_buildings, 12))
 
-        for i in range(num_buildings):
-            building = self._create_random_building_avoiding_collisions(i)
-            if building:
-                buildings.append(building)
-                self._mark_occupied(building)
+        if self.use_routing:
+            # Only place machines, then route belts
+            valid_machines = [bt for bt in OPERATION_BUILDINGS if bt in self.valid_buildings]
+            num_machines = random.randint(1, min(6, self.max_buildings // 2))
 
-        return Candidate(buildings=buildings)
+            for i in range(num_machines):
+                building = self._create_random_machine(i, valid_machines)
+                if building:
+                    buildings.append(building)
+                    self._mark_occupied(building)
+
+            candidate = Candidate(buildings=buildings)
+            self._route_candidate(candidate)
+            return candidate
+        else:
+            # Legacy mode: random buildings including belts
+            num_buildings = random.randint(3, min(self.max_buildings, 12))
+
+            for i in range(num_buildings):
+                building = self._create_random_building_avoiding_collisions(i)
+                if building:
+                    buildings.append(building)
+                    self._mark_occupied(building)
+
+            return Candidate(buildings=buildings)
+
+    def _create_random_machine(self, building_id: int, valid_machines: List[BuildingType]):
+        """Create a random machine (not belt) avoiding collisions."""
+        PlacedBuilding, Candidate, _ = _get_foundation_classes()
+        if not valid_machines:
+            return None
+
+        for _ in range(10):
+            building_type = random.choice(valid_machines)
+            spec = BUILDING_SPECS.get(building_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
+
+            max_x = max(0, self.config.spec.grid_width - spec.width)
+            max_y = max(0, self.config.spec.grid_height - spec.height)
+            max_floor = max(0, self.config.spec.num_floors - spec.depth)
+
+            x = random.randint(0, max_x)
+            y = random.randint(0, max_y)
+            floor = random.randint(0, max_floor)
+
+            # Check for collisions
+            collision = False
+            for dx in range(spec.width):
+                for dy in range(spec.height):
+                    for df in range(spec.depth):
+                        if (x + dx, y + dy, floor + df) in self._occupied:
+                            collision = True
+                            break
+                    if collision:
+                        break
+                if collision:
+                    break
+
+            if not collision:
+                return PlacedBuilding(
+                    building_id=building_id,
+                    building_type=building_type,
+                    x=x, y=y, floor=floor,
+                    rotation=random.choice(list(Rotation))
+                )
+
+        return None
+
+    def _route_candidate(self, candidate) -> None:
+        """Route belts to connect machines to ports using A* pathfinding."""
+        PlacedBuilding, Candidate, OPERATION_BUILDINGS = _get_foundation_classes()
+        BeltRouter, Connection = _get_router()
+
+        # Build occupied set from existing buildings
+        occupied = set()
+        machines = []
+
+        for b in candidate.buildings:
+            spec = BUILDING_SPECS.get(b.building_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
+            for dx in range(spec.width):
+                for dy in range(spec.height):
+                    for df in range(spec.depth):
+                        occupied.add((b.x + dx, b.y + dy, b.floor + df))
+            if b.building_type in OPERATION_BUILDINGS:
+                machines.append(b)
+
+        if not machines:
+            return
+
+        # Create router
+        router = BeltRouter(
+            self.config.spec.grid_width,
+            self.config.spec.grid_height,
+            self.config.spec.num_floors
+        )
+        router.set_occupied(occupied)
+
+        # Route from input ports to nearest machine
+        connections = []
+        for side, pos, floor, _ in self.config.get_all_inputs():
+            gx, gy = self.config.spec.get_port_grid_position(side, pos)
+
+            if side == Side.NORTH:
+                entry = (gx, 0, floor)
+                entry_dir = Rotation.SOUTH
+            elif side == Side.SOUTH:
+                entry = (gx, self.config.spec.grid_height - 1, floor)
+                entry_dir = Rotation.NORTH
+            elif side == Side.WEST:
+                entry = (0, gy, floor)
+                entry_dir = Rotation.EAST
+            elif side == Side.EAST:
+                entry = (self.config.spec.grid_width - 1, gy, floor)
+                entry_dir = Rotation.WEST
+            else:
+                continue
+
+            # Find nearest machine
+            best_machine = min(
+                (m for m in machines if m.floor == floor),
+                key=lambda m: abs(m.x - entry[0]) + abs(m.y - entry[1]),
+                default=None
+            )
+
+            if best_machine:
+                spec = BUILDING_SPECS.get(best_machine.building_type)
+                if spec:
+                    if best_machine.rotation == Rotation.EAST:
+                        target = (best_machine.x - 1, best_machine.y + spec.height // 2, floor)
+                    elif best_machine.rotation == Rotation.WEST:
+                        target = (best_machine.x + spec.width, best_machine.y + spec.height // 2, floor)
+                    elif best_machine.rotation == Rotation.SOUTH:
+                        target = (best_machine.x + spec.width // 2, best_machine.y - 1, floor)
+                    else:
+                        target = (best_machine.x + spec.width // 2, best_machine.y + spec.height, floor)
+
+                    connections.append(Connection(entry, target, entry_dir, best_machine.rotation, 2))
+
+        # Route from machines to output ports
+        for side, pos, floor, _ in self.config.get_all_outputs():
+            gx, gy = self.config.spec.get_port_grid_position(side, pos)
+
+            if side == Side.NORTH:
+                exit_pos = (gx, 0, floor)
+                exit_dir = Rotation.NORTH
+            elif side == Side.SOUTH:
+                exit_pos = (gx, self.config.spec.grid_height - 1, floor)
+                exit_dir = Rotation.SOUTH
+            elif side == Side.WEST:
+                exit_pos = (0, gy, floor)
+                exit_dir = Rotation.WEST
+            elif side == Side.EAST:
+                exit_pos = (self.config.spec.grid_width - 1, gy, floor)
+                exit_dir = Rotation.EAST
+            else:
+                continue
+
+            best_machine = min(
+                (m for m in machines if m.floor == floor),
+                key=lambda m: abs(m.x - exit_pos[0]) + abs(m.y - exit_pos[1]),
+                default=None
+            )
+
+            if best_machine:
+                spec = BUILDING_SPECS.get(best_machine.building_type)
+                if spec:
+                    if best_machine.rotation == Rotation.EAST:
+                        source = (best_machine.x + spec.width, best_machine.y + spec.height // 2, floor)
+                    elif best_machine.rotation == Rotation.WEST:
+                        source = (best_machine.x - 1, best_machine.y + spec.height // 2, floor)
+                    elif best_machine.rotation == Rotation.SOUTH:
+                        source = (best_machine.x + spec.width // 2, best_machine.y + spec.height, floor)
+                    else:
+                        source = (best_machine.x + spec.width // 2, best_machine.y - 1, floor)
+
+                    connections.append(Connection(source, exit_pos, best_machine.rotation, exit_dir, 1))
+
+        # Route and add belts
+        results = router.route_all(connections)
+        building_id = len(candidate.buildings)
+
+        for result in results:
+            if result.success:
+                for x, y, floor, belt_type, rotation in result.belts:
+                    belt = PlacedBuilding(
+                        building_id=building_id,
+                        building_type=belt_type,
+                        x=x, y=y, floor=floor,
+                        rotation=rotation
+                    )
+                    candidate.buildings.append(belt)
+                    building_id += 1
 
     def _create_random_building_avoiding_collisions(self, building_id: int):
         """Create a single random building avoiding collisions."""
-        PlacedBuilding, Candidate = _get_foundation_classes()
+        PlacedBuilding, Candidate, _ = _get_foundation_classes()
         if not self.valid_buildings:
             return None
 
@@ -124,36 +315,50 @@ class BaseAlgorithm(ABC):
                     self._occupied.add((building.x + dx, building.y + dy, building.floor + df))
 
     def _create_seeded_candidate(self):
-        """Create a candidate with belts at port positions."""
-        PlacedBuilding, Candidate = _get_foundation_classes()
+        """Create a candidate with machines and routed belts."""
+        PlacedBuilding, Candidate, OPERATION_BUILDINGS = _get_foundation_classes()
         buildings = []
         building_id = 0
         self._occupied = set()
 
-        # Add belts at input port positions
-        for side, pos, floor, shape_code in self.config.get_all_inputs():
-            gx, gy = self.config.spec.get_port_grid_position(side, pos)
-            belt = self._create_port_belt(building_id, side, gx, gy, floor, is_input=True)
-            if belt and (belt.x, belt.y, belt.floor) not in self._occupied:
-                buildings.append(belt)
-                self._occupied.add((belt.x, belt.y, belt.floor))
-                building_id += 1
+        if self.use_routing:
+            # Only place machines, routing will add belts
+            valid_machines = [bt for bt in OPERATION_BUILDINGS if bt in self.valid_buildings]
+            num_machines = random.randint(1, min(4, len(valid_machines)))
 
-        # Add belts at output port positions
-        for side, pos, floor, shape_code in self.config.get_all_outputs():
-            gx, gy = self.config.spec.get_port_grid_position(side, pos)
-            belt = self._create_port_belt(building_id, side, gx, gy, floor, is_input=False)
-            if belt and (belt.x, belt.y, belt.floor) not in self._occupied:
-                buildings.append(belt)
-                self._occupied.add((belt.x, belt.y, belt.floor))
-                building_id += 1
+            for _ in range(num_machines):
+                building = self._create_random_machine(building_id, valid_machines)
+                if building:
+                    buildings.append(building)
+                    self._mark_occupied(building)
+                    building_id += 1
 
-        # Add some random buildings
-        num_extra = random.randint(2, min(self.max_buildings - len(buildings), 8))
-        for _ in range(num_extra):
-            building = self._create_random_building_avoiding_collisions(building_id)
-            if building:
-                buildings.append(building)
+            candidate = Candidate(buildings=buildings)
+            self._route_candidate(candidate)
+            return candidate
+        else:
+            # Legacy mode: place belts at port positions
+            for side, pos, floor, shape_code in self.config.get_all_inputs():
+                gx, gy = self.config.spec.get_port_grid_position(side, pos)
+                belt = self._create_port_belt(building_id, side, gx, gy, floor, is_input=True)
+                if belt and (belt.x, belt.y, belt.floor) not in self._occupied:
+                    buildings.append(belt)
+                    self._occupied.add((belt.x, belt.y, belt.floor))
+                    building_id += 1
+
+            for side, pos, floor, shape_code in self.config.get_all_outputs():
+                gx, gy = self.config.spec.get_port_grid_position(side, pos)
+                belt = self._create_port_belt(building_id, side, gx, gy, floor, is_input=False)
+                if belt and (belt.x, belt.y, belt.floor) not in self._occupied:
+                    buildings.append(belt)
+                    self._occupied.add((belt.x, belt.y, belt.floor))
+                    building_id += 1
+
+            num_extra = random.randint(2, min(self.max_buildings - len(buildings), 8))
+            for _ in range(num_extra):
+                building = self._create_random_building_avoiding_collisions(building_id)
+                if building:
+                    buildings.append(building)
                 self._mark_occupied(building)
                 building_id += 1
 
@@ -161,7 +366,7 @@ class BaseAlgorithm(ABC):
 
     def _create_port_belt(self, building_id: int, side: Side, gx: int, gy: int, floor: int, is_input: bool):
         """Create a belt at a port position."""
-        PlacedBuilding, Candidate = _get_foundation_classes()
+        PlacedBuilding, Candidate, _ = _get_foundation_classes()
 
         # Belt should be at the edge of the foundation
         if side == Side.NORTH:
@@ -200,8 +405,9 @@ class EvolutionaryAlgorithm(BaseAlgorithm):
         mutation_rate: float = 0.3,
         crossover_rate: float = 0.5,
         elitism: int = 5,
+        use_routing: bool = True,
     ):
-        super().__init__(config, evaluate_fn, valid_buildings, max_buildings)
+        super().__init__(config, evaluate_fn, valid_buildings, max_buildings, use_routing)
         self.population_size = population_size
         self.mutation_rate = mutation_rate
         self.crossover_rate = crossover_rate
@@ -272,7 +478,7 @@ class EvolutionaryAlgorithm(BaseAlgorithm):
 
     def _crossover(self, p1, p2):
         """Crossover two parents."""
-        PlacedBuilding, Candidate = _get_foundation_classes()
+        PlacedBuilding, Candidate, _ = _get_foundation_classes()
         # Take buildings from both parents
         split = random.randint(0, len(p1.buildings))
         buildings = [copy.copy(b) for b in p1.buildings[:split]]
@@ -336,7 +542,7 @@ class EvolutionaryAlgorithm(BaseAlgorithm):
 
     def _add_connecting_belt(self, candidate) -> None:
         """Add a belt to connect two buildings."""
-        PlacedBuilding, Candidate = _get_foundation_classes()
+        PlacedBuilding, Candidate, _ = _get_foundation_classes()
         if len(candidate.buildings) < 2:
             return
 
@@ -379,8 +585,9 @@ class SimulatedAnnealing(BaseAlgorithm):
         initial_temp: float = 100.0,
         cooling_rate: float = 0.995,
         min_temp: float = 0.1,
+        use_routing: bool = True,
     ):
-        super().__init__(config, evaluate_fn, valid_buildings, max_buildings)
+        super().__init__(config, evaluate_fn, valid_buildings, max_buildings, use_routing)
         self.initial_temp = initial_temp
         self.cooling_rate = cooling_rate
         self.min_temp = min_temp
@@ -433,7 +640,7 @@ class SimulatedAnnealing(BaseAlgorithm):
 
     def _get_neighbor(self, candidate):
         """Generate a neighboring solution with collision checking."""
-        PlacedBuilding, Candidate = _get_foundation_classes()
+        PlacedBuilding, Candidate, _ = _get_foundation_classes()
         neighbor = candidate.copy()
 
         # Build occupied set
@@ -518,8 +725,9 @@ class HybridAlgorithm(BaseAlgorithm):
         max_buildings: int = 20,
         sa_iterations: int = 200,
         ea_iterations: int = 100,
+        use_routing: bool = True,
     ):
-        super().__init__(config, evaluate_fn, valid_buildings, max_buildings)
+        super().__init__(config, evaluate_fn, valid_buildings, max_buildings, use_routing)
         self.sa_iterations = sa_iterations
         self.ea_iterations = ea_iterations
 

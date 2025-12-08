@@ -614,6 +614,10 @@ class SolverApp:
             else:  # Default: Evolutionary
                 self.foundation_solutions = evolution.run(self.foundation_generations, verbose=True)
 
+            # Ensure top_solutions is populated for the viewer
+            if self.foundation_solutions:
+                evolution.top_solutions = self.foundation_solutions[:5]
+
             self.foundation_evolution = evolution
 
             print("\n" + "=" * 60)

@@ -20,6 +20,7 @@ from ..blueprint.encoder import BlueprintEncoder
 from ..shapes.shape import Shape
 from ..shapes.parser import ShapeCodeParser
 from ..simulation.grid_simulator import GridSimulator
+from .router import BeltRouter, Connection
 
 
 class CellType(Enum):
@@ -54,8 +55,8 @@ class PlacedBuilding:
 
 
 @dataclass
-class Connection:
-    """A logical connection between buildings."""
+class LogicalConnection:
+    """A logical connection between buildings (what connects to what)."""
     from_building_id: int
     from_output_idx: int
     to_building_id: int
@@ -66,7 +67,7 @@ class Connection:
 class Candidate:
     """A candidate solution in the evolution."""
     buildings: List[PlacedBuilding] = field(default_factory=list)
-    connections: List[Connection] = field(default_factory=list)
+    connections: List[LogicalConnection] = field(default_factory=list)
     fitness: float = 0.0
     output_shapes: Dict[Tuple[Side, int, int], Optional[Shape]] = field(default_factory=dict)
 
@@ -145,6 +146,7 @@ class FoundationEvolution:
         num_top_solutions: int = 5,
         mutation_rate: float = 0.3,
         crossover_rate: float = 0.5,
+        use_routing: bool = True,
     ):
         """
         Initialize the evolution system.
@@ -156,6 +158,7 @@ class FoundationEvolution:
             num_top_solutions: Number of top solutions to track
             mutation_rate: Probability of mutation
             crossover_rate: Probability of crossover
+            use_routing: If True, use A* routing to place belts after machines
         """
         self.config = config
         self.population_size = population_size
@@ -163,6 +166,7 @@ class FoundationEvolution:
         self.num_top_solutions = num_top_solutions
         self.mutation_rate = mutation_rate
         self.crossover_rate = crossover_rate
+        self.use_routing = use_routing
 
         self.parser = ShapeCodeParser()
         self.population: List[Candidate] = []
@@ -208,39 +212,62 @@ class FoundationEvolution:
             self.population.append(candidate)
 
     def _create_seeded_candidate(self) -> Candidate:
-        """Create a candidate with belts at all input/output port positions."""
+        """Create a candidate with machines and routed belts."""
         candidate = Candidate()
         building_id = 0
         occupied = set()  # Track occupied cells
 
-        # Add belts at all input port positions (facing inward)
-        for side, pos, floor, shape_code in self.config.get_all_inputs():
-            gx, gy = self.config.spec.get_port_grid_position(side, pos)
-            belt = self._create_port_belt(building_id, side, gx, gy, floor, is_input=True)
-            if belt and (belt.x, belt.y, belt.floor) not in occupied:
-                candidate.buildings.append(belt)
-                occupied.add((belt.x, belt.y, belt.floor))
-                building_id += 1
+        if self.use_routing:
+            # Only place machines on floor 0 (where ports are), routing will add belts
+            valid_machines = [bt for bt in OPERATION_BUILDINGS
+                             if bt in self._get_valid_buildings()]
+            num_machines = random.randint(1, min(5, len(valid_machines)))
 
-        # Add belts at all output port positions (facing outward)
-        for side, pos, floor, shape_code in self.config.get_all_outputs():
-            gx, gy = self.config.spec.get_port_grid_position(side, pos)
-            belt = self._create_port_belt(building_id, side, gx, gy, floor, is_input=False)
-            if belt and (belt.x, belt.y, belt.floor) not in occupied:
-                candidate.buildings.append(belt)
-                occupied.add((belt.x, belt.y, belt.floor))
-                building_id += 1
+            # Get the floor of the first input port (usually 0)
+            input_floors = [f for _, _, f, _ in self.config.get_all_inputs()]
+            prefer_floor = input_floors[0] if input_floors else 0
 
-        # Add some random buildings avoiding collisions
-        valid_buildings = self._get_valid_buildings()
-        num_extra = random.randint(2, min(self.max_buildings - len(candidate.buildings), 8))
+            for _ in range(num_machines):
+                building = self._create_random_building_avoiding_collisions(
+                    building_id, valid_machines, occupied, prefer_floor=prefer_floor
+                )
+                if building:
+                    candidate.buildings.append(building)
+                    self._mark_occupied(building, occupied)
+                    building_id += 1
 
-        for _ in range(num_extra):
-            building = self._create_random_building_avoiding_collisions(building_id, valid_buildings, occupied)
-            if building:
-                candidate.buildings.append(building)
-                self._mark_occupied(building, occupied)
-                building_id += 1
+            # Auto-route belts to connect machines to ports
+            self._route_candidate(candidate)
+        else:
+            # Legacy mode: place belts at port positions manually
+            # Add belts at all input port positions (facing inward)
+            for side, pos, floor, shape_code in self.config.get_all_inputs():
+                gx, gy = self.config.spec.get_port_grid_position(side, pos)
+                belt = self._create_port_belt(building_id, side, gx, gy, floor, is_input=True)
+                if belt and (belt.x, belt.y, belt.floor) not in occupied:
+                    candidate.buildings.append(belt)
+                    occupied.add((belt.x, belt.y, belt.floor))
+                    building_id += 1
+
+            # Add belts at all output port positions (facing outward)
+            for side, pos, floor, shape_code in self.config.get_all_outputs():
+                gx, gy = self.config.spec.get_port_grid_position(side, pos)
+                belt = self._create_port_belt(building_id, side, gx, gy, floor, is_input=False)
+                if belt and (belt.x, belt.y, belt.floor) not in occupied:
+                    candidate.buildings.append(belt)
+                    occupied.add((belt.x, belt.y, belt.floor))
+                    building_id += 1
+
+            # Add some random buildings avoiding collisions
+            valid_buildings = self._get_valid_buildings()
+            num_extra = random.randint(2, min(self.max_buildings - len(candidate.buildings), 8))
+
+            for _ in range(num_extra):
+                building = self._create_random_building_avoiding_collisions(building_id, valid_buildings, occupied)
+                if building:
+                    candidate.buildings.append(building)
+                    self._mark_occupied(building, occupied)
+                    building_id += 1
 
         return candidate
 
@@ -283,7 +310,8 @@ class FoundationEvolution:
 
     def _create_random_building_avoiding_collisions(
         self, building_id: int, valid_buildings: List[BuildingType],
-        occupied: Set[Tuple[int, int, int]]
+        occupied: Set[Tuple[int, int, int]],
+        prefer_floor: Optional[int] = None
     ) -> Optional[PlacedBuilding]:
         """Create a random building that doesn't collide with occupied cells."""
         if not valid_buildings:
@@ -300,7 +328,13 @@ class FoundationEvolution:
 
             x = random.randint(0, max_x)
             y = random.randint(0, max_y)
-            floor = random.randint(0, max_floor)
+
+            # Prefer specified floor (for routing compatibility)
+            if prefer_floor is not None and prefer_floor <= max_floor:
+                floor = prefer_floor
+            else:
+                floor = random.randint(0, max_floor)
+
             rotation = random.choice(list(Rotation))
 
             # Check for collisions
@@ -334,28 +368,205 @@ class FoundationEvolution:
                 for df in range(spec.depth):
                     occupied.add((building.x + dx, building.y + dy, building.floor + df))
 
+    def _route_candidate(self, candidate: Candidate) -> None:
+        """
+        Auto-route belts to connect machines to input/output ports.
+
+        This uses A* pathfinding to place belts between:
+        1. Input ports -> machines
+        2. Machines -> output ports
+        """
+        # Build occupied set from non-belt buildings
+        occupied = set()
+        machines = []
+        existing_belts = []
+
+        for b in candidate.buildings:
+            spec = BUILDING_SPECS.get(b.building_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
+            for dx in range(spec.width):
+                for dy in range(spec.height):
+                    for df in range(spec.depth):
+                        occupied.add((b.x + dx, b.y + dy, b.floor + df))
+
+            if b.building_type in BELT_TYPES or b.building_type in ROUTING_BUILDINGS:
+                existing_belts.append(b)
+            elif b.building_type in OPERATION_BUILDINGS:
+                machines.append(b)
+
+        if not machines:
+            return
+
+        # Create router
+        router = BeltRouter(
+            self.config.spec.grid_width,
+            self.config.spec.grid_height,
+            self.num_floors
+        )
+        router.set_occupied(occupied)
+
+        # Collect connections to route
+        connections = []
+
+        # Route from input ports to nearest machine
+        for side, pos, floor, shape_code in self.config.get_all_inputs():
+            gx, gy = self.config.spec.get_port_grid_position(side, pos)
+
+            # Get entry position (just inside the grid)
+            if side == Side.NORTH:
+                entry = (gx, 0, floor)
+                entry_dir = Rotation.SOUTH
+            elif side == Side.SOUTH:
+                entry = (gx, self.config.spec.grid_height - 1, floor)
+                entry_dir = Rotation.NORTH
+            elif side == Side.WEST:
+                entry = (0, gy, floor)
+                entry_dir = Rotation.EAST
+            elif side == Side.EAST:
+                entry = (self.config.spec.grid_width - 1, gy, floor)
+                entry_dir = Rotation.WEST
+            else:
+                continue
+
+            # Find nearest machine on same floor
+            best_machine = None
+            best_dist = float('inf')
+            for m in machines:
+                if m.floor == floor:
+                    dist = abs(m.x - entry[0]) + abs(m.y - entry[1])
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_machine = m
+
+            if best_machine:
+                # Route to machine input (side opposite to rotation)
+                spec = BUILDING_SPECS.get(best_machine.building_type)
+                if spec:
+                    # Get machine input position
+                    if best_machine.rotation == Rotation.EAST:
+                        target = (best_machine.x - 1, best_machine.y + spec.height // 2, floor)
+                    elif best_machine.rotation == Rotation.WEST:
+                        target = (best_machine.x + spec.width, best_machine.y + spec.height // 2, floor)
+                    elif best_machine.rotation == Rotation.SOUTH:
+                        target = (best_machine.x + spec.width // 2, best_machine.y - 1, floor)
+                    else:
+                        target = (best_machine.x + spec.width // 2, best_machine.y + spec.height, floor)
+
+                    connections.append(Connection(
+                        entry, target, entry_dir, best_machine.rotation, 2
+                    ))
+
+        # Route from machines to output ports
+        for side, pos, floor, shape_code in self.config.get_all_outputs():
+            gx, gy = self.config.spec.get_port_grid_position(side, pos)
+
+            # Get exit position (just inside the grid)
+            if side == Side.NORTH:
+                exit_pos = (gx, 0, floor)
+                exit_dir = Rotation.NORTH
+            elif side == Side.SOUTH:
+                exit_pos = (gx, self.config.spec.grid_height - 1, floor)
+                exit_dir = Rotation.SOUTH
+            elif side == Side.WEST:
+                exit_pos = (0, gy, floor)
+                exit_dir = Rotation.WEST
+            elif side == Side.EAST:
+                exit_pos = (self.config.spec.grid_width - 1, gy, floor)
+                exit_dir = Rotation.EAST
+            else:
+                continue
+
+            # Find nearest machine on same floor
+            best_machine = None
+            best_dist = float('inf')
+            for m in machines:
+                if m.floor == floor:
+                    dist = abs(m.x - exit_pos[0]) + abs(m.y - exit_pos[1])
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_machine = m
+
+            if best_machine:
+                # Route from machine output
+                spec = BUILDING_SPECS.get(best_machine.building_type)
+                if spec:
+                    # Get machine output position (in direction of rotation)
+                    if best_machine.rotation == Rotation.EAST:
+                        source = (best_machine.x + spec.width, best_machine.y + spec.height // 2, floor)
+                    elif best_machine.rotation == Rotation.WEST:
+                        source = (best_machine.x - 1, best_machine.y + spec.height // 2, floor)
+                    elif best_machine.rotation == Rotation.SOUTH:
+                        source = (best_machine.x + spec.width // 2, best_machine.y + spec.height, floor)
+                    else:
+                        source = (best_machine.x + spec.width // 2, best_machine.y - 1, floor)
+
+                    connections.append(Connection(
+                        source, exit_pos, best_machine.rotation, exit_dir, 1
+                    ))
+
+        # Route all connections and add belts to candidate
+        results = router.route_all(connections)
+        building_id = len(candidate.buildings)
+
+        for result in results:
+            if result.success:
+                for x, y, floor, belt_type, rotation in result.belts:
+                    belt = PlacedBuilding(
+                        building_id=building_id,
+                        building_type=belt_type,
+                        x=x, y=y, floor=floor,
+                        rotation=rotation
+                    )
+                    candidate.buildings.append(belt)
+                    building_id += 1
+
     def _create_random_candidate(self) -> Candidate:
         """Create a random candidate solution with collision detection."""
         candidate = Candidate()
         occupied = set()  # Track occupied cells
 
-        valid_buildings = self._get_valid_buildings()
-        if not valid_buildings:
-            return candidate  # No buildings fit
+        if self.use_routing:
+            # Place only machines on floor 0, then route belts
+            valid_machines = [bt for bt in OPERATION_BUILDINGS
+                             if bt in self._get_valid_buildings()]
+            if not valid_machines:
+                return candidate
 
-        # Add random number of buildings
-        num_buildings = random.randint(3, min(self.max_buildings, 12))
-        building_id = 0
+            num_machines = random.randint(1, min(6, self.max_buildings // 2))
+            building_id = 0
 
-        for _ in range(num_buildings):
-            building = self._create_random_building_avoiding_collisions(building_id, valid_buildings, occupied)
-            if building:
-                candidate.buildings.append(building)
-                self._mark_occupied(building, occupied)
-                building_id += 1
+            # Get the floor of ports
+            input_floors = [f for _, _, f, _ in self.config.get_all_inputs()]
+            prefer_floor = input_floors[0] if input_floors else 0
 
-        # Create random connections
-        self._create_random_connections(candidate)
+            for _ in range(num_machines):
+                building = self._create_random_building_avoiding_collisions(
+                    building_id, valid_machines, occupied, prefer_floor=prefer_floor
+                )
+                if building:
+                    candidate.buildings.append(building)
+                    self._mark_occupied(building, occupied)
+                    building_id += 1
+
+            # Auto-route belts
+            self._route_candidate(candidate)
+        else:
+            # Legacy mode with random buildings including belts
+            valid_buildings = self._get_valid_buildings()
+            if not valid_buildings:
+                return candidate
+
+            num_buildings = random.randint(3, min(self.max_buildings, 12))
+            building_id = 0
+
+            for _ in range(num_buildings):
+                building = self._create_random_building_avoiding_collisions(building_id, valid_buildings, occupied)
+                if building:
+                    candidate.buildings.append(building)
+                    self._mark_occupied(building, occupied)
+                    building_id += 1
+
+            # Create random connections
+            self._create_random_connections(candidate)
 
         return candidate
 
@@ -373,7 +584,7 @@ class FoundationEvolution:
                 spec1 = BUILDING_SPECS.get(b1.building_type)
                 spec2 = BUILDING_SPECS.get(b2.building_type)
                 if spec1 and spec2 and spec1.num_outputs > 0 and spec2.num_inputs > 0:
-                    conn = Connection(
+                    conn = LogicalConnection(
                         from_building_id=b1.building_id,
                         from_output_idx=random.randint(0, spec1.num_outputs - 1),
                         to_building_id=b2.building_id,
