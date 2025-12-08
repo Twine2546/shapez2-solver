@@ -188,10 +188,15 @@ class ShapeLayer:
         self.parts[index % self.num_parts] = part
 
     def rotate(self, steps: int = 1) -> "ShapeLayer":
-        """Rotate the layer clockwise by the given number of steps."""
+        """Rotate the layer clockwise by the given number of steps.
+
+        Quadrant positions: 0=NE, 1=NW, 2=SW, 3=SE
+        CW rotation: NE→SE, NW→NE, SW→NW, SE→SW
+        """
         n = self.num_parts
         steps = steps % n
-        new_parts = self.parts[-steps:] + self.parts[:-steps]
+        # CW rotation: each part moves to the next higher index (wrapping)
+        new_parts = self.parts[steps:] + self.parts[:steps]
         return ShapeLayer(new_parts)
 
     def copy(self) -> "ShapeLayer":

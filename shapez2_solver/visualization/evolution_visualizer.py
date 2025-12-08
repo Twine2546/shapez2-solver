@@ -12,7 +12,34 @@ except ImportError:
 from ..evolution.candidate import Candidate
 from ..evolution.algorithm import EvolutionaryAlgorithm
 from ..shapes.shape import Shape
+from ..simulator.design import Design, OperationNode, InputNode, OutputNode
 from .shape_renderer import ShapeRenderer
+
+
+# Building colors for visualization
+BUILDING_COLORS = {
+    "RotateOperation": (100, 200, 100),      # Green - rotator
+    "CutOperation": (200, 100, 100),          # Red - cutter
+    "HalfDestroyerOperation": (180, 80, 80),  # Dark red - half destroyer
+    "StackOperation": (100, 100, 200),        # Blue - stacker
+    "UnstackOperation": (80, 80, 180),        # Dark blue - unstacker
+    "SwapperOperation": (200, 200, 100),      # Yellow - swapper
+    "PaintOperation": (200, 100, 200),        # Purple - painter
+    "Input": (50, 150, 50),                   # Dark green - input
+    "Output": (150, 50, 50),                  # Dark red - output
+}
+
+BUILDING_SYMBOLS = {
+    "RotateOperation": "R",
+    "CutOperation": "C",
+    "HalfDestroyerOperation": "H",
+    "StackOperation": "S",
+    "UnstackOperation": "U",
+    "SwapperOperation": "X",
+    "PaintOperation": "P",
+    "Input": "I",
+    "Output": "O",
+}
 
 
 class EvolutionVisualizer:
@@ -50,6 +77,7 @@ class EvolutionVisualizer:
         self.top_candidates: List[Candidate] = []
         self.input_shape: Optional[Shape] = None
         self.target_shape: Optional[Shape] = None
+        self.best_blueprint_code: Optional[str] = None
 
     def initialize(self) -> bool:
         """
@@ -124,6 +152,14 @@ class EvolutionVisualizer:
             self.avg_fitness = sum(c.fitness for c in population) / len(population)
             self.fitness_history.append((self.best_fitness, self.avg_fitness))
 
+            # Generate blueprint code for best solution if fitness is good
+            if self.best_fitness >= 0.95 and sorted_pop[0].design.operations:
+                try:
+                    from ..blueprint import export_blueprint
+                    self.best_blueprint_code = export_blueprint(sorted_pop[0].design)
+                except Exception:
+                    self.best_blueprint_code = None
+
         # Render
         self._render()
         self._clock.tick(self.fps)
@@ -149,7 +185,88 @@ class EvolutionVisualizer:
         # Draw top candidates
         self._draw_top_candidates()
 
+        # Draw legend
+        self._draw_legend()
+
+        # Draw blueprint code if available
+        self._draw_blueprint_code()
+
         pygame.display.flip()
+
+    def _draw_blueprint_code(self) -> None:
+        """Draw the blueprint code for the best solution."""
+        if not self._font or not self.best_blueprint_code:
+            return
+
+        code_y = self.height - 50
+
+        # Draw background
+        bg_rect = pygame.Rect(0, code_y - 5, self.width, 55)
+        pygame.draw.rect(self._screen, (30, 50, 30), bg_rect)
+        pygame.draw.line(self._screen, (80, 150, 80), (0, code_y - 5), (self.width, code_y - 5), 2)
+
+        # Label
+        label = self._font.render("Blueprint Code (copy to game):", True, (100, 255, 100))
+        self._screen.blit(label, (10, code_y))
+
+        # Code (truncated if too long)
+        code = self.best_blueprint_code
+        max_len = 120
+        if len(code) > max_len:
+            code = code[:max_len-3] + "..."
+
+        code_surface = self._font.render(code, True, (200, 255, 200))
+        self._screen.blit(code_surface, (10, code_y + 18))
+
+        # Hint
+        hint = self._font.render("(Full code printed to console when evolution ends)", True, (150, 150, 150))
+        self._screen.blit(hint, (10, code_y + 36))
+
+    def _draw_legend(self) -> None:
+        """Draw a legend for the building symbols."""
+        if not self._font:
+            return
+
+        legend_x = 20
+        legend_y = self.height - 120
+
+        # Title
+        title = self._font.render("Legend:", True, (200, 200, 200))
+        self._screen.blit(title, (legend_x, legend_y))
+
+        # Legend items
+        items = [
+            ("I", BUILDING_COLORS["Input"], "Input"),
+            ("R", BUILDING_COLORS["RotateOperation"], "Rotate"),
+            ("C", BUILDING_COLORS["CutOperation"], "Cut"),
+            ("S", BUILDING_COLORS["StackOperation"], "Stack"),
+            ("U", BUILDING_COLORS["UnstackOperation"], "Unstack"),
+            ("X", BUILDING_COLORS["SwapperOperation"], "Swap"),
+            ("O", BUILDING_COLORS["Output"], "Output"),
+        ]
+
+        x = legend_x
+        y = legend_y + 20
+
+        for symbol, color, name in items:
+            # Draw colored box
+            box_rect = pygame.Rect(x, y, 14, 14)
+            pygame.draw.rect(self._screen, color, box_rect)
+            pygame.draw.rect(self._screen, (200, 200, 200), box_rect, 1)
+
+            # Draw symbol
+            sym = self._font.render(symbol, True, (255, 255, 255))
+            sym_rect = sym.get_rect(center=box_rect.center)
+            self._screen.blit(sym, sym_rect)
+
+            # Draw name
+            name_surface = self._font.render(name, True, (180, 180, 180))
+            self._screen.blit(name_surface, (x + 18, y))
+
+            x += 80
+            if x > 350:
+                x = legend_x
+                y += 20
 
     def _draw_header(self) -> None:
         """Draw the header with generation and fitness info."""
@@ -235,7 +352,7 @@ class EvolutionVisualizer:
                 self._screen.blit(surface, (150, section_y + 20))
 
     def _draw_top_candidates(self) -> None:
-        """Draw the top candidate solutions."""
+        """Draw the top candidate solutions with mini layouts."""
         section_x = 450
         section_y = 50
 
@@ -243,13 +360,183 @@ class EvolutionVisualizer:
             label = self._font.render("Top Candidates:", True, (200, 200, 200))
             self._screen.blit(label, (section_x, section_y))
 
+        # Layout parameters
+        layout_width = 160
+        layout_height = 100
+        layouts_per_row = 3
         y_offset = section_y + 25
+
         for i, candidate in enumerate(self.top_candidates):
-            if self._font:
-                text = f"#{i+1}: Fitness={candidate.fitness:.4f}, Ops={len(candidate.design.operations)}"
-                text_surface = self._font.render(text, True, (180, 180, 180))
-                self._screen.blit(text_surface, (section_x, y_offset))
-            y_offset += 20
+            row = i // layouts_per_row
+            col = i % layouts_per_row
+
+            x = section_x + col * (layout_width + 20)
+            y = y_offset + row * (layout_height + 40)
+
+            # Draw mini layout for this candidate
+            self._draw_mini_layout(candidate, x, y, layout_width, layout_height)
+
+    def _draw_mini_layout(self, candidate: Candidate, x: int, y: int, width: int, height: int) -> None:
+        """Draw a mini factory layout for a candidate."""
+        if not PYGAME_AVAILABLE or not self._screen:
+            return
+
+        design = candidate.design
+
+        # Draw background
+        bg_rect = pygame.Rect(x, y, width, height)
+        pygame.draw.rect(self._screen, (40, 45, 55), bg_rect)
+        pygame.draw.rect(self._screen, (80, 80, 100), bg_rect, 1)
+
+        # Draw header with fitness
+        if self._font:
+            ops_list = [op.operation.__class__.__name__.replace("Operation", "")
+                       for op in design.operations]
+            ops_str = ", ".join(ops_list[:3])
+            if len(ops_list) > 3:
+                ops_str += "..."
+
+            header = f"F:{candidate.fitness:.2f} | {len(design.operations)} ops"
+            text = self._font.render(header, True, (200, 200, 200))
+            self._screen.blit(text, (x + 5, y + 2))
+
+        # Calculate grid dimensions
+        grid_top = y + 20
+        grid_height = height - 25
+        cell_size = 18
+
+        # Get execution order and positions
+        nodes_info = self._get_nodes_layout(design)
+
+        if not nodes_info:
+            return
+
+        # Calculate grid bounds
+        min_col = min(n['col'] for n in nodes_info)
+        max_col = max(n['col'] for n in nodes_info)
+        min_row = min(n['row'] for n in nodes_info)
+        max_row = max(n['row'] for n in nodes_info)
+
+        cols = max(1, max_col - min_col + 1)
+        rows = max(1, max_row - min_row + 1)
+
+        # Scale to fit
+        scale_x = min(cell_size, (width - 10) // cols)
+        scale_y = min(cell_size, grid_height // rows)
+        scale = min(scale_x, scale_y, cell_size)
+
+        # Center the layout
+        total_width = cols * scale
+        total_height = rows * scale
+        offset_x = x + (width - total_width) // 2
+        offset_y = grid_top + (grid_height - total_height) // 2
+
+        # Draw connections first (behind nodes)
+        for conn in design.connections:
+            src_info = next((n for n in nodes_info if n['id'] == conn.source_id), None)
+            tgt_info = next((n for n in nodes_info if n['id'] == conn.target_id), None)
+
+            if src_info and tgt_info:
+                src_x = offset_x + (src_info['col'] - min_col) * scale + scale // 2
+                src_y = offset_y + (src_info['row'] - min_row) * scale + scale // 2
+                tgt_x = offset_x + (tgt_info['col'] - min_col) * scale + scale // 2
+                tgt_y = offset_y + (tgt_info['row'] - min_row) * scale + scale // 2
+
+                # Draw connection line
+                pygame.draw.line(self._screen, (100, 100, 120), (src_x, src_y), (tgt_x, tgt_y), 1)
+
+        # Draw nodes
+        for node_info in nodes_info:
+            node_x = offset_x + (node_info['col'] - min_col) * scale
+            node_y = offset_y + (node_info['row'] - min_row) * scale
+
+            color = node_info['color']
+            symbol = node_info['symbol']
+
+            # Draw node rectangle
+            node_rect = pygame.Rect(node_x + 1, node_y + 1, scale - 2, scale - 2)
+            pygame.draw.rect(self._screen, color, node_rect)
+            pygame.draw.rect(self._screen, (200, 200, 200), node_rect, 1)
+
+            # Draw symbol
+            if self._font and scale >= 12:
+                sym_surface = self._font.render(symbol, True, (255, 255, 255))
+                sym_rect = sym_surface.get_rect(center=node_rect.center)
+                self._screen.blit(sym_surface, sym_rect)
+
+    def _get_nodes_layout(self, design: Design) -> List[Dict]:
+        """Get node positions for layout visualization."""
+        nodes_info = []
+        col = 0
+
+        # Inputs on the left
+        for i, inp in enumerate(design.inputs):
+            nodes_info.append({
+                'id': inp.node_id,
+                'col': 0,
+                'row': i,
+                'color': BUILDING_COLORS.get("Input", (100, 100, 100)),
+                'symbol': 'I',
+            })
+
+        # Get operations in execution order
+        from collections import deque
+        in_degree: Dict[str, int] = {}
+        adjacency: Dict[str, List[str]] = {}
+
+        for node in design.operations:
+            in_degree[node.node_id] = 0
+            adjacency[node.node_id] = []
+
+        for conn in design.connections:
+            if conn.source_id in adjacency and conn.target_id in adjacency:
+                in_degree[conn.target_id] += 1
+                adjacency[conn.source_id].append(conn.target_id)
+
+        queue = deque([n for n, d in in_degree.items() if d == 0])
+        col = 1
+        row_in_col = {}
+
+        while queue:
+            level_size = len(queue)
+            row = 0
+            for _ in range(level_size):
+                node_id = queue.popleft()
+                node = design.get_node(node_id)
+
+                if isinstance(node, OperationNode):
+                    op_name = node.operation.__class__.__name__
+                    color = BUILDING_COLORS.get(op_name, (150, 150, 150))
+                    symbol = BUILDING_SYMBOLS.get(op_name, "?")
+
+                    nodes_info.append({
+                        'id': node_id,
+                        'col': col,
+                        'row': row,
+                        'color': color,
+                        'symbol': symbol,
+                    })
+                    row += 1
+
+                for neighbor in adjacency.get(node_id, []):
+                    in_degree[neighbor] -= 1
+                    if in_degree[neighbor] == 0:
+                        queue.append(neighbor)
+
+            if level_size > 0:
+                col += 1
+
+        # Outputs on the right
+        for i, out in enumerate(design.outputs):
+            nodes_info.append({
+                'id': out.node_id,
+                'col': col,
+                'row': i,
+                'color': BUILDING_COLORS.get("Output", (100, 100, 100)),
+                'symbol': 'O',
+            })
+
+        return nodes_info
 
 
 def run_with_visualization(
@@ -289,5 +576,21 @@ def run_with_visualization(
         if PYGAME_AVAILABLE:
             time.sleep(1)
         visualizer.close()
+
+    # Print blueprint code if we found a good solution
+    if result and result.fitness >= 0.95 and result.design.operations:
+        try:
+            from ..blueprint import export_blueprint
+            blueprint_code = export_blueprint(result.design)
+            print("\n" + "=" * 60)
+            print("BLUEPRINT CODE")
+            print("=" * 60)
+            print("Copy this code and paste it in the game to import:")
+            print()
+            print(blueprint_code)
+            print()
+            print("=" * 60)
+        except Exception as e:
+            print(f"Could not generate blueprint: {e}")
 
     return result

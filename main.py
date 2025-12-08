@@ -115,6 +115,41 @@ def run_cli(args):
         from shapez2_solver.visualization.solution_display import display_solution
         print("\n")
         display_solution(result.design, {"in_0": input_shape})
+
+        # Export blueprint code if solution is good
+        if result.fitness >= 0.95 and result.design.operations:
+            try:
+                from shapez2_solver.blueprint import export_blueprint, GridPlacer
+
+                # Show grid layout
+                placer = GridPlacer()
+                placer.place_design(result.design)
+                print("\n" + "=" * 60)
+                print("GRID LAYOUT (all floors)")
+                print("=" * 60)
+                print(placer.print_grid())
+
+                # Show throughput info
+                print("=" * 60)
+                print(placer.print_throughput_info())
+
+                # Generate blueprint
+                blueprint_code = export_blueprint(result.design)
+                print("\n" + "=" * 60)
+                print("BLUEPRINT CODE")
+                print("=" * 60)
+                print("Copy this code and paste it in the game to import:")
+                print()
+                print(blueprint_code)
+                print()
+                print("You can also paste this code at:")
+                print("  https://community-vortex.shapez2.com/blueprint/view")
+                print("to see a 3D preview of the layout.")
+                print("=" * 60)
+            except Exception as e:
+                import traceback
+                print(f"Could not generate blueprint: {e}")
+                traceback.print_exc()
     else:
         print("No solution found.")
 

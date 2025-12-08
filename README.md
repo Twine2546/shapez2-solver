@@ -6,10 +6,11 @@ An evolutionary algorithm-based solver for Shapez 2 shape puzzles. Given an inpu
 
 - **Shape Code Parser**: Full support for Shapez 2 shape codes
 - **All Operations**: Cutter, half destroyer, swapper, rotator, stacker, unstacker, painter, crystal generator, pin pusher
-- **Foundation Support**: All foundation sizes from 1x1 to 3x3
+- **Foundation Evolution**: Evolve building layouts on foundations with multiple input/output ports
+- **All Foundation Sizes**: Support for 1x1 through 3x3, plus irregular shapes (T, L, S, Cross)
 - **Evolutionary Algorithm**: Population-based search with configurable parameters
-- **Graphical Visualization**: Real-time view of evolution progress (requires pygame)
-- **Decoupled Architecture**: Simulator independent of search algorithm
+- **Graphical Interface**: Integrated GUI with both Shape Transform and Foundation Evolution modes
+- **Layout Viewer**: Visual display of evolved foundation layouts with pan, zoom, and floor navigation
 
 ## Installation
 
@@ -18,19 +19,54 @@ An evolutionary algorithm-based solver for Shapez 2 shape puzzles. Given an inpu
 git clone https://github.com/Twine2546/shapez2-solver.git
 cd shapez2-solver
 
-# Install dependencies (optional, for GUI)
+# Install dependencies
 pip install -r requirements.txt
 ```
 
+### Requirements
+
+- Python 3.8+
+- pygame-ce (for GUI)
+- pygame_gui (for GUI)
+
 ## Usage
 
-### GUI Mode (requires pygame)
+### GUI Mode (Recommended)
 
 ```bash
 python3 main.py gui
+# or just
+python3 main.py
 ```
 
-### CLI Mode
+The GUI has two modes:
+- **Shape Transform**: Evolve a sequence of operations to transform one shape into another
+- **Foundation Evolution**: Evolve building layouts on foundations with specific input/output requirements
+
+### Foundation Evolution CLI
+
+For foundation-specific evolution with multiple ports:
+
+```bash
+# Simple corner splitter on 2x2 foundation
+python3 evolve_foundation.py --foundation 2x2 \
+    --input "W,0,0,CuCuCuCu" \
+    --output "E,0,0,Cu------" \
+    --output "E,0,1,--Cu----" \
+    --output "E,1,0,----Cu--" \
+    --output "E,1,1,------Cu"
+
+# Interactive mode
+python3 evolve_foundation.py --interactive
+
+# List available foundations
+python3 evolve_foundation.py --list-foundations
+
+# Show shape code format
+python3 evolve_foundation.py --list-shapes
+```
+
+### Shape Transform CLI
 
 ```bash
 # Solve a shape transformation
@@ -43,22 +79,26 @@ python3 main.py parse CrRgSbWy:RuRuRuRu
 python3 main.py foundations
 ```
 
-### CLI Options
+## Foundation Port Format
 
+Ports are specified as: `SIDE,POSITION,FLOOR,SHAPE_CODE`
+
+- **SIDE**: N (North), E (East), S (South), W (West)
+- **POSITION**: Port index (0-3 for first 1x1 unit, 4-7 for second, etc.)
+- **FLOOR**: 0-3
+- **SHAPE_CODE**: Shape code for the port
+
+### Examples
 ```
--i, --input       Input shape code (e.g., CuCuCuCu)
--t, --target      Target shape code (e.g., CrCrCrCr)
--f, --foundation  Foundation type (default: 1x1)
--p, --population  Population size (default: 50)
--g, --generations Number of generations (default: 100)
--m, --mutation-rate Mutation rate (default: 0.3)
+W,0,0,CuCuCuCu    # West side, position 0, floor 0, full circle
+E,1,2,Cu------    # East side, position 1, floor 2, NE corner only
 ```
 
 ## Shape Code Format
 
 Shapes are encoded as strings with layers separated by `:` (bottom to top).
 
-Each layer has 4 parts (quadrants) starting from top-right, going clockwise.
+Each layer has 4 parts (quadrants): NE, NW, SW, SE (starting top-right, going counter-clockwise).
 
 Each part is 2 characters: shape type + color.
 
@@ -81,24 +121,66 @@ Each part is 2 characters: shape type + color.
 - `y` - Yellow
 - `w` - White
 
-### Examples
-- `CuCuCuCu` - Four uncolored circles
-- `CrRgSbWy` - Circle(red), Square(green), Star(blue), Diamond(yellow)
-- `CuCuCuCu:RrRrRrRr` - Two layers: uncolored circles on bottom, red squares on top
+### Shape Code Examples
+```
+CuCuCuCu          # Full circle (all 4 quadrants)
+Cu------          # NE corner only
+--Cu----          # NW corner only
+----Cu--          # SW corner only
+------Cu          # SE corner only
+CrCgCbCy          # Circle with 4 different colors
+CuCuCuCu:RrRrRrRr # Two layers: circles bottom, red squares top
+```
+
+## Foundation Sizes
+
+| Name  | Units | Grid Size | Ports/Side |
+|-------|-------|-----------|------------|
+| 1x1   | 1x1   | 14x14     | 4          |
+| 2x1   | 2x1   | 34x14     | N=8, E=4   |
+| 2x2   | 2x2   | 34x34     | 8          |
+| 3x3   | 3x3   | 54x54     | 12         |
+| T     | 3x2   | 54x34     | N=12, E=8  |
+| L     | 2x2   | 34x34     | 8          |
+| Cross | 3x3   | 54x54     | 12         |
+
+Each 1x1 unit = 14x14 internal grid tiles. Additional units add 20 tiles per axis.
+
+## GUI Controls
+
+### Main Window
+- **Mode Dropdown**: Switch between Shape Transform and Foundation Evolution
+- **Start Evolution**: Begin the evolutionary search
+- **View Layout**: Open layout viewer (Foundation mode, after evolution)
+
+### Layout Viewer
+- **Arrow Keys / WASD**: Pan view
+- **+/- / Mouse Scroll**: Zoom in/out
+- **PgUp / PgDown**: Change floor
+- **Tab**: Cycle through solutions
+- **Esc**: Close viewer
+- **Click + Drag**: Pan view
 
 ## Project Structure
 
 ```
 shapez2-solver/
-├── main.py                    # CLI entry point
+├── main.py                    # Main entry point
+├── evolve_foundation.py       # Foundation evolution CLI
 ├── requirements.txt           # Dependencies
 ├── shapez2_solver/
 │   ├── shapes/               # Shape representation
 │   ├── operations/           # Shape operations
 │   ├── foundations/          # Platform definitions
 │   ├── simulator/            # Design simulation
-│   ├── evolution/            # Evolutionary algorithm
-│   ├── visualization/        # Graphics (pygame)
+│   ├── evolution/            # Evolutionary algorithms
+│   │   ├── algorithm.py      # Shape transform evolution
+│   │   ├── foundation_config.py    # Foundation specs
+│   │   └── foundation_evolution.py # Foundation evolution
+│   ├── visualization/        # Graphics
+│   │   ├── pygame_layout_viewer.py # Layout viewer
+│   │   └── ...
+│   ├── blueprint/            # Blueprint export
 │   └── ui/                   # GUI application
 └── tests/                    # Unit tests
 ```
