@@ -200,6 +200,12 @@ class CPSATSolverApp:
 
     def _solve(self):
         """Solve using CP-SAT."""
+        # Read current text from UI elements (in case events didn't fire)
+        if 'inputs_text' in self._ui_elements:
+            self.inputs_text = self._ui_elements['inputs_text'].get_text()
+        if 'outputs_text' in self._ui_elements:
+            self.outputs_text = self._ui_elements['outputs_text'].get_text()
+
         # Parse inputs
         inputs = []
         for line in self.inputs_text.split('\n'):
