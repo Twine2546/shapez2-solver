@@ -4,13 +4,18 @@ An evolutionary algorithm-based solver for Shapez 2 shape puzzles. Given an inpu
 
 ## Features
 
+- **CP-SAT Solver with Throughput Optimization**: Google OR-Tools constraint solver finds optimal solutions with maximum throughput
+  - Automatic machine selection (splitters vs cutters for 4x throughput improvement)
+  - Multi-tree routing for independent input streams
+  - Blueprint code export for direct import into Shapez 2
+  - Guaranteed routing or automatic foundation size scaling
 - **Shape Code Parser**: Full support for Shapez 2 shape codes
 - **All Operations**: Cutter, half destroyer, swapper, rotator, stacker, unstacker, painter, crystal generator, pin pusher
 - **Foundation Evolution**: Evolve building layouts on foundations with multiple input/output ports
 - **All Foundation Sizes**: Support for 1x1 through 3x3, plus irregular shapes (T, L, S, Cross)
-- **Evolutionary Algorithm**: Population-based search with configurable parameters
-- **Graphical Interface**: Integrated GUI with both Shape Transform and Foundation Evolution modes
-- **Layout Viewer**: Visual display of evolved foundation layouts with pan, zoom, and floor navigation
+- **Multiple Algorithms**: CP-SAT (optimal), Evolutionary, Simulated Annealing, Hybrid, Two-Phase
+- **Graphical Interface**: Integrated GUI with visual layout and blueprint export
+- **Layout Viewer**: Visual display of foundation layouts with pan, zoom, and floor navigation
 
 ## Installation
 
@@ -31,7 +36,23 @@ pip install -r requirements.txt
 
 ## Usage
 
-### GUI Mode (Recommended)
+### CP-SAT GUI (Recommended for Foundation Solving)
+
+```bash
+python3 run_cpsat_gui.py
+```
+
+The CP-SAT GUI provides:
+- **Optimal Solutions**: Uses Google OR-Tools constraint programming for guaranteed optimal/near-optimal solutions
+- **Maximum Throughput**: Automatically optimizes for highest items/min with fully upgraded equipment
+  - Uses splitters (180 items/min) for pure splitting = 4x faster than cutters!
+  - Uses cutters (45 items/min) only when shape transformation needed
+  - Creates independent trees for multiple inputs
+- **Blueprint Export**: Copy solution directly to clipboard or console for import into Shapez 2
+- **Visual Layout**: View the complete solution with buildings and routing
+- **Example**: 12 inputs → 48 outputs creates 36 cutters for 540 items/min total throughput
+
+### Full GUI Mode
 
 ```bash
 python3 main.py gui
@@ -39,9 +60,9 @@ python3 main.py gui
 python3 main.py
 ```
 
-The GUI has two modes:
+The full GUI has multiple modes and algorithms:
 - **Shape Transform**: Evolve a sequence of operations to transform one shape into another
-- **Foundation Evolution**: Evolve building layouts on foundations with specific input/output requirements
+- **Foundation Evolution**: Choose from CP-SAT, Evolutionary, Simulated Annealing, Hybrid, or Two-Phase algorithms
 
 ### Foundation Evolution CLI
 
