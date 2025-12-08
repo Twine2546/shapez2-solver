@@ -422,7 +422,7 @@ class SolverApp:
         )
         y += 25
 
-        algorithm_options = ["Evolutionary", "Simulated Annealing", "Hybrid"]
+        algorithm_options = ["Evolutionary", "Simulated Annealing", "Hybrid", "Two-Phase", "Two-Phase SA", "Two-Phase Hybrid"]
         self._ui_elements['algorithm_dropdown'] = pygame_gui.elements.UIDropDownMenu(
             options_list=algorithm_options,
             starting_option=self.foundation_algorithm,
@@ -611,6 +611,8 @@ class SolverApp:
                 self.foundation_solutions = self._run_simulated_annealing(evolution)
             elif self.foundation_algorithm == "Hybrid":
                 self.foundation_solutions = self._run_hybrid_algorithm(evolution)
+            elif self.foundation_algorithm.startswith("Two-Phase"):
+                self.foundation_solutions = self._run_two_phase(inputs, outputs)
             else:  # Default: Evolutionary
                 self.foundation_solutions = evolution.run(self.foundation_generations, verbose=True)
 
@@ -677,6 +679,47 @@ class SolverApp:
         best = hybrid.run(self.foundation_generations, verbose=True)
 
         return [best] if best else []
+
+    def _run_two_phase(self, inputs, outputs):
+        """Run two-phase evolution (system search + layout search)."""
+        from ..evolution.two_phase_evolution import create_two_phase_evolution
+
+        # Determine which sub-algorithm to use
+        if self.foundation_algorithm == "Two-Phase SA":
+            algorithm = 'sa'
+        elif self.foundation_algorithm == "Two-Phase Hybrid":
+            algorithm = 'hybrid'
+        else:
+            algorithm = 'evolution'
+
+        print(f"\nRunning Two-Phase Evolution ({algorithm})...")
+        print("Phase 1: System Search - Finding optimal machine topology")
+        print("Phase 2: Layout Search - Placing machines and routing belts")
+
+        # Create two-phase evolution
+        two_phase = create_two_phase_evolution(
+            foundation_type=self.foundation_type,
+            input_specs=inputs,
+            output_specs=outputs,
+        )
+
+        # Run with half generations for each phase
+        system_gens = self.foundation_generations // 2
+        layout_gens = self.foundation_generations // 2
+
+        result = two_phase.run(
+            system_generations=system_gens,
+            layout_generations=layout_gens,
+            algorithm=algorithm,
+            verbose=True
+        )
+
+        # Store the two-phase evolution for the viewer
+        self.foundation_evolution = two_phase
+
+        # Return the candidate for compatibility
+        candidate = result.to_candidate()
+        return [candidate] if candidate else []
 
     def _view_foundation_layout(self) -> None:
         """Open the layout viewer for foundation solutions."""
