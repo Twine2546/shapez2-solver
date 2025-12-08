@@ -347,6 +347,27 @@ Total Buildings: {len(self.solution.buildings)}
         import json
         from ..blueprint.building_types import BuildingType
 
+        # First pass: identify belt port pairs
+        # Belt ports need channel IDs to link senders with receivers
+        senders = []
+        receivers = []
+
+        for building in candidate.buildings:
+            bt = building.building_type
+            if bt == BuildingType.BELT_PORT_SENDER:
+                senders.append(building)
+            elif bt == BuildingType.BELT_PORT_RECEIVER:
+                receivers.append(building)
+
+        # Match senders with receivers based on proximity and floor
+        # Senders and receivers should be paired in the order they were created
+        belt_port_channels = {}  # building -> channel_id
+        for i, (sender, receiver) in enumerate(zip(senders, receivers)):
+            channel_id = i  # Channel IDs start at 0
+            belt_port_channels[id(sender)] = channel_id
+            belt_port_channels[id(receiver)] = channel_id
+
+        # Second pass: create building entries with channel IDs for belt ports
         buildings_data = []
         for building in candidate.buildings:
             # Get building properties
@@ -371,6 +392,13 @@ Total Buildings: {len(self.solution.buildings)}
                 "z": building.floor,
                 "r": rotation_val
             }
+
+            # Add channel ID for belt ports
+            if bt in [BuildingType.BELT_PORT_SENDER, BuildingType.BELT_PORT_RECEIVER]:
+                channel_id = belt_port_channels.get(id(building))
+                if channel_id is not None:
+                    building_dict["ch"] = channel_id  # Channel ID field
+
             buildings_data.append(building_dict)
 
         # Create blueprint structure
