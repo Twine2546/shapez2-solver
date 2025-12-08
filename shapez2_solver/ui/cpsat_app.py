@@ -378,6 +378,19 @@ Total Buildings: {len(self.solution.buildings)}
             # After returning from layout viewer, reinitialize the UI
             # This is needed because the display mode was changed
             print("Reinitializing UI after layout viewer...")
+
+            # Save current text values before recreating UI
+            saved_inputs = self.inputs_text
+            saved_outputs = self.outputs_text
+            saved_foundation = self.foundation_type
+
+            # Restore text values BEFORE creating UI
+            # This ensures the new text boxes are created with the correct initial text
+            self.inputs_text = saved_inputs
+            self.outputs_text = saved_outputs
+            self.foundation_type = saved_foundation
+
+            # Recreate UI manager and elements
             self._manager = pygame_gui.UIManager((self.width, self.height))
             self._ui_elements.clear()
             self._create_ui()

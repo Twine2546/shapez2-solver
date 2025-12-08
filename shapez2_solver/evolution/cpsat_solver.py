@@ -357,11 +357,30 @@ class CPSATFullSolver:
                 if needs_shape_transformation:
                     break
 
-        # If we need to split outputs (M inputs -> N outputs where N > M)
-        if num_outputs > num_inputs and num_inputs > 0:
-            # Calculate outputs per input (assuming even distribution)
-            outputs_per_input = num_outputs / num_inputs
+        # Analyze if we need splitting based on shape transformation
+        # Even if num_outputs == num_inputs, we might need splitting if:
+        # - Each input produces multiple different transformed outputs
+        # - E.g., 1 full shape → 4 corners (needs 1→4 splitting per input)
 
+        # Check if this is a "split each input into multiple outputs" scenario
+        splitting_needed = False
+        if needs_shape_transformation and num_inputs > 0 and num_outputs > 0:
+            # Count how many unique output shapes exist
+            unique_outputs = len(set(out.to_code() for out in self.output_shapes))
+
+            # If we have multiple unique outputs per input on average, we need splitting
+            if unique_outputs >= num_inputs:
+                # Assume each input should produce all unique outputs for maximum throughput
+                outputs_per_input = unique_outputs
+                splitting_needed = True
+
+        # Standard case: more outputs than inputs
+        if not splitting_needed and num_outputs > num_inputs and num_inputs > 0:
+            outputs_per_input = num_outputs / num_inputs
+            splitting_needed = True
+
+        # Create machines for splitting
+        if splitting_needed and num_inputs > 0:
             if needs_shape_transformation:
                 # Need cutters for shape transformation
                 # For maximum throughput, create independent trees for each input
