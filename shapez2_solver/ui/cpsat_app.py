@@ -294,13 +294,23 @@ Total Buildings: {len(self.solution.buildings)}
 
         try:
             from ..visualization.pygame_layout_viewer import show_layout_pygame
-            # Create a mock solver object with top_solutions for the viewer
-            class MockSolver:
-                def __init__(self, solution):
-                    self.top_solutions = [solution]
-                    self.config = None
+            from ..evolution.foundation_config import FOUNDATION_SPECS, FoundationConfig
 
-            mock = MockSolver(self.solution)
+            # Create a proper FoundationConfig for the viewer
+            spec = FOUNDATION_SPECS.get(self.foundation_type)
+            if spec is None:
+                print(f"Error: Unknown foundation type '{self.foundation_type}'")
+                return
+
+            config = FoundationConfig(spec)
+
+            # Create a mock solver object with top_solutions and config for the viewer
+            class MockSolver:
+                def __init__(self, solution, foundation_config):
+                    self.top_solutions = [solution]
+                    self.config = foundation_config
+
+            mock = MockSolver(self.solution, config)
             show_layout_pygame(mock)
         except Exception as e:
             print(f"Error viewing layout: {e}")
