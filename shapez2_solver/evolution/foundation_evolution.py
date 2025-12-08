@@ -70,6 +70,7 @@ class Candidate:
     connections: List[LogicalConnection] = field(default_factory=list)
     fitness: float = 0.0
     output_shapes: Dict[Tuple[Side, int, int], Optional[Shape]] = field(default_factory=dict)
+    routing_success: bool = False
 
     def copy(self) -> "Candidate":
         """Create a deep copy."""
@@ -78,6 +79,7 @@ class Candidate:
         new.connections = [copy.copy(c) for c in self.connections]
         new.fitness = self.fitness
         new.output_shapes = dict(self.output_shapes)
+        new.routing_success = self.routing_success
         return new
 
 

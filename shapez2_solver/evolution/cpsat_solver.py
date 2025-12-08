@@ -68,7 +68,7 @@ class CPSATSolution:
             ))
             building_id += 1
 
-        return Candidate(buildings=buildings, fitness=self.fitness)
+        return Candidate(buildings=buildings, fitness=self.fitness, routing_success=self.routing_success)
 
 
 def side_from_string(s: str) -> Side:
