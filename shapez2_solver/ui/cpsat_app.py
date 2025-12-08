@@ -167,7 +167,7 @@ class CPSATSolverApp:
         y_pos += 50
 
         # Shape code legend
-        legend_text = """<font face='monospace' size=2><b>Shape Code Legend:</b>
+        legend_text = """<font face='monospace' size=4><b>Shape Code Legend:</b>
 
 <b>Shape Types:</b> C=Circle R=Square S=Star W=Diamond c=Crystal P=Pin -=Empty
 <b>Colors:</b> u=Uncolored r=Red g=Green b=Blue c=Cyan m=Magenta y=Yellow w=White
