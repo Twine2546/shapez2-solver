@@ -374,6 +374,14 @@ Total Buildings: {len(self.solution.buildings)}
 
             mock = MockSolver(self.solution, config)
             show_layout_pygame(mock)
+
+            # After returning from layout viewer, reinitialize the UI
+            # This is needed because the display mode was changed
+            print("Reinitializing UI after layout viewer...")
+            self._manager = pygame_gui.UIManager((self.width, self.height))
+            self._ui_elements.clear()
+            self._create_ui()
+
         except Exception as e:
             print(f"Error viewing layout: {e}")
             import traceback
