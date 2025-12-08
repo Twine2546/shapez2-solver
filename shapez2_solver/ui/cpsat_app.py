@@ -114,6 +114,19 @@ class CPSATSolverApp:
         )
         y_pos += 40
 
+        # Timeout input
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(margin, y_pos, 120, 25),
+            text="Timeout (sec):",
+            manager=self._manager
+        )
+        self._ui_elements['timeout_input'] = pygame_gui.elements.UITextEntryLine(
+            relative_rect=pygame.Rect(margin + 120, y_pos, 80, 30),
+            manager=self._manager
+        )
+        self._ui_elements['timeout_input'].set_text(str(self.time_limit))
+        y_pos += 40
+
         # Inputs text
         pygame_gui.elements.UILabel(
             relative_rect=pygame.Rect(margin, y_pos, left_panel_width, 25),
@@ -256,6 +269,11 @@ Output: E,0,0,Su------
             self.inputs_text = event.text
         elif event.ui_element == self._ui_elements.get('outputs_text'):
             self.outputs_text = event.text
+        elif event.ui_element == self._ui_elements.get('timeout_input'):
+            try:
+                self.time_limit = int(event.text)
+            except ValueError:
+                pass  # Ignore invalid input, keep previous value
 
     def _handle_dropdown(self, event):
         """Handle dropdown changes."""
@@ -269,6 +287,11 @@ Output: E,0,0,Su------
             self.inputs_text = self._ui_elements['inputs_text'].get_text()
         if 'outputs_text' in self._ui_elements:
             self.outputs_text = self._ui_elements['outputs_text'].get_text()
+        if 'timeout_input' in self._ui_elements:
+            try:
+                self.time_limit = int(self._ui_elements['timeout_input'].get_text())
+            except ValueError:
+                self.time_limit = 60  # Default if invalid input
 
         # Parse inputs
         inputs = []
@@ -429,10 +452,11 @@ The solver placed {machines} machines but couldn't route all connections.
             # This is needed because the display mode was changed
             print("Reinitializing UI after layout viewer...")
 
-            # Save current text values before recreating UI
+            # Save current values before recreating UI
             saved_inputs = self.inputs_text
             saved_outputs = self.outputs_text
             saved_foundation = self.foundation_type
+            saved_timeout = self.time_limit
 
             # Properly dispose of old UI elements to avoid corruption
             for element in self._ui_elements.values():
@@ -448,6 +472,7 @@ The solver placed {machines} machines but couldn't route all connections.
             self.inputs_text = ""
             self.outputs_text = ""
             self.foundation_type = saved_foundation
+            self.time_limit = saved_timeout
 
             # Recreate UI manager and elements with empty text
             self._manager = pygame_gui.UIManager((self.width, self.height))
@@ -461,6 +486,10 @@ The solver placed {machines} machines but couldn't route all connections.
             if 'outputs_text' in self._ui_elements and self._ui_elements['outputs_text'] is not None:
                 self._ui_elements['outputs_text'].set_text(saved_outputs)
                 self.outputs_text = saved_outputs
+
+            if 'timeout_input' in self._ui_elements and self._ui_elements['timeout_input'] is not None:
+                self._ui_elements['timeout_input'].set_text(str(saved_timeout))
+                self.time_limit = saved_timeout
 
         except Exception as e:
             print(f"Error viewing layout: {e}")
