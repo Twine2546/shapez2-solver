@@ -121,11 +121,15 @@ class CPSATSolverApp:
             manager=self._manager
         )
         y_pos += 30
+        # Create empty to avoid pygame_gui multi-line initialization bug
         self._ui_elements['inputs_text'] = pygame_gui.elements.UITextEntryBox(
             relative_rect=pygame.Rect(margin, y_pos, left_panel_width, 100),
             manager=self._manager,
-            initial_text=self.inputs_text
+            initial_text=""
         )
+        # Set text after creation to avoid layout corruption
+        if self.inputs_text:
+            self._ui_elements['inputs_text'].set_text(self.inputs_text)
         y_pos += 110
 
         # Outputs text
@@ -135,11 +139,15 @@ class CPSATSolverApp:
             manager=self._manager
         )
         y_pos += 30
+        # Create empty to avoid pygame_gui multi-line initialization bug
         self._ui_elements['outputs_text'] = pygame_gui.elements.UITextEntryBox(
             relative_rect=pygame.Rect(margin, y_pos, left_panel_width, 150),
             manager=self._manager,
-            initial_text=self.outputs_text
+            initial_text=""
         )
+        # Set text after creation to avoid layout corruption
+        if self.outputs_text:
+            self._ui_elements['outputs_text'].set_text(self.outputs_text)
         y_pos += 160
 
         # Solve button
