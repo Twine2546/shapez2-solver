@@ -970,7 +970,7 @@ class FoundationEvolution:
 
     def _visualize_solution(self, candidate: Candidate) -> None:
         """Visualize a solution showing each floor."""
-        print(f"\nLayout Visualization:")
+        print(f"\nLayout Visualization (simplified - each cell = 1x1 unit):")
 
         # Symbol mapping
         symbols = {
@@ -984,6 +984,8 @@ class FoundationEvolution:
             BuildingType.STACKER: 'S',
             BuildingType.UNSTACKER: 'U',
             BuildingType.PIN_PUSHER: 'P',
+            BuildingType.PAINTER: 'P',
+            BuildingType.TRASH: 'T',
             BuildingType.BELT_FORWARD: '→',
             BuildingType.BELT_LEFT: '↰',
             BuildingType.BELT_RIGHT: '↱',
@@ -1003,7 +1005,12 @@ class FoundationEvolution:
 
             print(f"\n  Floor {floor}:")
 
-            # Create simplified grid (show 1x1 units, not full internal grid)
+            # Create simplified grid
+            # Row 0: North ports (external)
+            # Row 1: empty/margin
+            # Rows 2 to 2+units_y-1: Foundation
+            # Row 2+units_y: empty/margin
+            # Row 2+units_y+1: South ports (external)
             width = self.config.spec.units_x + 4
             height = self.config.spec.units_y + 4
             grid = [['·' for _ in range(width)] for _ in range(height)]
@@ -1017,48 +1024,63 @@ class FoundationEvolution:
                             continue
                     grid[uy + 2][ux + 2] = '░'
 
-            # Draw ports
+            # Draw input ports (external to foundation)
             for side, pos, f, shape_code in self.config.get_all_inputs():
                 if f == floor:
                     px, py = self._get_port_grid_pos(side, pos)
                     if 0 <= py < height and 0 <= px < width:
                         grid[py][px] = 'I'
 
+            # Draw output ports (external to foundation)
             for side, pos, f, shape_code in self.config.get_all_outputs():
                 if f == floor:
                     px, py = self._get_port_grid_pos(side, pos)
                     if 0 <= py < height and 0 <= px < width:
                         grid[py][px] = 'O'
 
-            # Draw buildings
+            # Draw buildings (scaled down - building position / 14 gives unit)
             for building in floor_buildings:
-                x = building.x + 2
-                y = building.y + 2
+                # Convert from internal grid position to unit position
+                unit_x = building.x // 14  # Which 1x1 unit
+                unit_y = building.y // 14
+                x = unit_x + 2
+                y = unit_y + 2
                 symbol = symbols.get(building.building_type, '?')
                 if 0 <= y < height and 0 <= x < width:
-                    grid[y][x] = symbol
+                    if grid[y][x] == '░':  # Only draw on foundation
+                        grid[y][x] = symbol
 
-            # Print grid
+            # Print grid with legend
             print("    " + "".join(str(i % 10) for i in range(width)))
             for row_idx, row in enumerate(grid):
                 print(f"  {row_idx:2d} {''.join(row)}")
+
+            print(f"\n  Legend: I=Input O=Output ░=Foundation")
+            print(f"  Ports are EXTERNAL (on edges, 4 per side per 1x1 unit)")
 
     def _get_port_grid_pos(self, side: Side, pos: int) -> Tuple[int, int]:
         """Get simplified grid position for a port (for visualization).
 
         In the simplified view, each 1x1 unit is one cell.
-        Ports are shown at the edge of the unit they belong to.
+        Ports are EXTERNAL (outside the 14x14 grid), on the edge.
+        4 ports per 1x1 unit on each side, centered.
+        pos // 4 gives which unit the port belongs to.
+
+        Grid layout:
+          Col: 0=West ports, 1=margin, 2 to 2+units_x-1=foundation, units_x+2=margin, units_x+3=East ports
+          Row: 0=North ports, 1=margin, 2 to 2+units_y-1=foundation, units_y+2=margin, units_y+3=South ports
         """
         unit_idx = pos // 4  # Which 1x1 unit this port belongs to
 
+        # Ports are OUTSIDE the foundation (on the edge, row/col 0 or max)
         if side == Side.NORTH:
-            return (unit_idx + 2, 1)
+            return (unit_idx + 2, 0)  # Top row, aligned with foundation unit
         elif side == Side.SOUTH:
-            return (unit_idx + 2, self.config.spec.units_y + 2)
+            return (unit_idx + 2, self.config.spec.units_y + 3)  # Bottom row
         elif side == Side.WEST:
-            return (1, unit_idx + 2)
+            return (0, unit_idx + 2)  # Left column
         elif side == Side.EAST:
-            return (self.config.spec.units_x + 2, unit_idx + 2)
+            return (self.config.spec.units_x + 3, unit_idx + 2)  # Right column
         return (0, 0)
 
     def export_blueprint(self, candidate: Candidate) -> str:
