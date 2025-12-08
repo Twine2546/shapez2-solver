@@ -267,6 +267,9 @@ class PygameLayoutViewer:
         # Draw grid
         self._draw_grid()
 
+        # Draw port highlights on foundation edge
+        self._draw_port_highlights()
+
         # Draw ports
         self._draw_ports()
 
@@ -322,6 +325,72 @@ class PygameLayoutViewer:
             if y <= grid_h:
                 y1 = oy + y * cell
                 pygame.draw.line(self.screen, (100, 100, 120), (ox, y1), (ox + grid_w * cell, y1), 2)
+
+    def _draw_port_highlights(self):
+        """Draw shaded highlights on foundation edge tiles where ports connect."""
+        floor = self.current_floor
+        cell = self.cell_size
+        ox, oy = self.view_offset_x, self.view_offset_y
+        grid_w = self.config.spec.grid_width
+        grid_h = self.config.spec.grid_height
+
+        # Create semi-transparent surface for highlights
+        highlight_surface = pygame.Surface((cell, cell))
+        highlight_surface.set_alpha(100)  # Semi-transparent
+
+        # Draw input port highlights (green)
+        for side, pos, f, shape_code in self.config.get_all_inputs():
+            if f != floor:
+                continue
+            gx, gy = self.config.spec.get_port_grid_position(side, pos)
+
+            # Get the edge tile position on the foundation
+            if side == Side.NORTH:
+                edge_x, edge_y = gx, 0
+            elif side == Side.SOUTH:
+                edge_x, edge_y = gx, grid_h - 1
+            elif side == Side.WEST:
+                edge_x, edge_y = 0, gy
+            elif side == Side.EAST:
+                edge_x, edge_y = grid_w - 1, gy
+            else:
+                continue
+
+            x1 = ox + edge_x * cell
+            y1 = oy + edge_y * cell
+
+            # Draw green highlight for input
+            highlight_surface.fill((0, 200, 0))
+            self.screen.blit(highlight_surface, (x1, y1))
+            # Draw border
+            pygame.draw.rect(self.screen, (0, 255, 0), (x1, y1, cell, cell), 2)
+
+        # Draw output port highlights (red)
+        for side, pos, f, shape_code in self.config.get_all_outputs():
+            if f != floor:
+                continue
+            gx, gy = self.config.spec.get_port_grid_position(side, pos)
+
+            # Get the edge tile position on the foundation
+            if side == Side.NORTH:
+                edge_x, edge_y = gx, 0
+            elif side == Side.SOUTH:
+                edge_x, edge_y = gx, grid_h - 1
+            elif side == Side.WEST:
+                edge_x, edge_y = 0, gy
+            elif side == Side.EAST:
+                edge_x, edge_y = grid_w - 1, gy
+            else:
+                continue
+
+            x1 = ox + edge_x * cell
+            y1 = oy + edge_y * cell
+
+            # Draw red highlight for output
+            highlight_surface.fill((200, 0, 0))
+            self.screen.blit(highlight_surface, (x1, y1))
+            # Draw border
+            pygame.draw.rect(self.screen, (255, 0, 0), (x1, y1, cell, cell), 2)
 
     def _draw_ports(self):
         """Draw input/output ports."""
