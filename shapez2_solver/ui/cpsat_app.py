@@ -384,16 +384,33 @@ Total Buildings: {len(self.solution.buildings)}
             saved_outputs = self.outputs_text
             saved_foundation = self.foundation_type
 
-            # Restore text values BEFORE creating UI
-            # This ensures the new text boxes are created with the correct initial text
-            self.inputs_text = saved_inputs
-            self.outputs_text = saved_outputs
+            # Properly dispose of old UI elements to avoid corruption
+            for element in self._ui_elements.values():
+                if element is not None:
+                    element.kill()
+            self._ui_elements.clear()
+
+            # Clear the old manager
+            if self._manager is not None:
+                self._manager.clear_and_reset()
+
+            # Temporarily clear text values so new elements start fresh
+            self.inputs_text = ""
+            self.outputs_text = ""
             self.foundation_type = saved_foundation
 
-            # Recreate UI manager and elements
+            # Recreate UI manager and elements with empty text
             self._manager = pygame_gui.UIManager((self.width, self.height))
-            self._ui_elements.clear()
             self._create_ui()
+
+            # Now set the text AFTER elements are created to avoid internal state issues
+            if 'inputs_text' in self._ui_elements and self._ui_elements['inputs_text'] is not None:
+                self._ui_elements['inputs_text'].set_text(saved_inputs)
+                self.inputs_text = saved_inputs
+
+            if 'outputs_text' in self._ui_elements and self._ui_elements['outputs_text'] is not None:
+                self._ui_elements['outputs_text'].set_text(saved_outputs)
+                self.outputs_text = saved_outputs
 
         except Exception as e:
             print(f"Error viewing layout: {e}")
