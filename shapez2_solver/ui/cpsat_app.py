@@ -14,7 +14,6 @@ except ImportError as e:
     _PYGAME_ERROR = str(e)
 
 from ..evolution.cpsat_solver import solve_with_cpsat
-from ..blueprint.exporter import export_to_blueprint
 
 
 class CPSATSolverApp:
@@ -241,9 +240,9 @@ class CPSATSolverApp:
             if self.solution:
                 # Export to blueprint
                 try:
-                    self.blueprint_code = export_to_blueprint(self.solution)
-                except:
-                    self.blueprint_code = "(Blueprint export failed)"
+                    self.blueprint_code = self._export_candidate_to_blueprint(self.solution)
+                except Exception as e:
+                    self.blueprint_code = f"(Blueprint export failed: {e})"
 
                 # Display results
                 machines = len([b for b in self.solution.buildings
@@ -332,6 +331,46 @@ Total Buildings: {len(self.solution.buildings)}
             print("="*70)
             print("\nNote: Install 'pyperclip' for automatic clipboard copying:")
             print("  pip install pyperclip")
+
+    def _export_candidate_to_blueprint(self, candidate):
+        """Export a Candidate to blueprint JSON format."""
+        import json
+        from ..blueprint.building_types import BuildingType
+
+        buildings_data = []
+        for building in candidate.buildings:
+            # Get building properties
+            bt = building.building_type
+
+            # Convert BuildingType enum to internal name
+            if hasattr(bt, 'value'):
+                type_name = bt.value
+            else:
+                type_name = str(bt)
+
+            # Get rotation value
+            if hasattr(building.rotation, 'value'):
+                rotation_val = building.rotation.value
+            else:
+                rotation_val = 0
+
+            building_dict = {
+                "type": type_name,
+                "x": building.x,
+                "y": building.y,
+                "z": building.floor,
+                "r": rotation_val
+            }
+            buildings_data.append(building_dict)
+
+        # Create blueprint structure
+        blueprint = {
+            "buildings": buildings_data,
+            "version": 1
+        }
+
+        # Convert to JSON string
+        return json.dumps(blueprint, indent=2)
 
     def _show_results(self, text):
         """Update results panel."""
