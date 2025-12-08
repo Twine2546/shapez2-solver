@@ -313,22 +313,67 @@ Output: E,0,0,Su------
             self._show_results("ERROR: Need at least one input and one output")
             return
 
-        # Solve
+        # Foundation size progression (smallest to largest)
+        foundation_progression = ["1x1", "2x1", "1x2", "2x2", "3x2", "2x3", "3x3"]
+
+        # Find starting index based on current foundation
+        try:
+            start_idx = foundation_progression.index(self.foundation_type)
+        except ValueError:
+            start_idx = 0
+
+        # Try each foundation size until success or run out of sizes
         print("\n" + "="*70)
         print("SOLVING WITH CP-SAT (Maximum Throughput Optimization)")
         print("="*70)
-        print(f"Foundation: {self.foundation_type}")
+        print(f"Starting foundation: {self.foundation_type}")
         print(f"Inputs: {len(inputs)}, Outputs: {len(outputs)}")
+        print(f"Auto-scaling enabled: Will try larger foundations if routing fails")
+        print("="*70)
+
+        self.solution = None
+        tried_foundations = []
 
         try:
-            self.solution = solve_with_cpsat(
-                foundation_type=self.foundation_type,
-                input_specs=inputs,
-                output_specs=outputs,
-                max_machines=self.max_machines,
-                time_limit=self.time_limit,
-                verbose=True
-            )
+            for foundation_idx in range(start_idx, len(foundation_progression)):
+                current_foundation = foundation_progression[foundation_idx]
+                tried_foundations.append(current_foundation)
+
+                print(f"\n{'='*70}")
+                print(f"TRYING FOUNDATION: {current_foundation}")
+                print(f"{'='*70}")
+
+                solution = solve_with_cpsat(
+                    foundation_type=current_foundation,
+                    input_specs=inputs,
+                    output_specs=outputs,
+                    max_machines=self.max_machines,
+                    time_limit=self.time_limit,
+                    verbose=True
+                )
+
+                if solution and hasattr(solution, 'routing_success') and solution.routing_success:
+                    # Success! Use this foundation
+                    self.solution = solution
+                    self.foundation_type = current_foundation
+
+                    # Update the dropdown to show the successful foundation
+                    if 'foundation_dropdown' in self._ui_elements:
+                        self._ui_elements['foundation_dropdown'].selected_option = current_foundation
+
+                    print(f"\n{'='*70}")
+                    print(f"✓ SUCCESS with {current_foundation} foundation!")
+                    print(f"Tried {len(tried_foundations)} foundation(s): {', '.join(tried_foundations)}")
+                    print(f"{'='*70}")
+                    break
+                else:
+                    print(f"\n⚠ {current_foundation} failed - trying next size...")
+
+            if not self.solution or not self.solution.routing_success:
+                print(f"\n{'='*70}")
+                print(f"✗ All foundations exhausted without success")
+                print(f"Tried: {', '.join(tried_foundations)}")
+                print(f"{'='*70}")
 
             if self.solution:
                 # Display results
@@ -346,6 +391,9 @@ Output: E,0,0,Su------
                         self.blueprint_code = f"(Blueprint export failed: {e})"
 
                     result_text = f"""<font face='monospace' size=3><b>✓ SOLUTION FOUND!</b>
+
+<b>Foundation:</b> {self.foundation_type}
+{f"<b>Auto-scaled:</b> Tried {len(tried_foundations)} foundation(s): {', '.join(tried_foundations)}" if len(tried_foundations) > 1 else ""}
 
 Fitness: {self.solution.fitness:.1f}
 Machines: {machines}
@@ -366,9 +414,9 @@ Total Buildings: {len(self.solution.buildings)}
 • Multiple inputs create independent processing trees
 • Maximizes throughput for fully upgraded equipment
 </font>"""
-                    print("\n✓ Solution found! Click 'View Layout' to visualize.")
+                    print(f"\n✓ Solution found on {self.foundation_type}! Click 'View Layout' to visualize.")
                 else:
-                    # Routing failed - show error with suggestions
+                    # Routing failed on all foundations
                     grid_sizes = {
                         "1x1": "14×14 (196 tiles)",
                         "2x1": "34×14 (476 tiles)",
@@ -378,36 +426,33 @@ Total Buildings: {len(self.solution.buildings)}
                         "2x3": "34×54 (1,836 tiles)",
                         "3x3": "54×54 (2,916 tiles)"
                     }
-                    current_grid = grid_sizes.get(self.foundation_type, "unknown")
 
-                    result_text = f"""<font face='monospace' size=3><b>⚠ ROUTING FAILED</b>
+                    result_text = f"""<font face='monospace' size=3><b>⚠ ALL FOUNDATIONS EXHAUSTED</b>
 
-The solver placed {machines} machines but couldn't route all connections.
+The solver tried {len(tried_foundations)} foundation size(s) but couldn't complete routing.
 
-<b>Current Foundation:</b> {self.foundation_type} ({current_grid})
-<b>Machines Needed:</b> {machines}
-<b>Connections Made:</b> {belts} belts (incomplete)
+<b>Foundations tried:</b> {', '.join(tried_foundations)}
+<b>Machines needed:</b> {machines}
+<b>Best attempt:</b> {belts} belts placed (incomplete routing)
 
-<b>Problem:</b> Not enough space to route all connections between:
-• {len([p for p in self.solution.buildings if 'INPUT' in str(p)])} inputs
-• {machines} processing machines
-• {len([p for p in self.solution.buildings if 'OUTPUT' in str(p)])} outputs
+<b>Problem:</b> The task is too complex even for the largest foundation (3x3).
 
 <b>Solutions:</b>
-1. <b>Use a larger foundation:</b>
-   • 2x2: 34×34 grid (5.9× more space)
-   • 3x3: 54×54 grid (14.9× more space)
+1. <b>Increase timeout:</b> Try 120-300 seconds for more solver iterations
 
 2. <b>Reduce complexity:</b>
    • Fewer outputs per input
-   • Simpler transformations
+   • Simpler shape transformations
+   • Use fewer input streams
 
 3. <b>Use multiple foundations:</b>
-   • Split the task across multiple smaller foundations
+   • Split the task across 2-3 separate foundations
+   • Process in stages (e.g., split first, then transform)
 
-<b>Try changing the foundation size and solving again!</b>
+4. <b>Manual design:</b>
+   • This task may require custom hand-crafted layout
 </font>"""
-                    print("\n⚠ Routing failed - foundation too small. Try a larger foundation.")
+                    print(f"\n⚠ All foundations tried ({', '.join(tried_foundations)}) - none succeeded.")
 
                 self._show_results(result_text)
             else:
