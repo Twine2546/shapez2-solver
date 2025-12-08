@@ -244,11 +244,24 @@ class CPSATFullSolver:
 
             # Calculate fitness for this solution
             fitness = 0.0
+
+            # Throughput score (0-50 points based on throughput)
             if machines:
-                fitness += 30.0  # Base for having machines
+                throughput_per_output = self._calculate_throughput(machines, verbose and iteration == 0)
+
+                # For N outputs, theoretical max is 180/N items/min (perfect splitting)
+                # But with cutters, max is limited by root machine max_rate / N
+                # Scale: 0 items/min = 0 points, theoretical_max = 50 points
+                num_outputs = len(self.output_positions)
+                theoretical_max = 180.0 / max(1, num_outputs)  # Perfect splitting
+                throughput_ratio = throughput_per_output / theoretical_max if theoretical_max > 0 else 0
+                fitness += min(50.0, throughput_ratio * 50.0)
+
+            # Routing success (hard constraint) - 50 points
             if routing_success:
-                fitness += 50.0  # Major bonus for successful routing
-                # Bonus for compactness (fewer belts = better)
+                fitness += 50.0
+
+                # Compactness bonus (fewer belts = better) - up to 20 points
                 fitness += max(0, 20.0 - len(belts) * 0.5)
 
             # Store solution
@@ -300,6 +313,12 @@ class CPSATFullSolver:
             print(f"Fitness: {best_solution.fitness:.1f}")
             print(f"Machines: {len(best_solution.machines)}")
             print(f"Belts: {len(best_solution.belts)}")
+
+            # Show throughput analysis
+            if best_solution.machines:
+                throughput = self._calculate_throughput(best_solution.machines, verbose=False)
+                print(f"Throughput per output: {throughput:.2f} items/min")
+
             print(f"{'='*50}")
 
         return best_solution
@@ -307,6 +326,10 @@ class CPSATFullSolver:
     def _determine_machines(self) -> List[BuildingType]:
         """
         Determine which machines are needed based on input/output shapes.
+
+        For throughput optimization:
+        - Use splitters (180 items/min) for pure splitting (no shape change)
+        - Use cutters (45 items/min) only when shape transformation is needed
 
         This is a heuristic approach - a full CP-SAT encoding would model
         the shape transformations as constraints.
@@ -319,22 +342,55 @@ class CPSATFullSolver:
         num_outputs = len(self.output_shapes)
         num_inputs = len(self.input_shapes)
 
-        # If we have more outputs than inputs, we need cutters to split
-        if num_outputs > num_inputs:
-            # Cutters form a binary tree: 1 input -> 2 -> 4 -> 8 outputs
-            # For 4 outputs, we need: 1 root cutter + 2 leaf cutters = 3 total
-            # For N outputs, we need (N-1) cutters in a complete binary tree
-            # Simplified: for power-of-2 outputs, we need (outputs - 1) cutters
-            # For 1 -> 4: need 3 cutters (1 parent, 2 children)
-            # For 1 -> 2: need 1 cutter
-            ratio = num_outputs / num_inputs
-            depth = int(math.ceil(math.log2(ratio)))  # Tree depth
-            num_cutters = (2 ** depth) - 1  # Total nodes in complete binary tree
+        # Check if shape transformation is needed
+        needs_shape_transformation = False
+        if num_inputs > 0 and num_outputs > 0:
+            # For simplicity, check if any input differs from any output
+            for inp in self.input_shapes:
+                for out in self.output_shapes:
+                    if inp.to_code() != out.to_code():
+                        inp_parts = self._count_parts(inp)
+                        out_parts = self._count_parts(out)
+                        if inp_parts != out_parts:
+                            needs_shape_transformation = True
+                            break
+                if needs_shape_transformation:
+                    break
 
-            for _ in range(num_cutters):
-                machines.append(BuildingType.CUTTER)
+        # If we need to split outputs (M inputs -> N outputs where N > M)
+        if num_outputs > num_inputs and num_inputs > 0:
+            # Calculate outputs per input (assuming even distribution)
+            outputs_per_input = num_outputs / num_inputs
 
-        # Check if input and output shapes differ (need transformation)
+            if needs_shape_transformation:
+                # Need cutters for shape transformation
+                # For maximum throughput, create independent trees for each input
+                # Each tree: 1 input -> K outputs requires (2^depth - 1) cutters
+                # Total: num_inputs × cutters_per_tree
+
+                # Calculate cutters needed per input tree
+                depth = int(math.ceil(math.log2(outputs_per_input)))  # Tree depth for one input
+                cutters_per_tree = (2 ** depth) - 1  # Cutters in one tree
+
+                # Create independent trees for each input (maximizes throughput)
+                total_cutters = num_inputs * cutters_per_tree
+
+                for _ in range(total_cutters):
+                    machines.append(BuildingType.CUTTER)
+            else:
+                # Just splitting, no transformation - use splitters for better throughput
+                # Splitters: 180 items/min (full belt speed) vs Cutters: 45 items/min
+                # Create independent splitter trees for each input
+
+                depth = int(math.ceil(math.log2(outputs_per_input)))
+                splitters_per_tree = (2 ** depth) - 1
+
+                total_splitters = num_inputs * splitters_per_tree
+
+                for _ in range(total_splitters):
+                    machines.append(BuildingType.SPLITTER)
+
+        # Check for additional transformations on individual outputs
         for i, (inp, out) in enumerate(zip(self.input_shapes, self.output_shapes)):
             if inp.to_code() != out.to_code():
                 inp_parts = self._count_parts(inp)
@@ -346,9 +402,9 @@ class CPSATFullSolver:
                         machines.append(BuildingType.CUTTER)
                 elif out_parts > inp_parts:
                     # Need to stack
-                    machines.append(BuildingType.STACKER)
+                    machines.append(BuildingType.STACKER_BENT)  # Use bent for better throughput (45 vs 30)
 
-        # Default: at least one cutter for splitting operations
+        # Default: at least one machine for basic operations
         if not machines:
             machines.append(BuildingType.CUTTER)
 
@@ -639,67 +695,67 @@ class CPSATFullSolver:
 
             all_machine_outputs.append(outputs_for_machine)
 
-        # Route 1: Input port to first machine
-        if machines and self.input_positions:
-            inp_x, inp_y, inp_floor, inp_side = self.input_positions[0]
-
-            # Start position is just inside the grid from the port
-            if inp_side == Side.WEST:
-                start = (1, inp_y, inp_floor)
-            elif inp_side == Side.EAST:
-                start = (self.grid_width - 2, inp_y, inp_floor)
-            elif inp_side == Side.NORTH:
-                start = (inp_x, 1, inp_floor)
-            else:  # SOUTH
-                start = (inp_x, self.grid_height - 2, inp_floor)
-
-            goal = machine_inputs[0]
-
-            if verbose:
-                print(f"  Routing input port ({inp_x},{inp_y}) -> machine 0 input {goal}")
-
-            path = router.find_path(start, goal, allow_belt_ports=True)
-            if path:
-                belts = router.path_to_belts(path)
-                all_belts.extend(belts)
-                for bx, by, bf, _, _ in belts:
-                    router.add_occupied(bx, by, bf)
-                if verbose:
-                    print(f"    Success: {len(belts)} belts")
-            else:
-                all_success = False
-                if verbose:
-                    print(f"    FAILED to route")
-
-        # Route 2 & 3: Build tree topology for cutters
-        # For splitting 1 -> 4, we have 3 cutters in a tree:
-        #   Machine 0 (root) → outputs to Machines 1 and 2
-        #   Machine 1 (left child) → outputs to ports 0, 1
-        #   Machine 2 (right child) → outputs to ports 2, 3
+        # Determine tree structure
+        # With N inputs, M outputs, and K machines:
+        # - We have N independent trees (one per input)
+        # - Each tree has K/N machines
+        # - Each tree serves M/N outputs
 
         num_machines = len(machines)
+        num_inputs = len(self.input_positions)
         num_outputs_needed = len(self.output_positions)
 
-        if num_machines == 1:
-            # Single machine: route its outputs directly to output ports
-            for out_idx, (out_x, out_y, out_floor, out_side) in enumerate(self.output_positions):
-                machine_outputs_list = all_machine_outputs[0]
-                if out_idx < len(machine_outputs_list):
-                    start = machine_outputs_list[out_idx]
-                else:
-                    start = machine_outputs_list[-1]
+        if num_inputs == 0 or num_machines == 0:
+            return all_belts, all_success
 
-                if out_side == Side.EAST:
-                    goal = (self.grid_width - 2, out_y, out_floor)
-                elif out_side == Side.WEST:
-                    goal = (1, out_y, out_floor)
-                elif out_side == Side.SOUTH:
-                    goal = (out_x, self.grid_height - 2, out_floor)
-                else:  # NORTH
-                    goal = (out_x, 1, out_floor)
+        # Calculate outputs per input (even distribution)
+        outputs_per_input = num_outputs_needed / num_inputs if num_inputs > 0 else num_outputs_needed
+        machines_per_input = num_machines / num_inputs if num_inputs > 0 else num_machines
+
+        if verbose:
+            print(f"\n  Multi-tree routing:")
+            print(f"    Inputs: {num_inputs}")
+            print(f"    Machines: {num_machines} ({machines_per_input:.1f} per input)")
+            print(f"    Outputs: {num_outputs_needed} ({outputs_per_input:.1f} per input)\n")
+
+        # Route each independent tree
+        for tree_idx in range(num_inputs):
+            # Determine machine range for this tree
+            machine_start = int(tree_idx * machines_per_input)
+            machine_end = int((tree_idx + 1) * machines_per_input)
+
+            # Determine output range for this tree
+            output_start = int(tree_idx * outputs_per_input)
+            output_end = int((tree_idx + 1) * outputs_per_input)
+
+            tree_machines = list(range(machine_start, min(machine_end, num_machines)))
+            tree_outputs = list(range(output_start, min(output_end, num_outputs_needed)))
+
+            if not tree_machines or not tree_outputs:
+                continue
+
+            if verbose:
+                print(f"  Tree {tree_idx}: Machines {machine_start}-{machine_end-1}, Outputs {output_start}-{output_end-1}")
+
+            # Route input to root machine of this tree
+            if tree_idx < len(self.input_positions):
+                inp_x, inp_y, inp_floor, inp_side = self.input_positions[tree_idx]
+
+                # Start position inside grid from port
+                if inp_side == Side.WEST:
+                    start = (1, inp_y, inp_floor)
+                elif inp_side == Side.EAST:
+                    start = (self.grid_width - 2, inp_y, inp_floor)
+                elif inp_side == Side.NORTH:
+                    start = (inp_x, 1, inp_floor)
+                else:  # SOUTH
+                    start = (inp_x, self.grid_height - 2, inp_floor)
+
+                root_machine = tree_machines[0]
+                goal = machine_inputs[root_machine]
 
                 if verbose:
-                    print(f"  Routing machine 0 output[{out_idx}] {start} -> output port {out_idx}")
+                    print(f"    Input {tree_idx} -> Machine {root_machine}")
 
                 path = router.find_path(start, goal, allow_belt_ports=True)
                 if path:
@@ -708,56 +764,24 @@ class CPSATFullSolver:
                     for bx, by, bf, _, _ in belts:
                         router.add_occupied(bx, by, bf)
                     if verbose:
-                        print(f"    Success: {len(belts)} belts")
+                        print(f"      Success: {len(belts)} belts")
                 else:
                     all_success = False
                     if verbose:
-                        print(f"    FAILED to route")
+                        print(f"      FAILED")
 
-        elif num_machines >= 2:
-            # Tree topology: machine 0 is root, others are children
-            # Machine 0 output[0] → Machine 1 input
-            # Machine 0 output[1] → Machine 2 input (if exists)
-            root_outputs = all_machine_outputs[0]
+            # Route tree internals and outputs
+            if len(tree_machines) == 1:
+                # Single machine in tree: route outputs directly to this tree's output ports
+                machine_idx = tree_machines[0]
+                machine_outputs_list = all_machine_outputs[machine_idx]
 
-            # Route root to children
-            for child_idx in range(1, min(len(root_outputs) + 1, num_machines)):
-                output_idx = child_idx - 1
-                if output_idx < len(root_outputs):
-                    start = root_outputs[output_idx]
-                    goal = machine_inputs[child_idx]
-
-                    if verbose:
-                        print(f"  Routing machine 0 output[{output_idx}] {start} -> machine {child_idx} input {goal}")
-
-                    path = router.find_path(start, goal, allow_belt_ports=True)
-                    if path:
-                        belts = router.path_to_belts(path)
-                        all_belts.extend(belts)
-                        for bx, by, bf, _, _ in belts:
-                            router.add_occupied(bx, by, bf)
-                        if verbose:
-                            print(f"    Success: {len(belts)} belts")
-                    else:
-                        all_success = False
-                        if verbose:
-                            print(f"    FAILED to route")
-
-            # Route leaf machines to output ports
-            # Machine 1 outputs → ports 0, 1
-            # Machine 2 outputs → ports 2, 3
-            outputs_per_leaf = num_outputs_needed // max(1, num_machines - 1)
-
-            for leaf_idx in range(1, num_machines):
-                leaf_outputs = all_machine_outputs[leaf_idx]
-                port_start_idx = (leaf_idx - 1) * outputs_per_leaf
-
-                for local_out_idx, leaf_output_pos in enumerate(leaf_outputs):
-                    port_idx = port_start_idx + local_out_idx
-                    if port_idx >= len(self.output_positions):
+                for local_out_idx, output_idx in enumerate(tree_outputs):
+                    if local_out_idx >= len(machine_outputs_list):
                         break
 
-                    out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
+                    start = machine_outputs_list[local_out_idx]
+                    out_x, out_y, out_floor, out_side = self.output_positions[output_idx]
 
                     if out_side == Side.EAST:
                         goal = (self.grid_width - 2, out_y, out_floor)
@@ -769,22 +793,184 @@ class CPSATFullSolver:
                         goal = (out_x, 1, out_floor)
 
                     if verbose:
-                        print(f"  Routing machine {leaf_idx} output[{local_out_idx}] {leaf_output_pos} -> output port {port_idx}")
+                        print(f"    Machine {machine_idx} -> Output {output_idx}")
 
-                    path = router.find_path(leaf_output_pos, goal, allow_belt_ports=True)
+                    path = router.find_path(start, goal, allow_belt_ports=True)
                     if path:
                         belts = router.path_to_belts(path)
                         all_belts.extend(belts)
                         for bx, by, bf, _, _ in belts:
                             router.add_occupied(bx, by, bf)
                         if verbose:
-                            print(f"    Success: {len(belts)} belts")
+                            print(f"      Success: {len(belts)} belts")
                     else:
                         all_success = False
                         if verbose:
-                            print(f"    FAILED to route")
+                            print(f"      FAILED")
+
+            elif len(tree_machines) >= 2:
+                # Multiple machines: binary tree topology
+                # Root machine (tree_machines[0]) → children (tree_machines[1:])
+                root_machine = tree_machines[0]
+                root_outputs = all_machine_outputs[root_machine]
+
+                # Route root to child machines
+                for i, child_idx in enumerate(tree_machines[1:], start=1):
+                    if i - 1 >= len(root_outputs):
+                        break
+
+                    start = root_outputs[i - 1]
+                    goal = machine_inputs[child_idx]
+
+                    if verbose:
+                        print(f"    Machine {root_machine} -> Machine {child_idx}")
+
+                    path = router.find_path(start, goal, allow_belt_ports=True)
+                    if path:
+                        belts = router.path_to_belts(path)
+                        all_belts.extend(belts)
+                        for bx, by, bf, _, _ in belts:
+                            router.add_occupied(bx, by, bf)
+                        if verbose:
+                            print(f"      Success: {len(belts)} belts")
+                    else:
+                        all_success = False
+                        if verbose:
+                            print(f"      FAILED")
+
+                # Route child machines to output ports
+                # Distribute outputs evenly among children
+                outputs_per_child = len(tree_outputs) // max(1, len(tree_machines) - 1)
+
+                for child_local_idx, child_machine_idx in enumerate(tree_machines[1:]):
+                    child_outputs = all_machine_outputs[child_machine_idx]
+                    child_output_start = child_local_idx * outputs_per_child
+                    child_output_end = (child_local_idx + 1) * outputs_per_child
+
+                    for local_out_idx, child_output_pos in enumerate(child_outputs):
+                        output_global_idx = child_output_start + local_out_idx
+                        if output_global_idx >= len(tree_outputs):
+                            break
+
+                        port_idx = tree_outputs[output_global_idx]
+                        out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
+
+                        if out_side == Side.EAST:
+                            goal = (self.grid_width - 2, out_y, out_floor)
+                        elif out_side == Side.WEST:
+                            goal = (1, out_y, out_floor)
+                        elif out_side == Side.SOUTH:
+                            goal = (out_x, self.grid_height - 2, out_floor)
+                        else:  # NORTH
+                            goal = (out_x, 1, out_floor)
+
+                        if verbose:
+                            print(f"    Machine {child_machine_idx} -> Output {port_idx}")
+
+                        path = router.find_path(child_output_pos, goal, allow_belt_ports=True)
+                        if path:
+                            belts = router.path_to_belts(path)
+                            all_belts.extend(belts)
+                            for bx, by, bf, _, _ in belts:
+                                router.add_occupied(bx, by, bf)
+                            if verbose:
+                                print(f"      Success: {len(belts)} belts")
+                        else:
+                            all_success = False
+                            if verbose:
+                                print(f"      FAILED")
 
         return all_belts, all_success
+
+    def _calculate_throughput(
+        self,
+        machines: List[Tuple[BuildingType, int, int, int, Rotation]],
+        verbose: bool = False
+    ) -> float:
+        """
+        Calculate actual throughput (items/min) to output ports.
+
+        For tree topology:
+        - Input belt provides 180 items/min (max belt speed)
+        - Each machine has a max_rate processing capacity
+        - Splitters: 180 items/min (full belt speed, no bottleneck)
+        - Cutters: 45 items/min (processing bottleneck)
+        - With multiple inputs, we have multiple independent trees
+
+        Returns:
+            Minimum throughput per output port (items/min)
+        """
+        if not machines:
+            return 0.0
+
+        # Belt speed (max upgraded)
+        BELT_SPEED = 180.0  # items/min
+
+        # Get machine capacities (max upgraded tier 5)
+        machine_types = []
+        machine_capacities = []
+        for bt, _, _, _, _ in machines:
+            machine_types.append(bt)
+            spec = BUILDING_SPECS.get(bt)
+            if spec:
+                machine_capacities.append(spec.max_rate)
+            else:
+                machine_capacities.append(30.0)  # Default
+
+        num_machines = len(machines)
+        num_outputs = len(self.output_positions)
+        num_inputs = len(self.input_positions)
+
+        if num_machines == 0:
+            return 0.0
+
+        # Single machine case: output = min(input belt, machine capacity) / num_outputs
+        if num_machines == 1:
+            throughput_in = min(BELT_SPEED, machine_capacities[0])
+            return throughput_in / max(1, num_outputs)
+
+        # Multi-tree topology case:
+        # With N inputs and M outputs, we have N independent trees
+        # Each tree processes outputs_per_tree outputs
+        # Throughput per tree is limited by its root machine
+
+        root_type = machine_types[0]
+        root_capacity = machine_capacities[0]
+
+        # Check if we're using splitters (high throughput) or cutters (bottleneck)
+        if root_type == BuildingType.SPLITTER:
+            # Splitters maintain full belt speed (no processing bottleneck)
+            throughput_per_tree = BELT_SPEED
+            machine_type_name = "Splitter"
+        else:
+            # Cutters or other processing machines create bottleneck
+            throughput_per_tree = min(BELT_SPEED, root_capacity)
+            machine_type_name = root_type.name
+
+        # Calculate outputs per tree (assuming even distribution)
+        outputs_per_tree = num_outputs / max(1, num_inputs)
+
+        # Throughput per output = tree throughput / outputs per tree
+        throughput_per_output = throughput_per_tree / max(1, outputs_per_tree)
+
+        if verbose:
+            print(f"\n=== Throughput Analysis ===")
+            print(f"Machine type: {machine_type_name}")
+            print(f"Input belts: {num_inputs}")
+            print(f"Total outputs: {num_outputs}")
+            print(f"Outputs per input tree: {outputs_per_tree:.1f}")
+            print(f"Belt speed: {BELT_SPEED:.1f} items/min")
+            print(f"Root machine capacity: {root_capacity:.1f} items/min")
+            print(f"Throughput per tree: {throughput_per_tree:.1f} items/min")
+            print(f"Throughput per output: {throughput_per_output:.1f} items/min")
+            print(f"Total system throughput: {throughput_per_output * num_outputs:.1f} items/min")
+            if root_type == BuildingType.SPLITTER:
+                print(f"✓ Using splitters - NO processing bottleneck!")
+            else:
+                print(f"⚠ Using {machine_type_name} - processing bottleneck at {root_capacity:.1f} items/min")
+            print(f"=========================")
+
+        return throughput_per_output
 
 
 def solve_with_cpsat(
