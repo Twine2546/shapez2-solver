@@ -169,28 +169,51 @@ class CPSATSolverApp:
         # Shape code legend
         legend_text = """<font face='monospace' size=2><b>Shape Code Legend:</b>
 
-<b>Shape Types:</b>
-  C = Circle    R = Square
-  S = Star      W = Diamond
-  c = Crystal   P = Pin (no color)
-  - = Empty
+<b>Shape Types:</b> C=Circle R=Square S=Star W=Diamond c=Crystal P=Pin -=Empty
+<b>Colors:</b> u=Uncolored r=Red g=Green b=Blue c=Cyan m=Magenta y=Yellow w=White
 
-<b>Colors:</b>
-  u = Uncolored    r = Red
-  g = Green        b = Blue
-  c = Cyan         m = Magenta
-  y = Yellow       w = White
+<b>Port Format:</b> Side,Position,Floor,ShapeCode
+  • Side: N/E/S/W (North/East/South/West)
+  • Position: 0-3 (for 1x1), 0-7 (for 2x1/2x2), 0-11 (for 3x3)
+  • Floor: 0-3
+  • ShapeCode: 8 chars (4 quadrants × 2 chars)
 
-<b>Examples:</b>
-  CuCuCuCu = Full circle (uncolored)
-  Cu------ = NE corner only
-  CrCgCbCy = Circle with 4 colors
-  RrRrRrRr:CuCuCuCu = 2 layers
+<b>Foundation Examples:</b>
 
-<b>Format:</b>
-  4 quadrants: NE,NW,SW,SE
-  Layers: separated by :
-  Side,Pos,Floor,ShapeCode
+<b>1x1 Foundation (14×14 grid):</b>
+Input:  W,0,0,CuCuCuCu
+Output: E,0,0,Cu------
+        E,1,0,--Cu----
+Ports: 4 per side (positions 0-3)
+
+<b>2x2 Foundation (34×34 grid) - Corner Splitter:</b>
+Input:  W,0,0,RuRuRuRu
+Output: E,0,0,Ru------
+        E,1,0,--Ru----
+        E,2,0,----Ru--
+        E,3,0,------Ru
+Ports: 8 per side (positions 0-7)
+
+<b>3x3 Foundation (54×54 grid) - Multi-output:</b>
+Input:  W,0,0,CuCuCuCu
+Output: E,0,0,CuCuCuCu
+        E,1,0,CuCuCuCu
+        E,2,0,CuCuCuCu
+        E,3,0,CuCuCuCu
+Ports: 12 per side (positions 0-11)
+
+<b>Multi-Floor Example (3 floors):</b>
+Input:  W,0,0,SuSuSuSu
+        W,0,1,SuSuSuSu
+        W,0,2,SuSuSuSu
+Output: E,0,0,Su------
+        E,1,1,--Su----
+        E,2,2,----Su--
+
+<b>Tips:</b>
+• Larger foundations = more space for complex routing
+• Use multiple floors for parallel processing
+• Positions are numbered along each side
 </font>"""
 
         pygame_gui.elements.UITextBox(
