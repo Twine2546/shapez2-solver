@@ -92,6 +92,8 @@ OPERATION_BUILDINGS = [
     BuildingType.STACKER,
     BuildingType.UNSTACKER,
     BuildingType.PIN_PUSHER,
+    BuildingType.PAINTER,
+    BuildingType.TRASH,
 ]
 
 # Belt types for routing
@@ -103,8 +105,24 @@ BELT_TYPES = [
     BuildingType.LIFT_DOWN,
 ]
 
-# All buildings that can be evolved (operations + belts)
-EVOLVABLE_BUILDINGS = OPERATION_BUILDINGS + BELT_TYPES
+# Splitters and mergers for routing
+ROUTING_BUILDINGS = [
+    BuildingType.SPLITTER,
+    BuildingType.MERGER,
+]
+
+# All buildings that can be evolved (operations + belts + routing)
+EVOLVABLE_BUILDINGS = OPERATION_BUILDINGS + BELT_TYPES + ROUTING_BUILDINGS
+
+# Buildings that are belts or routing (for connectivity checking)
+CONVEYOR_TYPES = set(BELT_TYPES + ROUTING_BUILDINGS)
+
+# Buildings that require special input handling
+DUAL_INPUT_BUILDINGS = {
+    BuildingType.PAINTER,   # Needs shape + paint inputs
+    BuildingType.STACKER,   # Needs bottom + top inputs
+    BuildingType.SWAPPER,   # Needs two inputs to swap
+}
 
 
 class FoundationEvolution:
@@ -261,33 +279,58 @@ class FoundationEvolution:
         Evaluate the fitness of a candidate.
 
         Fitness is based on:
-        1. How well outputs match expected shapes
-        2. Connectivity (are all buildings connected?)
+        1. Connectivity validation (ports connected to conveyors, machines connected)
+        2. How well outputs match expected shapes
         3. Efficiency (fewer buildings is better)
         """
-        # Simulate the candidate
-        output_shapes = self._simulate(candidate)
-        candidate.output_shapes = output_shapes
-
         fitness = 0.0
 
-        # Score based on output matching
-        for port_key, expected in self.expected_outputs.items():
-            actual = output_shapes.get(port_key)
-            if actual is not None:
-                match_score = self._compare_shapes(expected, actual)
-                fitness += match_score * 100  # Weight output matching heavily
-            else:
-                fitness -= 10  # Penalty for missing output
+        # First check connectivity - this is critical
+        connectivity_score, conn_details = self._validate_connectivity(candidate)
 
-        # Small bonus for efficiency
+        # Heavily weight connectivity (50% of base score)
+        fitness += connectivity_score * 50
+
+        # Only simulate if connectivity is reasonable (at least 30%)
+        if connectivity_score >= 0.3:
+            # Simulate the candidate
+            output_shapes = self._simulate(candidate)
+            candidate.output_shapes = output_shapes
+
+            # Score based on output matching (40% of score)
+            output_score = 0.0
+            for port_key, expected in self.expected_outputs.items():
+                actual = output_shapes.get(port_key)
+                if actual is not None:
+                    match_score = self._compare_shapes(expected, actual)
+                    output_score += match_score
+                else:
+                    output_score -= 0.1  # Small penalty for missing output
+
+            if self.expected_outputs:
+                output_score /= len(self.expected_outputs)
+            fitness += max(0, output_score) * 40
+        else:
+            candidate.output_shapes = {}
+
+        # Small bonus for efficiency (10% of score)
         if len(candidate.buildings) > 0:
-            efficiency_bonus = 10.0 / len(candidate.buildings)
-            fitness += efficiency_bonus
+            # Prefer solutions with 5-15 buildings
+            building_count = len(candidate.buildings)
+            if building_count < 3:
+                efficiency = 0.3  # Too few buildings
+            elif building_count <= 15:
+                efficiency = 1.0  # Good range
+            else:
+                efficiency = max(0.3, 1.0 - (building_count - 15) * 0.05)
+            fitness += efficiency * 10
 
-        # Bonus for connectivity
-        connected_ratio = self._calculate_connectivity(candidate)
-        fitness += connected_ratio * 20
+        # Bonus for dual-input buildings being properly connected
+        if conn_details['dual_input_total'] > 0:
+            dual_ratio = conn_details['dual_input_satisfied'] / conn_details['dual_input_total']
+            if dual_ratio < 1.0:
+                # Penalty for improperly connected painters/stackers/swappers
+                fitness *= (0.5 + 0.5 * dual_ratio)
 
         candidate.fitness = max(0, fitness)
         return candidate.fitness
@@ -500,6 +543,225 @@ class FoundationEvolution:
             connected.add(conn.to_building_id)
 
         return len(connected) / len(candidate.buildings)
+
+    def _validate_connectivity(self, candidate: Candidate) -> Tuple[float, Dict[str, Any]]:
+        """
+        Validate connectivity constraints and return a score and details.
+
+        Constraints:
+        1. All used input/output ports must connect to a conveyor
+        2. All machines must have inputs connected to conveyors/machines/inputs
+        3. All machines must have outputs connected to conveyors/machines/outputs
+        4. Painters need both shape and paint inputs connected
+
+        Returns:
+            Tuple of (score 0-1, details dict)
+        """
+        details = {
+            'port_connections': 0,
+            'port_total': 0,
+            'machine_inputs_connected': 0,
+            'machine_outputs_connected': 0,
+            'machine_total': 0,
+            'dual_input_satisfied': 0,
+            'dual_input_total': 0,
+        }
+
+        # Build a grid of buildings for adjacency checking
+        grid = {}  # (x, y, floor) -> building
+        for building in candidate.buildings:
+            spec = BUILDING_SPECS.get(building.building_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
+            for dx in range(spec.width):
+                for dy in range(spec.height):
+                    for df in range(spec.depth):
+                        grid[(building.x + dx, building.y + dy, building.floor + df)] = building
+
+        # Check port connectivity
+        # Input ports should have a conveyor leading into the foundation
+        for side, pos, floor, shape_code in self.config.get_all_inputs():
+            details['port_total'] += 1
+            gx, gy = self.config.spec.get_port_grid_position(side, pos)
+
+            # Check if there's a belt at the entry point
+            entry_pos = self._get_port_entry_position(side, gx, gy, floor)
+            if entry_pos in grid:
+                building = grid[entry_pos]
+                if building.building_type in CONVEYOR_TYPES or building.building_type in BELT_TYPES:
+                    details['port_connections'] += 1
+
+        # Output ports should have a conveyor leading out
+        for side, pos, floor, shape_code in self.config.get_all_outputs():
+            details['port_total'] += 1
+            gx, gy = self.config.spec.get_port_grid_position(side, pos)
+
+            # Check if there's a belt at the exit point
+            exit_pos = self._get_port_exit_position(side, gx, gy, floor)
+            if exit_pos in grid:
+                building = grid[exit_pos]
+                if building.building_type in CONVEYOR_TYPES or building.building_type in BELT_TYPES:
+                    details['port_connections'] += 1
+
+        # Check machine connectivity
+        for building in candidate.buildings:
+            if building.building_type in CONVEYOR_TYPES or building.building_type in BELT_TYPES:
+                continue  # Skip belts for machine checking
+
+            details['machine_total'] += 1
+            spec = BUILDING_SPECS.get(building.building_type)
+            if not spec:
+                continue
+
+            # Check inputs
+            input_connected = self._check_building_inputs_connected(building, grid, candidate)
+            if input_connected:
+                details['machine_inputs_connected'] += 1
+
+            # Check outputs
+            output_connected = self._check_building_outputs_connected(building, grid, candidate)
+            if output_connected:
+                details['machine_outputs_connected'] += 1
+
+            # Check dual-input buildings
+            if building.building_type in DUAL_INPUT_BUILDINGS:
+                details['dual_input_total'] += 1
+                if self._check_dual_inputs_connected(building, grid, candidate):
+                    details['dual_input_satisfied'] += 1
+
+        # Calculate overall score
+        score = 0.0
+        if details['port_total'] > 0:
+            score += 0.3 * (details['port_connections'] / details['port_total'])
+        else:
+            score += 0.3
+
+        if details['machine_total'] > 0:
+            input_ratio = details['machine_inputs_connected'] / details['machine_total']
+            output_ratio = details['machine_outputs_connected'] / details['machine_total']
+            score += 0.25 * input_ratio + 0.25 * output_ratio
+        else:
+            score += 0.5
+
+        if details['dual_input_total'] > 0:
+            score += 0.2 * (details['dual_input_satisfied'] / details['dual_input_total'])
+        else:
+            score += 0.2
+
+        return score, details
+
+    def _get_port_entry_position(self, side: Side, gx: int, gy: int, floor: int) -> Tuple[int, int, int]:
+        """Get the grid position where a belt should be to receive from an input port."""
+        # The belt should be at the edge of the foundation receiving from the port
+        if side == Side.NORTH:
+            return (gx, 0, floor)
+        elif side == Side.SOUTH:
+            return (gx, self.config.spec.grid_height - 1, floor)
+        elif side == Side.WEST:
+            return (0, gy, floor)
+        elif side == Side.EAST:
+            return (self.config.spec.grid_width - 1, gy, floor)
+        return (gx, gy, floor)
+
+    def _get_port_exit_position(self, side: Side, gx: int, gy: int, floor: int) -> Tuple[int, int, int]:
+        """Get the grid position where a belt should be to send to an output port."""
+        # Same as entry - belt at edge sending to port
+        return self._get_port_entry_position(side, gx, gy, floor)
+
+    def _check_building_inputs_connected(self, building: PlacedBuilding, grid: Dict, candidate: Candidate) -> bool:
+        """Check if a building has at least one input connected."""
+        spec = BUILDING_SPECS.get(building.building_type)
+        if not spec or spec.num_inputs == 0:
+            return True  # No inputs needed
+
+        ports = BUILDING_PORTS.get(building.building_type, {})
+        input_ports = ports.get('inputs', [])
+
+        if not input_ports:
+            return True
+
+        # Check each input port for a connected conveyor or machine output
+        for rel_x, rel_y, rel_floor in input_ports:
+            # Rotate relative position based on building rotation
+            rot_x, rot_y = self._rotate_relative_pos(rel_x, rel_y, building.rotation)
+            check_x = building.x + rot_x
+            check_y = building.y + rot_y
+            check_floor = building.floor + rel_floor
+
+            if (check_x, check_y, check_floor) in grid:
+                adjacent = grid[(check_x, check_y, check_floor)]
+                if adjacent.building_id != building.building_id:
+                    return True  # Something is connected
+
+            # Also check explicit connections
+            for conn in candidate.connections:
+                if conn.to_building_id == building.building_id:
+                    return True
+
+        return False
+
+    def _check_building_outputs_connected(self, building: PlacedBuilding, grid: Dict, candidate: Candidate) -> bool:
+        """Check if a building has at least one output connected."""
+        spec = BUILDING_SPECS.get(building.building_type)
+        if not spec or spec.num_outputs == 0:
+            return True  # No outputs needed (like trash)
+
+        ports = BUILDING_PORTS.get(building.building_type, {})
+        output_ports = ports.get('outputs', [])
+
+        if not output_ports:
+            return True
+
+        # Check each output port for a connected conveyor or machine input
+        for rel_x, rel_y, rel_floor in output_ports:
+            rot_x, rot_y = self._rotate_relative_pos(rel_x, rel_y, building.rotation)
+            check_x = building.x + rot_x
+            check_y = building.y + rot_y
+            check_floor = building.floor + rel_floor
+
+            if (check_x, check_y, check_floor) in grid:
+                adjacent = grid[(check_x, check_y, check_floor)]
+                if adjacent.building_id != building.building_id:
+                    return True
+
+            # Also check explicit connections
+            for conn in candidate.connections:
+                if conn.from_building_id == building.building_id:
+                    return True
+
+        return False
+
+    def _check_dual_inputs_connected(self, building: PlacedBuilding, grid: Dict, candidate: Candidate) -> bool:
+        """Check if a dual-input building has both inputs connected."""
+        ports = BUILDING_PORTS.get(building.building_type, {})
+        input_ports = ports.get('inputs', [])
+
+        if len(input_ports) < 2:
+            return True  # Not actually dual input
+
+        connected_inputs = 0
+        for rel_x, rel_y, rel_floor in input_ports:
+            rot_x, rot_y = self._rotate_relative_pos(rel_x, rel_y, building.rotation)
+            check_x = building.x + rot_x
+            check_y = building.y + rot_y
+            check_floor = building.floor + rel_floor
+
+            if (check_x, check_y, check_floor) in grid:
+                adjacent = grid[(check_x, check_y, check_floor)]
+                if adjacent.building_id != building.building_id:
+                    connected_inputs += 1
+
+        return connected_inputs >= 2
+
+    def _rotate_relative_pos(self, rel_x: int, rel_y: int, rotation: Rotation) -> Tuple[int, int]:
+        """Rotate a relative position based on building rotation."""
+        if rotation == Rotation.EAST:
+            return (rel_x, rel_y)
+        elif rotation == Rotation.SOUTH:
+            return (-rel_y, rel_x)
+        elif rotation == Rotation.WEST:
+            return (-rel_x, -rel_y)
+        elif rotation == Rotation.NORTH:
+            return (rel_y, -rel_x)
+        return (rel_x, rel_y)
 
     def evolve_generation(self) -> None:
         """Evolve one generation."""
