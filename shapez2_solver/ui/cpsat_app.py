@@ -166,6 +166,39 @@ class CPSATSolverApp:
         )
         y_pos += 50
 
+        # Shape code legend
+        legend_text = """<font face='monospace' size=2><b>Shape Code Legend:</b>
+
+<b>Shape Types:</b>
+  C = Circle    R = Square
+  S = Star      W = Diamond
+  c = Crystal   P = Pin (no color)
+  - = Empty
+
+<b>Colors:</b>
+  u = Uncolored    r = Red
+  g = Green        b = Blue
+  c = Cyan         m = Magenta
+  y = Yellow       w = White
+
+<b>Examples:</b>
+  CuCuCuCu = Full circle (uncolored)
+  Cu------ = NE corner only
+  CrCgCbCy = Circle with 4 colors
+  RrRrRrRr:CuCuCuCu = 2 layers
+
+<b>Format:</b>
+  4 quadrants: NE,NW,SW,SE
+  Layers: separated by :
+  Side,Pos,Floor,ShapeCode
+</font>"""
+
+        pygame_gui.elements.UITextBox(
+            html_text=legend_text,
+            relative_rect=pygame.Rect(margin, y_pos, left_panel_width, self.height - y_pos - margin),
+            manager=self._manager
+        )
+
         # Status/Results panel (right side)
         results_x = left_panel_width + margin * 2
         results_width = self.width - results_x - margin

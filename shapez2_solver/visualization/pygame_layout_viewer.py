@@ -144,6 +144,9 @@ class PygameLayoutViewer:
         self.blueprint_copied = False
         self.copy_message_timer = 0
 
+        # Back button state
+        self.back_button_rect = None
+
         self.screen = None
         self.font = None
         self.small_font = None
@@ -218,8 +221,12 @@ class PygameLayoutViewer:
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:  # Left click
-                self.dragging = True
-                self.drag_start = event.pos
+                # Check if back button was clicked
+                if self.back_button_rect and self.back_button_rect.collidepoint(event.pos):
+                    self.running = False
+                else:
+                    self.dragging = True
+                    self.drag_start = event.pos
             elif event.button == 4:  # Scroll up
                 self.cell_size = min(30, self.cell_size + 1)
             elif event.button == 5:  # Scroll down
@@ -441,9 +448,26 @@ class PygameLayoutViewer:
         y += 25
 
         # Controls help
-        controls = "Arrow/WASD=Pan | +/-/Scroll=Zoom | PgUp/PgDn=Floor | Tab=Next | C=Copy Blueprint | Esc=Close"
+        controls = "Arrow/WASD=Pan | +/-/Scroll=Zoom | PgUp/PgDn=Floor | Tab=Next | C=Copy Blueprint"
         text = self.small_font.render(controls, True, (120, 120, 130))
         self.screen.blit(text, (10, y))
+
+        # Back button (top right)
+        button_width = 100
+        button_height = 35
+        button_x = self.screen_width - button_width - 10
+        button_y = 10
+
+        self.back_button_rect = pygame.Rect(button_x, button_y, button_width, button_height)
+
+        # Button background
+        pygame.draw.rect(self.screen, (60, 120, 180), self.back_button_rect)
+        pygame.draw.rect(self.screen, (100, 160, 220), self.back_button_rect, 2)
+
+        # Button text
+        button_text = self.font.render("← Back", True, (255, 255, 255))
+        text_rect = button_text.get_rect(center=self.back_button_rect.center)
+        self.screen.blit(button_text, text_rect)
 
         # Foundation info (top left)
         spec = self.config.spec
