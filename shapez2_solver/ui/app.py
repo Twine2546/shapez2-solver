@@ -422,7 +422,7 @@ class SolverApp:
         )
         y += 25
 
-        algorithm_options = ["Evolutionary", "Simulated Annealing", "Hybrid", "Two-Phase", "Two-Phase SA", "Two-Phase Hybrid"]
+        algorithm_options = ["Evolutionary", "Simulated Annealing", "Hybrid", "Two-Phase", "Two-Phase SA", "Two-Phase Hybrid", "CP-SAT"]
         self._ui_elements['algorithm_dropdown'] = pygame_gui.elements.UIDropDownMenu(
             options_list=algorithm_options,
             starting_option=self.foundation_algorithm,
@@ -613,6 +613,8 @@ class SolverApp:
                 self.foundation_solutions = self._run_hybrid_algorithm(evolution)
             elif self.foundation_algorithm.startswith("Two-Phase"):
                 self.foundation_solutions = self._run_two_phase(inputs, outputs)
+            elif self.foundation_algorithm == "CP-SAT":
+                self.foundation_solutions = self._run_cpsat(inputs, outputs)
             else:  # Default: Evolutionary
                 self.foundation_solutions = evolution.run(self.foundation_generations, verbose=True)
 
@@ -751,6 +753,45 @@ class SolverApp:
         # Return the candidate for compatibility
         candidate = result.to_candidate()
         return [candidate] if candidate else []
+
+    def _run_cpsat(self, inputs, outputs):
+        """Run CP-SAT constraint solver."""
+        from ..evolution.cpsat_solver import CPSATFullSolver
+
+        print(f"\nRunning CP-SAT Solver...")
+        print("Using Google OR-Tools constraint programming")
+        print("This finds optimal/near-optimal solutions with guarantees")
+
+        # Create solver
+        solver = CPSATFullSolver(
+            foundation_type=self.foundation_type,
+            input_specs=inputs,
+            output_specs=outputs,
+            max_machines=self.foundation_max_buildings,
+            time_limit_seconds=60.0,  # 60 second timeout
+        )
+
+        # Store for viewer
+        self._current_cpsat = solver
+
+        # Solve
+        solution = solver.solve(verbose=True)
+
+        # Store for viewer compatibility
+        self.foundation_evolution = solver
+
+        if solution and solution.status in ['optimal', 'feasible']:
+            print(f"\n*** CP-SAT SOLUTION FOUND ***")
+            print(f"Status: {solution.status}")
+            print(f"Machines: {len(solution.machines)}")
+            print(f"Solve time: {solution.solve_time:.2f}s")
+
+            candidate = solution.to_candidate()
+            return [candidate] if candidate else []
+        else:
+            status = solution.status if solution else 'failed'
+            print(f"\n*** CP-SAT: No solution found (status: {status}) ***")
+            return []
 
     def _view_foundation_layout(self) -> None:
         """Open the layout viewer for foundation solutions."""

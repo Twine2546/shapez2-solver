@@ -19,6 +19,12 @@ from .two_phase_evolution import (
     create_two_phase_evolution, solve_transformation
 )
 
+# CP-SAT solver imports
+from .cpsat_solver import (
+    CPSATFullSolver, CPSATLayoutSolver, CPSATSystemSolver,
+    CPSATSolution, solve_with_cpsat
+)
+
 __all__ = [
     "EvolutionaryAlgorithm",
     "EvolutionConfig",
@@ -41,4 +47,10 @@ __all__ = [
     "TwoPhaseResult",
     "create_two_phase_evolution",
     "solve_transformation",
+    # CP-SAT solver
+    "CPSATFullSolver",
+    "CPSATLayoutSolver",
+    "CPSATSystemSolver",
+    "CPSATSolution",
+    "solve_with_cpsat",
 ]

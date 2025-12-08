@@ -3,6 +3,9 @@
 # Core dependencies (required)
 # None - uses only Python standard library for core functionality
 
+# Optional: CP-SAT Solver (recommended for optimal solutions)
+ortools>=9.0.0
+
 # Optional: Graphical interface
 pygame>=2.5.0
 pygame_gui>=0.6.9
