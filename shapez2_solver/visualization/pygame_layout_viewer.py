@@ -159,6 +159,15 @@ class PygameLayoutViewer:
             print("Error: pygame is required for the layout viewer")
             return
 
+        # Save current display info to restore later
+        previous_display = None
+        previous_caption = None
+        try:
+            previous_display = pygame.display.get_surface()
+            previous_caption = pygame.display.get_caption()[0]
+        except:
+            pass
+
         pygame.init()
         self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
         pygame.display.set_caption("Shapez 2 Layout Viewer")
@@ -184,7 +193,14 @@ class PygameLayoutViewer:
             pygame.display.flip()
             clock.tick(30)
 
-        pygame.quit()
+        # Restore previous display if it existed (don't quit pygame)
+        if previous_display is not None:
+            # Recreate the previous display
+            pygame.display.set_mode(previous_display.get_size())
+            if previous_caption:
+                pygame.display.set_caption(previous_caption)
+        # Only quit if this was a standalone window
+        # (the caller will handle pygame.quit if needed)
 
     def _handle_event(self, event):
         """Handle pygame events."""
