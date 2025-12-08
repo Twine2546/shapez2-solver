@@ -308,19 +308,21 @@ Output: E,0,0,Su------
             )
 
             if self.solution:
-                # Export to blueprint
-                try:
-                    self.blueprint_code = self._export_candidate_to_blueprint(self.solution)
-                except Exception as e:
-                    self.blueprint_code = f"(Blueprint export failed: {e})"
-
                 # Display results
                 machines = len([b for b in self.solution.buildings
                                if any(m in str(b.building_type)
                                      for m in ['CUTTER', 'SPLITTER', 'ROTATOR', 'STACKER'])])
                 belts = len(self.solution.buildings) - machines
 
-                result_text = f"""<font face='monospace' size=3><b>SOLUTION FOUND!</b>
+                # Check if routing was successful
+                if hasattr(self.solution, 'routing_success') and self.solution.routing_success:
+                    # Export to blueprint (only for successful routing)
+                    try:
+                        self.blueprint_code = self._export_candidate_to_blueprint(self.solution)
+                    except Exception as e:
+                        self.blueprint_code = f"(Blueprint export failed: {e})"
+
+                    result_text = f"""<font face='monospace' size=3><b>✓ SOLUTION FOUND!</b>
 
 Fitness: {self.solution.fitness:.1f}
 Machines: {machines}
@@ -341,10 +343,50 @@ Total Buildings: {len(self.solution.buildings)}
 • Multiple inputs create independent processing trees
 • Maximizes throughput for fully upgraded equipment
 </font>"""
+                    print("\n✓ Solution found! Click 'View Layout' to visualize.")
+                else:
+                    # Routing failed - show error with suggestions
+                    grid_sizes = {
+                        "1x1": "14×14 (196 tiles)",
+                        "2x1": "34×14 (476 tiles)",
+                        "1x2": "14×34 (476 tiles)",
+                        "2x2": "34×34 (1,156 tiles)",
+                        "3x2": "54×34 (1,836 tiles)",
+                        "2x3": "34×54 (1,836 tiles)",
+                        "3x3": "54×54 (2,916 tiles)"
+                    }
+                    current_grid = grid_sizes.get(self.foundation_type, "unknown")
+
+                    result_text = f"""<font face='monospace' size=3><b>⚠ ROUTING FAILED</b>
+
+The solver placed {machines} machines but couldn't route all connections.
+
+<b>Current Foundation:</b> {self.foundation_type} ({current_grid})
+<b>Machines Needed:</b> {machines}
+<b>Connections Made:</b> {belts} belts (incomplete)
+
+<b>Problem:</b> Not enough space to route all connections between:
+• {len([p for p in self.solution.buildings if 'INPUT' in str(p)])} inputs
+• {machines} processing machines
+• {len([p for p in self.solution.buildings if 'OUTPUT' in str(p)])} outputs
+
+<b>Solutions:</b>
+1. <b>Use a larger foundation:</b>
+   • 2x2: 34×34 grid (5.9× more space)
+   • 3x3: 54×54 grid (14.9× more space)
+
+2. <b>Reduce complexity:</b>
+   • Fewer outputs per input
+   • Simpler transformations
+
+3. <b>Use multiple foundations:</b>
+   • Split the task across multiple smaller foundations
+
+<b>Try changing the foundation size and solving again!</b>
+</font>"""
+                    print("\n⚠ Routing failed - foundation too small. Try a larger foundation.")
 
                 self._show_results(result_text)
-
-                print("\n✓ Solution found! Click 'View Layout' to visualize.")
             else:
                 self._show_results("ERROR: No solution found. Try a larger foundation or fewer machines.")
                 print("\n✗ No solution found.")
