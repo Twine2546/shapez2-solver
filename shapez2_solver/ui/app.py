@@ -695,6 +695,8 @@ class SolverApp:
         print(f"\nRunning Two-Phase Evolution ({algorithm})...")
         print("Phase 1: System Search - Finding optimal machine topology")
         print("Phase 2: Layout Search - Placing machines and routing belts")
+        print("Search will run until 100% fitness or max generations...")
+        print("(Press Stop button or close window to interrupt)")
 
         # Create two-phase evolution
         two_phase = create_two_phase_evolution(
@@ -703,19 +705,48 @@ class SolverApp:
             output_specs=outputs,
         )
 
-        # Run with half generations for each phase
-        system_gens = self.foundation_generations // 2
-        layout_gens = self.foundation_generations // 2
+        # Store for stopping
+        self._current_two_phase = two_phase
 
-        result = two_phase.run(
-            system_generations=system_gens,
-            layout_generations=layout_gens,
+        # Progress callback
+        def progress_callback(result):
+            phase_name = "System" if result.phase == 1 else "Layout"
+            print(f"  [{phase_name}] Gen {result.generations_completed}: "
+                  f"fitness={result.total_fitness:.1f}% "
+                  f"{'(STALLED)' if result.stalled else ''}")
+
+            # Update viewer with intermediate results
+            if result.buildings:
+                candidate = result.to_candidate()
+                if candidate:
+                    two_phase.top_solutions = [candidate]
+
+        # Run until complete or max generations
+        max_gens = self.foundation_generations * 10  # Allow much more time
+        batch_size = self.foundation_generations // 2
+
+        result = two_phase.run_until_complete(
             algorithm=algorithm,
-            verbose=True
+            verbose=True,
+            max_total_generations=max_gens,
+            generations_per_batch=batch_size,
+            progress_callback=progress_callback
         )
 
         # Store the two-phase evolution for the viewer
         self.foundation_evolution = two_phase
+
+        # Print final status
+        if result.success:
+            print(f"\n*** PERFECT SOLUTION FOUND! ***")
+            print(f"System fitness: {result.system_fitness * 100:.1f}%")
+            print(f"Layout fitness: {result.layout_fitness:.1f}%")
+            print(f"Total generations: {result.generations_completed}")
+        elif result.stalled:
+            print(f"\n*** Search stalled - best solution so far: {result.total_fitness:.1f}% ***")
+            print("Consider running with a different algorithm or adjusting parameters.")
+        else:
+            print(f"\n*** Max generations reached - best: {result.total_fitness:.1f}% ***")
 
         # Return the candidate for compatibility
         candidate = result.to_candidate()
@@ -734,6 +765,11 @@ class SolverApp:
     def _stop_evolution(self) -> None:
         """Stop the current evolution run."""
         self.evolution_running = False
+
+        # Also stop two-phase search if running
+        if hasattr(self, '_current_two_phase') and self._current_two_phase:
+            self._current_two_phase.stop()
+            print("\nStopping search...")
 
     def _render(self) -> None:
         """Render the application."""

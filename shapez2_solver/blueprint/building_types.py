@@ -37,7 +37,9 @@ class BuildingType(Enum):
     SWAPPER = "HalvesSwapperDefaultInternalVariant"
 
     # Stackers
-    STACKER = "StackerStraightInternalVariant"
+    STACKER = "StackerStraightInternalVariant"          # Straight stacker - 6 per belt, slower
+    STACKER_BENT = "StackerDefaultInternalVariant"      # Bent stacker - 4 per belt, faster
+    STACKER_BENT_MIRRORED = "StackerDefaultInternalVariantMirrored"  # Mirrored bent stacker
     UNSTACKER = "UnstackerDefaultInternalVariant"
 
     # Painters
@@ -109,11 +111,16 @@ BUILDING_SPECS: Dict[BuildingType, BuildingSpec] = {
     # Swapper: 2x2, 2 in -> 2 out
     BuildingType.SWAPPER: BuildingSpec(2, 2, 1, 2, 2, 4, 15, 45),
 
-    # Stacker: 1x1x2 (2 floors tall), 6 per belt, 10-30 ops/min
+    # Stacker (Straight): 1x1x2 (2 floors tall), 6 per belt, 10-30 ops/min
     # Input 0: bottom floor from west (the "bottom" shape)
     # Input 1: top floor from west (the "top" shape that stacks on bottom)
     # Output: bottom floor to east
     BuildingType.STACKER: BuildingSpec(1, 1, 2, 2, 1, 6, 10, 30),
+
+    # Stacker (Bent): 1x1x2 (2 floors tall), 4 per belt, 15-45 ops/min (faster but needs more per belt)
+    # Same port layout as straight stacker, but output is bent (perpendicular to input)
+    BuildingType.STACKER_BENT: BuildingSpec(1, 1, 2, 2, 1, 4, 15, 45),
+    BuildingType.STACKER_BENT_MIRRORED: BuildingSpec(1, 1, 2, 2, 1, 4, 15, 45),
 
     # Unstacker: 1x1x2 (2 floors tall), 6 per belt
     # Input: bottom floor from west
@@ -174,10 +181,20 @@ BUILDING_PORTS: Dict[BuildingType, Dict[str, List[Tuple[int, int, int]]]] = {
         'inputs': [(-1, 0, 0), (-1, 1, 0)],  # Two inputs from west
         'outputs': [(2, 0, 0), (2, 1, 0)],   # Two outputs to east
     },
-    # Stacker: 2 floors - bottom input floor 0, top input floor 1, output floor 0
+    # Stacker (Straight): 2 floors - bottom input floor 0, top input floor 1, output floor 0
     BuildingType.STACKER: {
         'inputs': [(-1, 0, 0), (-1, 0, 1)],  # Bottom shape from floor 0, top shape from floor 1
-        'outputs': [(1, 0, 0)],               # Output on floor 0
+        'outputs': [(1, 0, 0)],               # Output on floor 0 (straight ahead)
+    },
+    # Stacker (Bent): 2 floors - same inputs, but output is perpendicular (to south)
+    BuildingType.STACKER_BENT: {
+        'inputs': [(-1, 0, 0), (-1, 0, 1)],  # Bottom shape from floor 0, top shape from floor 1
+        'outputs': [(0, 1, 0)],               # Output on floor 0 (bent to south)
+    },
+    # Stacker (Bent Mirrored): 2 floors - same inputs, output bent to north
+    BuildingType.STACKER_BENT_MIRRORED: {
+        'inputs': [(-1, 0, 0), (-1, 0, 1)],  # Bottom shape from floor 0, top shape from floor 1
+        'outputs': [(0, -1, 0)],              # Output on floor 0 (bent to north)
     },
     # Unstacker: 2 floors - input floor 0, outputs on both floors
     BuildingType.UNSTACKER: {

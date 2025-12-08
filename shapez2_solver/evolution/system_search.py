@@ -38,6 +38,44 @@ BUILDING_TO_OPERATION: Dict[BuildingType, type] = {
     BuildingType.PIN_PUSHER: PinPusherOperation,
 }
 
+# Belt throughput is 180 items/min at max upgrade
+MAX_BELT_THROUGHPUT = 180
+
+# Machine throughput at max upgrade (items/min) from wiki
+# Also includes how many machines needed per belt for full throughput
+MACHINE_THROUGHPUT: Dict[BuildingType, Tuple[int, int]] = {
+    # (items_per_min, machines_per_belt)
+    BuildingType.CUTTER: (45, 4),          # 45 items/min, need 4 for full belt
+    BuildingType.CUTTER_MIRRORED: (45, 4),
+    BuildingType.HALF_CUTTER: (45, 4),
+    BuildingType.ROTATOR_CW: (90, 2),      # 90 items/min, need 2 for full belt
+    BuildingType.ROTATOR_CCW: (90, 2),
+    BuildingType.ROTATOR_180: (90, 2),
+    BuildingType.STACKER: (30, 6),         # 30 items/min, need 6 for full belt (straight)
+    BuildingType.STACKER_BENT: (45, 4),    # 45 items/min, need 4 for full belt (bent - faster)
+    BuildingType.STACKER_BENT_MIRRORED: (45, 4),
+    BuildingType.UNSTACKER: (45, 4),
+    BuildingType.SWAPPER: (45, 4),
+    BuildingType.PAINTER: (45, 4),
+    BuildingType.PIN_PUSHER: (45, 4),
+    BuildingType.SPLITTER: (180, 1),       # Full belt speed
+    BuildingType.MERGER: (180, 1),         # Full belt speed
+}
+
+
+def get_machines_per_belt(building_type: BuildingType) -> int:
+    """Get how many machines of this type are needed for full belt throughput."""
+    if building_type in MACHINE_THROUGHPUT:
+        return MACHINE_THROUGHPUT[building_type][1]
+    return 1
+
+
+def get_machine_throughput(building_type: BuildingType) -> int:
+    """Get the throughput of a machine type (items/min)."""
+    if building_type in MACHINE_THROUGHPUT:
+        return MACHINE_THROUGHPUT[building_type][0]
+    return MAX_BELT_THROUGHPUT
+
 
 def create_operation(building_type: BuildingType) -> Optional[Operation]:
     """Create an operation instance from a building type."""
@@ -116,6 +154,10 @@ class SystemDesign:
     # source_type: 'input_port' or 'machine'
     connections: Dict[Tuple[int, int], Tuple[str, int, int]] = field(default_factory=dict)
 
+    # Throughput information
+    throughput_optimized: bool = False
+    estimated_throughput: float = 0.0  # 0.0 to 1.0, where 1.0 = full belt throughput
+
     def copy(self) -> 'SystemDesign':
         """Create a deep copy of this system design."""
         return SystemDesign(
@@ -125,8 +167,52 @@ class SystemDesign:
                          for p in self.output_ports],
             machines=[MachineNode(m.node_id, m.building_type, list(m.input_connections))
                      for m in self.machines],
-            connections=dict(self.connections)
+            connections=dict(self.connections),
+            throughput_optimized=self.throughput_optimized,
+            estimated_throughput=self.estimated_throughput
         )
+
+    def calculate_throughput(self) -> float:
+        """
+        Calculate estimated throughput as a fraction of max belt throughput.
+
+        Returns:
+            Value from 0.0 to 1.0, where 1.0 means full belt throughput (180 items/min)
+        """
+        if not self.machines:
+            return 1.0  # No machines = direct passthrough at full speed
+
+        # Find the bottleneck - the slowest machine type in the chain
+        machine_types = {}
+        for machine in self.machines:
+            bt = machine.building_type
+            machine_types[bt] = machine_types.get(bt, 0) + 1
+
+        # Calculate effective throughput per machine type
+        min_throughput = MAX_BELT_THROUGHPUT
+
+        for building_type, count in machine_types.items():
+            throughput = get_machine_throughput(building_type)
+            # Total throughput for this type = throughput * count
+            effective = throughput * count
+            min_throughput = min(min_throughput, effective)
+
+        self.estimated_throughput = min_throughput / MAX_BELT_THROUGHPUT
+        return self.estimated_throughput
+
+    def get_machines_needed_for_full_throughput(self) -> Dict[BuildingType, int]:
+        """
+        Calculate how many of each machine type would be needed for full throughput.
+
+        Returns:
+            Dict mapping building type to count needed
+        """
+        result = {}
+        for machine in self.machines:
+            bt = machine.building_type
+            needed = get_machines_per_belt(bt)
+            result[bt] = max(result.get(bt, 0), needed)
+        return result
 
 
 class SystemSimulator:
@@ -242,13 +328,17 @@ class SystemSimulator:
         return results
 
 
-def evaluate_system(design: SystemDesign) -> Tuple[float, Dict[int, Optional[Shape]]]:
+def evaluate_system(design: SystemDesign, include_throughput: bool = False) -> Tuple[float, Dict[int, Optional[Shape]]]:
     """
     Evaluate how well a system design meets the output requirements.
 
+    Args:
+        design: The system design to evaluate
+        include_throughput: If True, include throughput as part of fitness
+
     Returns:
         Tuple of (fitness_score, actual_outputs)
-        fitness_score: 0.0 to 1.0 (1.0 = all outputs match)
+        fitness_score: 0.0 to 1.0 (1.0 = all outputs match and full throughput)
     """
     simulator = SystemSimulator(design)
     actual_outputs = simulator.simulate()
@@ -282,7 +372,32 @@ def evaluate_system(design: SystemDesign) -> Tuple[float, Dict[int, Optional[Sha
 
         total_score += score
 
-    return total_score / num_outputs, actual_outputs
+    correctness_score = total_score / num_outputs
+
+    if include_throughput:
+        # Calculate throughput score (weighted less than correctness)
+        # First, correctness must be perfect before throughput matters
+        if correctness_score >= 0.99:
+            throughput = design.calculate_throughput()
+            # Blend: 80% correctness, 20% throughput
+            return 0.8 + (0.2 * throughput), actual_outputs
+        else:
+            # Correctness not achieved, throughput is irrelevant
+            return correctness_score * 0.8, actual_outputs
+
+    return correctness_score, actual_outputs
+
+
+def evaluate_system_with_throughput(design: SystemDesign) -> Tuple[float, float, Dict[int, Optional[Shape]]]:
+    """
+    Evaluate system with separate correctness and throughput scores.
+
+    Returns:
+        Tuple of (correctness_score, throughput_score, actual_outputs)
+    """
+    correctness, outputs = evaluate_system(design, include_throughput=False)
+    throughput = design.calculate_throughput()
+    return correctness, throughput, outputs
 
 
 def _compare_shapes(actual: Shape, expected: Shape) -> float:
@@ -347,12 +462,14 @@ class SystemSearch:
         population_size: int = 30,
         max_machines: int = 10,
         mutation_rate: float = 0.3,
+        optimize_throughput: bool = True,  # Whether to optimize for full belt throughput
     ):
         self.input_specs = input_specs
         self.output_specs = output_specs
         self.population_size = population_size
         self.max_machines = max_machines
         self.mutation_rate = mutation_rate
+        self.optimize_throughput = optimize_throughput
 
         # Parse input/output shapes
         self.input_ports = [
@@ -674,7 +791,7 @@ class SystemSearch:
             # Evaluate population
             fitness_scores = []
             for design in self.population:
-                fitness, _ = evaluate_system(design)
+                fitness, _ = evaluate_system(design, include_throughput=self.optimize_throughput)
                 fitness_scores.append((fitness, design))
 
             # Sort by fitness
@@ -744,7 +861,7 @@ class SystemSearchSA(SystemSearch):
 
         # Start with seeded design
         current = self._create_seeded_design()
-        current_fitness, _ = evaluate_system(current)
+        current_fitness, _ = evaluate_system(current, include_throughput=self.optimize_throughput)
 
         self.best_design = current.copy()
         self.best_fitness = current_fitness
@@ -754,7 +871,7 @@ class SystemSearchSA(SystemSearch):
         for iteration in range(max_generations):
             # Generate neighbor
             neighbor = self._mutate(current)
-            neighbor_fitness, _ = evaluate_system(neighbor)
+            neighbor_fitness, _ = evaluate_system(neighbor, include_throughput=self.optimize_throughput)
 
             # Calculate acceptance probability
             delta = neighbor_fitness - current_fitness
@@ -823,6 +940,7 @@ class SystemSearchHybrid(SystemSearch):
             output_specs=self.output_specs,
             max_machines=self.max_machines,
         )
+        sa.optimize_throughput = self.optimize_throughput  # Propagate throughput optimization
         sa_result = sa.run(max_generations=sa_iterations, target_fitness=target_fitness, verbose=verbose)
 
         if sa.best_fitness >= target_fitness:
@@ -853,7 +971,7 @@ class SystemSearchHybrid(SystemSearch):
         for generation in range(ea_generations):
             fitness_scores = []
             for design in self.population:
-                fitness, _ = evaluate_system(design)
+                fitness, _ = evaluate_system(design, include_throughput=self.optimize_throughput)
                 fitness_scores.append((fitness, design))
 
             fitness_scores.sort(key=lambda x: -x[0])
