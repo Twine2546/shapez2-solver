@@ -880,6 +880,55 @@ class CPSATFullSolver:
                             if verbose:
                                 print(f"      FAILED")
 
+        # Add edge connection belts from ports to the routing start/end positions
+        if all_success:
+            if verbose:
+                print(f"\n  Adding edge connection belts...")
+
+            # Add belts from input ports to first routing position
+            for tree_idx, (inp_x, inp_y, inp_floor, inp_side) in enumerate(self.input_positions):
+                # Determine the first routing position (one tile inside)
+                if inp_side == Side.WEST:
+                    inner_pos = (1, inp_y, inp_floor)
+                    # Add belt from port to inner position
+                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.EAST))
+                elif inp_side == Side.EAST:
+                    inner_pos = (self.grid_width - 2, inp_y, inp_floor)
+                    # Add belt from port to inner position
+                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.WEST))
+                elif inp_side == Side.NORTH:
+                    inner_pos = (inp_x, 1, inp_floor)
+                    # Add belt from port to inner position
+                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.SOUTH))
+                else:  # SOUTH
+                    inner_pos = (inp_x, self.grid_height - 2, inp_floor)
+                    # Add belt from port to inner position
+                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.NORTH))
+
+            # Add belts from last routing position to output ports
+            for out_x, out_y, out_floor, out_side in self.output_positions:
+                # Determine the last routing position (one tile inside)
+                if out_side == Side.EAST:
+                    inner_pos = (self.grid_width - 2, out_y, out_floor)
+                    # Add belt from inner position to port
+                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.EAST))
+                elif out_side == Side.WEST:
+                    inner_pos = (1, out_y, out_floor)
+                    # Add belt from inner position to port
+                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.WEST))
+                elif out_side == Side.SOUTH:
+                    inner_pos = (out_x, self.grid_height - 2, out_floor)
+                    # Add belt from inner position to port
+                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.SOUTH))
+                else:  # NORTH
+                    inner_pos = (out_x, 1, out_floor)
+                    # Add belt from inner position to port
+                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.NORTH))
+
+            if verbose:
+                print(f"    Added {len(self.input_positions)} input edge belts")
+                print(f"    Added {len(self.output_positions)} output edge belts")
+
         return all_belts, all_success
 
     def _calculate_throughput(
