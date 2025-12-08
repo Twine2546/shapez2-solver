@@ -6,7 +6,7 @@ Evolves building layouts on foundations with configurable inputs/outputs per sid
 import random
 import copy
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Set, Any
+from typing import Dict, List, Optional, Tuple, Set, Any, Callable
 from enum import Enum, auto
 
 from .foundation_config import (
@@ -199,36 +199,101 @@ class FoundationEvolution:
     def initialize_population(self) -> None:
         """Initialize the population with random candidates."""
         self.population = []
-        for _ in range(self.population_size):
-            candidate = self._create_random_candidate()
+        for i in range(self.population_size):
+            # Seed some candidates with port belts for better starting point
+            if i < self.population_size // 3:
+                candidate = self._create_seeded_candidate()
+            else:
+                candidate = self._create_random_candidate()
             self.population.append(candidate)
 
-    def _create_random_candidate(self) -> Candidate:
-        """Create a random candidate solution."""
+    def _create_seeded_candidate(self) -> Candidate:
+        """Create a candidate with belts at all input/output port positions."""
         candidate = Candidate()
+        building_id = 0
+        occupied = set()  # Track occupied cells
 
-        # Filter buildings that fit on this foundation (use internal grid dimensions)
-        valid_buildings = []
+        # Add belts at all input port positions (facing inward)
+        for side, pos, floor, shape_code in self.config.get_all_inputs():
+            gx, gy = self.config.spec.get_port_grid_position(side, pos)
+            belt = self._create_port_belt(building_id, side, gx, gy, floor, is_input=True)
+            if belt and (belt.x, belt.y, belt.floor) not in occupied:
+                candidate.buildings.append(belt)
+                occupied.add((belt.x, belt.y, belt.floor))
+                building_id += 1
+
+        # Add belts at all output port positions (facing outward)
+        for side, pos, floor, shape_code in self.config.get_all_outputs():
+            gx, gy = self.config.spec.get_port_grid_position(side, pos)
+            belt = self._create_port_belt(building_id, side, gx, gy, floor, is_input=False)
+            if belt and (belt.x, belt.y, belt.floor) not in occupied:
+                candidate.buildings.append(belt)
+                occupied.add((belt.x, belt.y, belt.floor))
+                building_id += 1
+
+        # Add some random buildings avoiding collisions
+        valid_buildings = self._get_valid_buildings()
+        num_extra = random.randint(2, min(self.max_buildings - len(candidate.buildings), 8))
+
+        for _ in range(num_extra):
+            building = self._create_random_building_avoiding_collisions(building_id, valid_buildings, occupied)
+            if building:
+                candidate.buildings.append(building)
+                self._mark_occupied(building, occupied)
+                building_id += 1
+
+        return candidate
+
+    def _create_port_belt(self, building_id: int, side: Side, gx: int, gy: int,
+                          floor: int, is_input: bool) -> PlacedBuilding:
+        """Create a belt at a port position facing the correct direction."""
+        # Belt at the edge of the foundation
+        if side == Side.NORTH:
+            x, y = gx, 0
+            rotation = Rotation.SOUTH if is_input else Rotation.NORTH
+        elif side == Side.SOUTH:
+            x, y = gx, self.config.spec.grid_height - 1
+            rotation = Rotation.NORTH if is_input else Rotation.SOUTH
+        elif side == Side.WEST:
+            x, y = 0, gy
+            rotation = Rotation.EAST if is_input else Rotation.WEST
+        elif side == Side.EAST:
+            x, y = self.config.spec.grid_width - 1, gy
+            rotation = Rotation.WEST if is_input else Rotation.EAST
+        else:
+            x, y, rotation = 0, 0, Rotation.EAST
+
+        return PlacedBuilding(
+            building_id=building_id,
+            building_type=BuildingType.BELT_FORWARD,
+            x=x, y=y, floor=floor,
+            rotation=rotation
+        )
+
+    def _get_valid_buildings(self) -> List[BuildingType]:
+        """Get list of buildings that fit on this foundation."""
+        valid = []
         for bt in EVOLVABLE_BUILDINGS:
             spec = BUILDING_SPECS.get(bt, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
             if (spec.width <= self.config.spec.grid_width and
                 spec.height <= self.config.spec.grid_height and
                 spec.depth <= self.num_floors):
-                valid_buildings.append(bt)
+                valid.append(bt)
+        return valid
 
+    def _create_random_building_avoiding_collisions(
+        self, building_id: int, valid_buildings: List[BuildingType],
+        occupied: Set[Tuple[int, int, int]]
+    ) -> Optional[PlacedBuilding]:
+        """Create a random building that doesn't collide with occupied cells."""
         if not valid_buildings:
-            return candidate  # No buildings fit
+            return None
 
-        # Add random number of buildings
-        num_buildings = random.randint(1, min(self.max_buildings, 10))
-        building_id = 0
-
-        for _ in range(num_buildings):
-            # Choose random building type that fits
+        # Try a few times to find a non-colliding position
+        for _ in range(10):
             building_type = random.choice(valid_buildings)
             spec = BUILDING_SPECS.get(building_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
 
-            # Choose random position within foundation (internal grid)
             max_x = max(0, self.config.spec.grid_width - spec.width)
             max_y = max(0, self.config.spec.grid_height - spec.height)
             max_floor = max(0, self.num_floors - spec.depth)
@@ -238,14 +303,56 @@ class FoundationEvolution:
             floor = random.randint(0, max_floor)
             rotation = random.choice(list(Rotation))
 
-            building = PlacedBuilding(
-                building_id=building_id,
-                building_type=building_type,
-                x=x, y=y, floor=floor,
-                rotation=rotation
-            )
-            candidate.buildings.append(building)
-            building_id += 1
+            # Check for collisions
+            collision = False
+            for dx in range(spec.width):
+                for dy in range(spec.height):
+                    for df in range(spec.depth):
+                        if (x + dx, y + dy, floor + df) in occupied:
+                            collision = True
+                            break
+                    if collision:
+                        break
+                if collision:
+                    break
+
+            if not collision:
+                return PlacedBuilding(
+                    building_id=building_id,
+                    building_type=building_type,
+                    x=x, y=y, floor=floor,
+                    rotation=rotation
+                )
+
+        return None
+
+    def _mark_occupied(self, building: PlacedBuilding, occupied: Set[Tuple[int, int, int]]) -> None:
+        """Mark all cells occupied by a building."""
+        spec = BUILDING_SPECS.get(building.building_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
+        for dx in range(spec.width):
+            for dy in range(spec.height):
+                for df in range(spec.depth):
+                    occupied.add((building.x + dx, building.y + dy, building.floor + df))
+
+    def _create_random_candidate(self) -> Candidate:
+        """Create a random candidate solution with collision detection."""
+        candidate = Candidate()
+        occupied = set()  # Track occupied cells
+
+        valid_buildings = self._get_valid_buildings()
+        if not valid_buildings:
+            return candidate  # No buildings fit
+
+        # Add random number of buildings
+        num_buildings = random.randint(3, min(self.max_buildings, 12))
+        building_id = 0
+
+        for _ in range(num_buildings):
+            building = self._create_random_building_avoiding_collisions(building_id, valid_buildings, occupied)
+            if building:
+                candidate.buildings.append(building)
+                self._mark_occupied(building, occupied)
+                building_id += 1
 
         # Create random connections
         self._create_random_connections(candidate)
@@ -829,34 +936,39 @@ class FoundationEvolution:
         return child
 
     def _mutate(self, candidate: Candidate) -> None:
-        """Mutate a candidate."""
-        # Get valid buildings for this foundation size (internal grid)
-        valid_buildings = []
-        for bt in EVOLVABLE_BUILDINGS:
-            spec = BUILDING_SPECS.get(bt, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
-            if (spec.width <= self.config.spec.grid_width and
-                spec.height <= self.config.spec.grid_height and
-                spec.depth <= self.num_floors):
-                valid_buildings.append(bt)
-
+        """Mutate a candidate with collision detection."""
+        valid_buildings = self._get_valid_buildings()
         if not valid_buildings:
             return
 
-        mutation_type = random.choice(['add', 'remove', 'modify', 'reconnect'])
+        # Build occupied set from existing buildings
+        occupied = self._get_occupied_cells(candidate)
+
+        mutation_type = random.choice(['add', 'remove', 'modify', 'reconnect', 'add_belt', 'add_port_belt'])
 
         if mutation_type == 'add' and len(candidate.buildings) < self.max_buildings:
-            # Add a building
-            building_type = random.choice(valid_buildings)
-            spec = BUILDING_SPECS.get(building_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
-            building = PlacedBuilding(
-                building_id=len(candidate.buildings),
-                building_type=building_type,
-                x=random.randint(0, max(0, self.config.spec.grid_width - spec.width)),
-                y=random.randint(0, max(0, self.config.spec.grid_height - spec.height)),
-                floor=random.randint(0, max(0, self.num_floors - spec.depth)),
-                rotation=random.choice(list(Rotation))
+            # Add a building with collision detection
+            building = self._create_random_building_avoiding_collisions(
+                len(candidate.buildings), valid_buildings, occupied
             )
-            candidate.buildings.append(building)
+            if building:
+                candidate.buildings.append(building)
+
+        elif mutation_type == 'add_belt' and len(candidate.buildings) < self.max_buildings:
+            # Add a connecting belt between two buildings
+            self._add_connecting_belt(candidate, occupied)
+
+        elif mutation_type == 'add_port_belt' and len(candidate.buildings) < self.max_buildings:
+            # Add a belt at a random port position
+            all_ports = list(self.config.get_all_inputs()) + list(self.config.get_all_outputs())
+            if all_ports:
+                side, pos, floor, _ = random.choice(all_ports)
+                gx, gy = self.config.spec.get_port_grid_position(side, pos)
+                is_input = any(p[0] == side and p[1] == pos and p[2] == floor
+                              for p in self.config.get_all_inputs())
+                belt = self._create_port_belt(len(candidate.buildings), side, gx, gy, floor, is_input)
+                if belt and (belt.x, belt.y, belt.floor) not in occupied:
+                    candidate.buildings.append(belt)
 
         elif mutation_type == 'remove' and len(candidate.buildings) > 1:
             # Remove a random building
@@ -868,26 +980,46 @@ class FoundationEvolution:
                 c for c in candidate.connections
                 if c.from_building_id != removed_id and c.to_building_id != removed_id
             ]
+            # Renumber building IDs
+            for i, b in enumerate(candidate.buildings):
+                b.building_id = i
 
         elif mutation_type == 'modify' and candidate.buildings:
-            # Modify a random building
+            # Modify a random building with collision checking
             building = random.choice(candidate.buildings)
             mod_type = random.choice(['position', 'rotation', 'type'])
 
+            # Remove this building from occupied to allow moving it
+            self._unmark_occupied(building, occupied)
+
             if mod_type == 'position':
                 spec = BUILDING_SPECS.get(building.building_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
-                building.x = random.randint(0, max(0, self.config.spec.grid_width - spec.width))
-                building.y = random.randint(0, max(0, self.config.spec.grid_height - spec.height))
+                # Try to find a non-colliding position
+                for _ in range(5):
+                    new_x = random.randint(0, max(0, self.config.spec.grid_width - spec.width))
+                    new_y = random.randint(0, max(0, self.config.spec.grid_height - spec.height))
+                    if not self._would_collide(new_x, new_y, building.floor, spec, occupied):
+                        building.x = new_x
+                        building.y = new_y
+                        break
             elif mod_type == 'rotation':
                 building.rotation = random.choice(list(Rotation))
             else:
                 # Change building type to one that fits
-                building.building_type = random.choice(valid_buildings)
-                spec = BUILDING_SPECS.get(building.building_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
+                new_type = random.choice(valid_buildings)
+                new_spec = BUILDING_SPECS.get(new_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
                 # Ensure position is still valid
-                building.x = min(building.x, max(0, self.config.spec.grid_width - spec.width))
-                building.y = min(building.y, max(0, self.config.spec.grid_height - spec.height))
-                building.floor = min(building.floor, max(0, self.num_floors - spec.depth))
+                new_x = min(building.x, max(0, self.config.spec.grid_width - new_spec.width))
+                new_y = min(building.y, max(0, self.config.spec.grid_height - new_spec.height))
+                new_floor = min(building.floor, max(0, self.num_floors - new_spec.depth))
+                if not self._would_collide(new_x, new_y, new_floor, new_spec, occupied):
+                    building.building_type = new_type
+                    building.x = new_x
+                    building.y = new_y
+                    building.floor = new_floor
+
+            # Re-add to occupied
+            self._mark_occupied(building, occupied)
 
         elif mutation_type == 'reconnect':
             # Modify connections
@@ -899,6 +1031,86 @@ class FoundationEvolution:
                 else:
                     # Add a connection
                     self._create_random_connections(candidate)
+
+    def _get_occupied_cells(self, candidate: Candidate) -> Set[Tuple[int, int, int]]:
+        """Get all cells occupied by buildings in a candidate."""
+        occupied = set()
+        for building in candidate.buildings:
+            self._mark_occupied(building, occupied)
+        return occupied
+
+    def _unmark_occupied(self, building: PlacedBuilding, occupied: Set[Tuple[int, int, int]]) -> None:
+        """Remove all cells occupied by a building from the occupied set."""
+        spec = BUILDING_SPECS.get(building.building_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
+        for dx in range(spec.width):
+            for dy in range(spec.height):
+                for df in range(spec.depth):
+                    occupied.discard((building.x + dx, building.y + dy, building.floor + df))
+
+    def _would_collide(self, x: int, y: int, floor: int, spec: BuildingSpec,
+                       occupied: Set[Tuple[int, int, int]]) -> bool:
+        """Check if placing a building at (x, y, floor) would collide."""
+        for dx in range(spec.width):
+            for dy in range(spec.height):
+                for df in range(spec.depth):
+                    if (x + dx, y + dy, floor + df) in occupied:
+                        return True
+        return False
+
+    def _add_connecting_belt(self, candidate: Candidate, occupied: Set[Tuple[int, int, int]]) -> None:
+        """Add a belt to connect two nearby buildings."""
+        if len(candidate.buildings) < 2:
+            return
+
+        # Find two buildings that could be connected
+        b1 = random.choice(candidate.buildings)
+        b2 = random.choice(candidate.buildings)
+        if b1.building_id == b2.building_id:
+            return
+
+        # Only connect if on same floor
+        if b1.floor != b2.floor:
+            return
+
+        spec1 = BUILDING_SPECS.get(b1.building_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
+        spec2 = BUILDING_SPECS.get(b2.building_type, BuildingSpec(1, 1, 1, 1, 1, 1, 30, 90))
+
+        # Calculate center positions
+        c1_x = b1.x + spec1.width // 2
+        c1_y = b1.y + spec1.height // 2
+        c2_x = b2.x + spec2.width // 2
+        c2_y = b2.y + spec2.height // 2
+
+        dx = c2_x - c1_x
+        dy = c2_y - c1_y
+
+        # Try to place a belt between them
+        if abs(dx) > abs(dy) and abs(dx) > 1:
+            # Place horizontal belt
+            mid_x = (c1_x + c2_x) // 2
+            rotation = Rotation.EAST if dx > 0 else Rotation.WEST
+            if (mid_x, c1_y, b1.floor) not in occupied:
+                belt = PlacedBuilding(
+                    building_id=len(candidate.buildings),
+                    building_type=BuildingType.BELT_FORWARD,
+                    x=mid_x, y=c1_y, floor=b1.floor,
+                    rotation=rotation
+                )
+                candidate.buildings.append(belt)
+                occupied.add((mid_x, c1_y, b1.floor))
+        elif abs(dy) > 1:
+            # Place vertical belt
+            mid_y = (c1_y + c2_y) // 2
+            rotation = Rotation.SOUTH if dy > 0 else Rotation.NORTH
+            if (c1_x, mid_y, b1.floor) not in occupied:
+                belt = PlacedBuilding(
+                    building_id=len(candidate.buildings),
+                    building_type=BuildingType.BELT_FORWARD,
+                    x=c1_x, y=mid_y, floor=b1.floor,
+                    rotation=rotation
+                )
+                candidate.buildings.append(belt)
+                occupied.add((c1_x, mid_y, b1.floor))
 
     def _update_top_solutions(self, candidate: Candidate) -> None:
         """Update the top solutions list."""
@@ -968,10 +1180,14 @@ class FoundationEvolution:
         if self.top_solutions:
             self._visualize_solution(self.top_solutions[0])
 
-    def _visualize_solution(self, candidate: Candidate) -> None:
-        """Visualize a solution showing each floor."""
-        print(f"\nLayout Visualization (simplified - each cell = 1x1 unit):")
+    def _visualize_solution(self, candidate: Candidate, detailed: bool = True) -> None:
+        """Visualize a solution showing each floor.
 
+        Args:
+            candidate: The solution to visualize
+            detailed: If True, show full internal grid (14x14 per 1x1 unit).
+                     If False, show simplified view (1 cell per 1x1 unit).
+        """
         # Symbol mapping
         symbols = {
             BuildingType.ROTATOR_CW: 'R',
@@ -984,7 +1200,7 @@ class FoundationEvolution:
             BuildingType.STACKER: 'S',
             BuildingType.UNSTACKER: 'U',
             BuildingType.PIN_PUSHER: 'P',
-            BuildingType.PAINTER: 'P',
+            BuildingType.PAINTER: 'A',  # 'A' to distinguish from Pin pusher
             BuildingType.TRASH: 'T',
             BuildingType.BELT_FORWARD: '→',
             BuildingType.BELT_LEFT: '↰',
@@ -997,6 +1213,85 @@ class FoundationEvolution:
             BuildingType.MERGER: '⊥',
         }
 
+        if detailed:
+            self._visualize_detailed(candidate, symbols)
+        else:
+            self._visualize_simplified(candidate, symbols)
+
+    def _visualize_detailed(self, candidate: Candidate, symbols: Dict) -> None:
+        """Detailed visualization showing full internal grid."""
+        print(f"\nLayout Visualization (detailed - full {self.config.spec.grid_width}x{self.config.spec.grid_height} grid):")
+
+        for floor in range(self.num_floors):
+            floor_buildings = [b for b in candidate.buildings if b.floor == floor]
+
+            # Skip empty floors (except floor 0)
+            has_ports = any(f == floor for _, _, f, _ in self.config.get_all_inputs())
+            has_ports = has_ports or any(f == floor for _, _, f, _ in self.config.get_all_outputs())
+            if not floor_buildings and not has_ports and floor > 0:
+                continue
+
+            print(f"\n  Floor {floor}:")
+
+            # Grid: 1 column for ports + internal grid + 1 column for ports
+            # Row for north ports, internal grid rows, row for south ports
+            grid_w = self.config.spec.grid_width
+            grid_h = self.config.spec.grid_height
+            width = grid_w + 2  # +2 for west/east port columns
+            height = grid_h + 2  # +2 for north/south port rows
+
+            grid = [['·' for _ in range(width)] for _ in range(height)]
+
+            # Fill foundation area (internal grid is rows 1 to grid_h, cols 1 to grid_w)
+            for x in range(grid_w):
+                for y in range(grid_h):
+                    grid[y + 1][x + 1] = '░'
+
+            # Draw input ports (external - row 0/height-1, col 0/width-1)
+            for side, pos, f, shape_code in self.config.get_all_inputs():
+                if f == floor:
+                    gx, gy = self.config.spec.get_port_grid_position(side, pos)
+                    px, py = self._port_to_display_pos(side, gx, gy, grid_w, grid_h)
+                    if 0 <= py < height and 0 <= px < width:
+                        grid[py][px] = 'I'
+
+            # Draw output ports (external)
+            for side, pos, f, shape_code in self.config.get_all_outputs():
+                if f == floor:
+                    gx, gy = self.config.spec.get_port_grid_position(side, pos)
+                    px, py = self._port_to_display_pos(side, gx, gy, grid_w, grid_h)
+                    if 0 <= py < height and 0 <= px < width:
+                        grid[py][px] = 'O'
+
+            # Draw buildings at their actual positions
+            for building in floor_buildings:
+                x = building.x + 1  # +1 for west port column
+                y = building.y + 1  # +1 for north port row
+                symbol = symbols.get(building.building_type, '?')
+                if 0 <= y < height and 0 <= x < width:
+                    grid[y][x] = symbol
+
+            # Print grid - show every 5th column number for readability
+            if width <= 20:
+                header = "".join(str(i % 10) for i in range(width))
+            else:
+                header = "".join(str(i % 10) if i % 5 == 0 else ' ' for i in range(width))
+            print(f"      {header}")
+
+            for row_idx, row in enumerate(grid):
+                # Truncate wide grids
+                display_row = ''.join(row[:min(width, 40)])
+                if width > 40:
+                    display_row += "..."
+                print(f"  {row_idx:3d} {display_row}")
+
+            print(f"\n  Legend: I=Input(external) O=Output(external) ░=Foundation(buildable)")
+            print(f"  Grid: {grid_w}x{grid_h} internal, ports at edges (row 0/{height-1}, col 0/{width-1})")
+
+    def _visualize_simplified(self, candidate: Candidate, symbols: Dict) -> None:
+        """Simplified visualization (1 cell per 1x1 unit)."""
+        print(f"\nLayout Visualization (simplified - each cell = 1x1 unit):")
+
         for floor in range(self.num_floors):
             floor_buildings = [b for b in candidate.buildings if b.floor == floor]
 
@@ -1005,12 +1300,6 @@ class FoundationEvolution:
 
             print(f"\n  Floor {floor}:")
 
-            # Create simplified grid
-            # Row 0: North ports (external)
-            # Row 1: empty/margin
-            # Rows 2 to 2+units_y-1: Foundation
-            # Row 2+units_y: empty/margin
-            # Row 2+units_y+1: South ports (external)
             width = self.config.spec.units_x + 4
             height = self.config.spec.units_y + 4
             grid = [['·' for _ in range(width)] for _ in range(height)]
@@ -1018,45 +1307,53 @@ class FoundationEvolution:
             # Draw foundation outline (each 1x1 unit)
             for ux in range(self.config.spec.units_x):
                 for uy in range(self.config.spec.units_y):
-                    # Check if cell is present (for irregular foundations)
                     if self.config.spec.present_cells is not None:
                         if (ux, uy) not in self.config.spec.present_cells:
                             continue
                     grid[uy + 2][ux + 2] = '░'
 
-            # Draw input ports (external to foundation)
+            # Draw ports
             for side, pos, f, shape_code in self.config.get_all_inputs():
                 if f == floor:
                     px, py = self._get_port_grid_pos(side, pos)
                     if 0 <= py < height and 0 <= px < width:
                         grid[py][px] = 'I'
 
-            # Draw output ports (external to foundation)
             for side, pos, f, shape_code in self.config.get_all_outputs():
                 if f == floor:
                     px, py = self._get_port_grid_pos(side, pos)
                     if 0 <= py < height and 0 <= px < width:
                         grid[py][px] = 'O'
 
-            # Draw buildings (scaled down - building position / 14 gives unit)
+            # Draw buildings (scaled)
             for building in floor_buildings:
-                # Convert from internal grid position to unit position
-                unit_x = building.x // 14  # Which 1x1 unit
+                unit_x = building.x // 14
                 unit_y = building.y // 14
                 x = unit_x + 2
                 y = unit_y + 2
                 symbol = symbols.get(building.building_type, '?')
                 if 0 <= y < height and 0 <= x < width:
-                    if grid[y][x] == '░':  # Only draw on foundation
+                    if grid[y][x] == '░':
                         grid[y][x] = symbol
 
-            # Print grid with legend
             print("    " + "".join(str(i % 10) for i in range(width)))
             for row_idx, row in enumerate(grid):
                 print(f"  {row_idx:2d} {''.join(row)}")
 
             print(f"\n  Legend: I=Input O=Output ░=Foundation")
-            print(f"  Ports are EXTERNAL (on edges, 4 per side per 1x1 unit)")
+
+    def _port_to_display_pos(self, side: Side, gx: int, gy: int, grid_w: int, grid_h: int) -> Tuple[int, int]:
+        """Convert port grid position to display position for detailed view."""
+        # Ports are external: row 0 (north), row grid_h+1 (south), col 0 (west), col grid_w+1 (east)
+        if side == Side.NORTH:
+            return (gx + 1, 0)  # Top row, offset by 1 for west column
+        elif side == Side.SOUTH:
+            return (gx + 1, grid_h + 1)  # Bottom row
+        elif side == Side.WEST:
+            return (0, gy + 1)  # Left column, offset by 1 for north row
+        elif side == Side.EAST:
+            return (grid_w + 1, gy + 1)  # Right column
+        return (0, 0)
 
     def _get_port_grid_pos(self, side: Side, pos: int) -> Tuple[int, int]:
         """Get simplified grid position for a port (for visualization).

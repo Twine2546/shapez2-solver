@@ -86,6 +86,7 @@ class SolverApp:
         self.foundation_population: int = 50
         self.foundation_generations: int = 100
         self.foundation_max_buildings: int = 20
+        self.foundation_algorithm: str = "Evolutionary"  # "Evolutionary", "Simulated Annealing", "Hybrid"
 
         # Evolution results for foundation mode
         self.foundation_evolution = None
@@ -411,6 +412,23 @@ class SolverApp:
             manager=self._manager
         )
         self._ui_elements['fnd_bld_input'].set_text(str(self.foundation_max_buildings))
+        y += 40
+
+        # Algorithm selector
+        self._ui_elements['algorithm_label'] = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect((20, y), (panel_width - 40, 25)),
+            text="Algorithm:",
+            manager=self._manager
+        )
+        y += 25
+
+        algorithm_options = ["Evolutionary", "Simulated Annealing", "Hybrid"]
+        self._ui_elements['algorithm_dropdown'] = pygame_gui.elements.UIDropDownMenu(
+            options_list=algorithm_options,
+            starting_option=self.foundation_algorithm,
+            relative_rect=pygame.Rect((20, y), (panel_width - 40, 30)),
+            manager=self._manager
+        )
         y += 45
 
         # Start button
@@ -494,6 +512,8 @@ class SolverApp:
         elif event.ui_element == self._ui_elements.get('fnd_type_dropdown'):
             self.foundation_type = event.text
             self._create_ui()  # Rebuild to update info
+        elif event.ui_element == self._ui_elements.get('algorithm_dropdown'):
+            self.foundation_algorithm = event.text
 
     def _start_evolution(self) -> None:
         """Start the evolutionary algorithm for shape transformation."""
@@ -537,7 +557,7 @@ class SolverApp:
         self._initialize()
 
     def _start_foundation_evolution(self) -> None:
-        """Start the foundation evolution."""
+        """Start the foundation evolution with the selected algorithm."""
         # Parse inputs and outputs from text boxes
         inputs_text = self._ui_elements.get('inputs_text')
         outputs_text = self._ui_elements.get('outputs_text')
@@ -571,6 +591,7 @@ class SolverApp:
 
         # Create evolution
         print(f"\nStarting foundation evolution on {self.foundation_type}...")
+        print(f"Algorithm: {self.foundation_algorithm}")
         print(f"Inputs: {len(inputs)}, Outputs: {len(outputs)}")
         print(f"Population: {self.foundation_population}, Generations: {self.foundation_generations}")
 
@@ -585,8 +606,14 @@ class SolverApp:
 
             evolution.print_goal()
 
-            # Run evolution
-            self.foundation_solutions = evolution.run(self.foundation_generations, verbose=True)
+            # Run evolution with the selected algorithm
+            if self.foundation_algorithm == "Simulated Annealing":
+                self.foundation_solutions = self._run_simulated_annealing(evolution)
+            elif self.foundation_algorithm == "Hybrid":
+                self.foundation_solutions = self._run_hybrid_algorithm(evolution)
+            else:  # Default: Evolutionary
+                self.foundation_solutions = evolution.run(self.foundation_generations, verbose=True)
+
             self.foundation_evolution = evolution
 
             print("\n" + "=" * 60)
@@ -603,6 +630,49 @@ class SolverApp:
             import traceback
             print(f"Error during evolution: {e}")
             traceback.print_exc()
+
+    def _run_simulated_annealing(self, evolution):
+        """Run simulated annealing algorithm."""
+        from ..evolution.algorithms import SimulatedAnnealing, AlgorithmType
+        from ..evolution.foundation_evolution import EVOLVABLE_BUILDINGS
+
+        # Create SA algorithm with evolution's evaluate function
+        sa = SimulatedAnnealing(
+            config=evolution.config,
+            evaluate_fn=evolution.evaluate_fitness,
+            valid_buildings=evolution._get_valid_buildings(),
+            max_buildings=evolution.max_buildings,
+            initial_temp=100.0,
+            cooling_rate=0.995,
+            min_temp=0.1,
+        )
+
+        # Run SA for generations * population iterations
+        iterations = self.foundation_generations * 10
+        print(f"\nRunning Simulated Annealing for {iterations} iterations...")
+        best = sa.run(iterations, verbose=True)
+
+        # Return as list for compatibility
+        return [best] if best else []
+
+    def _run_hybrid_algorithm(self, evolution):
+        """Run hybrid algorithm (SA + EA)."""
+        from ..evolution.algorithms import HybridAlgorithm
+
+        # Create hybrid algorithm
+        hybrid = HybridAlgorithm(
+            config=evolution.config,
+            evaluate_fn=evolution.evaluate_fitness,
+            valid_buildings=evolution._get_valid_buildings(),
+            max_buildings=evolution.max_buildings,
+            sa_iterations=self.foundation_generations * 5,
+            ea_iterations=self.foundation_generations * 5,
+        )
+
+        print(f"\nRunning Hybrid Algorithm...")
+        best = hybrid.run(self.foundation_generations, verbose=True)
+
+        return [best] if best else []
 
     def _view_foundation_layout(self) -> None:
         """Open the layout viewer for foundation solutions."""
