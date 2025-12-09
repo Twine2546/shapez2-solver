@@ -45,6 +45,9 @@ class CPSATSolverApp:
         self._foundation_visual_rect = None
         self._io_visual_rect = None
 
+        # Auto-scaling state
+        self._solving_state = None  # For multi-step foundation trying
+
     def run(self):
         """Run the application."""
         if not PYGAME_AVAILABLE:
@@ -71,6 +74,9 @@ class CPSATSolverApp:
 
                 if event.type == pygame_gui.UI_DROP_DOWN_MENU_CHANGED:
                     self._handle_dropdown(event)
+
+                if event.type == pygame_gui.UI_CONFIRMATION_DIALOG_CONFIRMED:
+                    self._handle_dialog_confirmed(event)
 
                 self._manager.process_events(event)
 
@@ -292,6 +298,13 @@ Output: E,0,0,Su------
         if event.ui_element == self._ui_elements.get('foundation_dropdown'):
             self.foundation_type = event.text
 
+    def _handle_dialog_confirmed(self, event):
+        """Handle confirmation dialog response."""
+        if self._solving_state and event.ui_element == self._solving_state.get('dialog'):
+            # User confirmed - try the next foundation
+            self._solving_state['dialog'] = None
+            self._continue_solving()
+
     def _solve(self):
         """Solve using CP-SAT."""
         # Read current text from UI elements (in case events didn't fire)
@@ -344,75 +357,160 @@ Output: E,0,0,Su------
         except ValueError:
             start_idx = 0
 
-        # Try each foundation size until success or run out of sizes
+        # Initialize solving state for interactive auto-scaling
+        self._solving_state = {
+            'inputs': inputs,
+            'outputs': outputs,
+            'progression': foundation_progression,
+            'current_idx': start_idx,
+            'tried_foundations': [],
+            'dialog': None
+        }
+
         print("\n" + "="*70)
         print("SOLVING WITH CP-SAT (Maximum Throughput Optimization)")
         print("="*70)
         print(f"Starting foundation: {self.foundation_type}")
         print(f"Inputs: {len(inputs)}, Outputs: {len(outputs)}")
-        print(f"Auto-scaling enabled: Will try larger foundations if routing fails")
+        print(f"Timeout per foundation: {self.time_limit} seconds")
         print("="*70)
 
         self.solution = None
-        tried_foundations = []
+
+        # Start solving with the first foundation
+        self._try_current_foundation()
+
+    def _try_current_foundation(self):
+        """Try solving with the current foundation in the progression."""
+        if not self._solving_state:
+            return
+
+        state = self._solving_state
+        current_idx = state['current_idx']
+        progression = state['progression']
+
+        if current_idx >= len(progression):
+            # Exhausted all foundations
+            self._finish_solving(all_failed=True)
+            return
+
+        current_foundation = progression[current_idx]
+        state['tried_foundations'].append(current_foundation)
+
+        print(f"\n{'='*70}")
+        print(f"TRYING FOUNDATION: {current_foundation} ({current_idx + 1}/{len(progression)})")
+        print(f"Timeout: {self.time_limit} seconds (per foundation)")
+        print(f"{'='*70}")
 
         try:
-            for foundation_idx in range(start_idx, len(foundation_progression)):
-                current_foundation = foundation_progression[foundation_idx]
-                tried_foundations.append(current_foundation)
+            solution = solve_with_cpsat(
+                foundation_type=current_foundation,
+                input_specs=state['inputs'],
+                output_specs=state['outputs'],
+                max_machines=self.max_machines,
+                time_limit=self.time_limit,
+                verbose=True
+            )
+
+            if solution and hasattr(solution, 'routing_success') and solution.routing_success:
+                # Success!
+                self.solution = solution
+                self.foundation_type = current_foundation
+
+                # Update the dropdown
+                if 'foundation_dropdown' in self._ui_elements:
+                    self._ui_elements['foundation_dropdown'].selected_option = current_foundation
 
                 print(f"\n{'='*70}")
-                print(f"TRYING FOUNDATION: {current_foundation}")
+                print(f"✓ SUCCESS with {current_foundation} foundation!")
+                print(f"Tried {len(state['tried_foundations'])} foundation(s): {', '.join(state['tried_foundations'])}")
                 print(f"{'='*70}")
 
-                solution = solve_with_cpsat(
-                    foundation_type=current_foundation,
-                    input_specs=inputs,
-                    output_specs=outputs,
-                    max_machines=self.max_machines,
-                    time_limit=self.time_limit,
-                    verbose=True
-                )
+                self._finish_solving(all_failed=False)
+            else:
+                # Failed - ask user if they want to try next
+                print(f"\n⚠ {current_foundation} failed to find valid routing")
+                self._prompt_next_foundation()
 
-                if solution and hasattr(solution, 'routing_success') and solution.routing_success:
-                    # Success! Use this foundation
-                    self.solution = solution
-                    self.foundation_type = current_foundation
+        except Exception as e:
+            print(f"\n✗ Error with {current_foundation}: {e}")
+            import traceback
+            traceback.print_exc()
+            self._prompt_next_foundation()
 
-                    # Update the dropdown to show the successful foundation
-                    if 'foundation_dropdown' in self._ui_elements:
-                        self._ui_elements['foundation_dropdown'].selected_option = current_foundation
+    def _prompt_next_foundation(self):
+        """Prompt user to try the next foundation."""
+        if not self._solving_state:
+            return
 
-                    print(f"\n{'='*70}")
-                    print(f"✓ SUCCESS with {current_foundation} foundation!")
-                    print(f"Tried {len(tried_foundations)} foundation(s): {', '.join(tried_foundations)}")
-                    print(f"{'='*70}")
-                    break
-                else:
-                    print(f"\n⚠ {current_foundation} failed - trying next size...")
+        state = self._solving_state
+        current_idx = state['current_idx']
+        progression = state['progression']
+        current_foundation = progression[current_idx]
 
-            if not self.solution or not self.solution.routing_success:
-                print(f"\n{'='*70}")
-                print(f"✗ All foundations exhausted without success")
-                print(f"Tried: {', '.join(tried_foundations)}")
-                print(f"{'='*70}")
+        # Check if there are more foundations to try
+        if current_idx + 1 >= len(progression):
+            # No more foundations
+            self._finish_solving(all_failed=True)
+            return
 
-            if self.solution:
-                # Display results
-                machines = len([b for b in self.solution.buildings
-                               if any(m in str(b.building_type)
-                                     for m in ['CUTTER', 'SPLITTER', 'ROTATOR', 'STACKER'])])
-                belts = len(self.solution.buildings) - machines
+        next_foundation = progression[current_idx + 1]
 
-                # Check if routing was successful
-                if hasattr(self.solution, 'routing_success') and self.solution.routing_success:
-                    # Export to blueprint (only for successful routing)
-                    try:
-                        self.blueprint_code = self._export_candidate_to_blueprint(self.solution)
-                    except Exception as e:
-                        self.blueprint_code = f"(Blueprint export failed: {e})"
+        # Create confirmation dialog
+        dialog = pygame_gui.windows.UIConfirmationDialog(
+            rect=pygame.Rect((self.width // 2 - 250, self.height // 2 - 100), (500, 200)),
+            manager=self._manager,
+            window_title="Foundation Failed",
+            action_long_desc=f"""Foundation '{current_foundation}' could not complete routing within {self.time_limit} seconds.
 
-                    result_text = f"""<font face='monospace' size=3><b>✓ SOLUTION FOUND!</b>
+Would you like to try the next foundation: '{next_foundation}'?
+
+Tried so far: {', '.join(state['tried_foundations'])}
+Remaining: {len(progression) - current_idx - 1} foundation(s)""",
+            action_short_name="Try Next",
+            blocking=True
+        )
+
+        state['dialog'] = dialog
+
+    def _continue_solving(self):
+        """Continue solving with the next foundation."""
+        if not self._solving_state:
+            return
+
+        self._solving_state['current_idx'] += 1
+        self._try_current_foundation()
+
+    def _finish_solving(self, all_failed=False):
+        """Finish the solving process and display results."""
+        if not self._solving_state:
+            return
+
+        state = self._solving_state
+        tried_foundations = state['tried_foundations']
+
+        if all_failed:
+            print(f"\n{'='*70}")
+            print(f"✗ All foundations exhausted without success")
+            print(f"Tried: {', '.join(tried_foundations)}")
+            print(f"{'='*70}")
+
+        if self.solution:
+            # Display results
+            machines = len([b for b in self.solution.buildings
+                           if any(m in str(b.building_type)
+                                 for m in ['CUTTER', 'SPLITTER', 'ROTATOR', 'STACKER'])])
+            belts = len(self.solution.buildings) - machines
+
+            # Check if routing was successful
+            if hasattr(self.solution, 'routing_success') and self.solution.routing_success:
+                # Export to blueprint (only for successful routing)
+                try:
+                    self.blueprint_code = self._export_candidate_to_blueprint(self.solution)
+                except Exception as e:
+                    self.blueprint_code = f"(Blueprint export failed: {e})"
+
+                result_text = f"""<font face='monospace' size=3><b>✓ SOLUTION FOUND!</b>
 
 <b>Foundation:</b> {self.foundation_type}
 {f"<b>Auto-scaled:</b> Tried {len(tried_foundations)} foundation(s): {', '.join(tried_foundations)}" if len(tried_foundations) > 1 else ""}
@@ -436,20 +534,10 @@ Total Buildings: {len(self.solution.buildings)}
 • Multiple inputs create independent processing trees
 • Maximizes throughput for fully upgraded equipment
 </font>"""
-                    print(f"\n✓ Solution found on {self.foundation_type}! Click 'View Layout' to visualize.")
-                else:
-                    # Routing failed on all foundations
-                    grid_sizes = {
-                        "1x1": "14×14 (196 tiles)",
-                        "2x1": "34×14 (476 tiles)",
-                        "1x2": "14×34 (476 tiles)",
-                        "2x2": "34×34 (1,156 tiles)",
-                        "3x2": "54×34 (1,836 tiles)",
-                        "2x3": "34×54 (1,836 tiles)",
-                        "3x3": "54×54 (2,916 tiles)"
-                    }
-
-                    result_text = f"""<font face='monospace' size=3><b>⚠ ALL FOUNDATIONS EXHAUSTED</b>
+                print(f"\n✓ Solution found on {self.foundation_type}! Click 'View Layout' to visualize.")
+            else:
+                # Routing failed on all foundations
+                result_text = f"""<font face='monospace' size=3><b>⚠ ALL FOUNDATIONS EXHAUSTED</b>
 
 The solver tried {len(tried_foundations)} foundation size(s) but couldn't complete routing.
 
@@ -457,7 +545,7 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
 <b>Machines needed:</b> {machines}
 <b>Best attempt:</b> {belts} belts placed (incomplete routing)
 
-<b>Problem:</b> The task is too complex even for the largest foundation (3x3).
+<b>Problem:</b> The task is too complex for the foundations tried.
 
 <b>Solutions:</b>
 1. <b>Increase timeout:</b> Try 120-300 seconds for more solver iterations
@@ -474,19 +562,15 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
 4. <b>Manual design:</b>
    • This task may require custom hand-crafted layout
 </font>"""
-                    print(f"\n⚠ All foundations tried ({', '.join(tried_foundations)}) - none succeeded.")
+                print(f"\n⚠ All foundations tried ({', '.join(tried_foundations)}) - none succeeded.")
 
-                self._show_results(result_text)
-            else:
-                self._show_results("ERROR: No solution found. Try a larger foundation or fewer machines.")
-                print("\n✗ No solution found.")
+            self._show_results(result_text)
+        else:
+            self._show_results("ERROR: No solution found. Try a larger foundation or increase timeout.")
+            print("\n✗ No solution found.")
 
-        except Exception as e:
-            import traceback
-            error_msg = f"<font face='monospace' size=3 color='#FF0000'><b>ERROR:</b>\n{str(e)}</font>"
-            self._show_results(error_msg)
-            print(f"\n✗ Error: {e}")
-            traceback.print_exc()
+        # Clear solving state
+        self._solving_state = None
 
     def _view_layout(self):
         """View the solution layout."""
