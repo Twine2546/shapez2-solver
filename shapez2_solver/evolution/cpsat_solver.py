@@ -1039,6 +1039,98 @@ class CPSATFullSolver:
                         model.AddMaxEquality(flow_violation, [diff, 0])
                     flow_order_terms.append(flow_violation)
 
+        # === OUTPUT PORT CLEARANCE ===
+        # Keep machines away from output port routing paths to avoid blocking
+        # Each output port needs a clear path from interior to the edge
+        output_clearance_penalty = []
+        clearance_distance = 3  # Minimum distance from output routing path
+
+        for i in range(num_machines):
+            spec = BUILDING_SPECS.get(machine_types[i])
+            w = spec.width if spec else 1
+            h = spec.height if spec else 1
+
+            for out_idx, (out_x, out_y, out_floor, out_side) in enumerate(self.output_positions):
+                # Check if machine is on same floor as output
+                same_floor_out = model.NewBoolVar(f'same_floor_out_{i}_{out_idx}')
+                model.Add(machine_floor[i] == out_floor).OnlyEnforceIf(same_floor_out)
+                model.Add(machine_floor[i] != out_floor).OnlyEnforceIf(same_floor_out.Not())
+
+                # Define the routing corridor that needs to be clear
+                # North ports: need y <= clearance_distance clear at x near out_x
+                # South ports: need y >= grid_height - clearance_distance - 1 clear at x near out_x
+                # East ports: need x >= grid_width - clearance_distance - 1 clear at y near out_y
+                # West ports: need x <= clearance_distance clear at y near out_y
+
+                in_corridor = model.NewBoolVar(f'in_corridor_{i}_{out_idx}')
+
+                if out_side == Side.NORTH:
+                    # Corridor: y < clearance_distance and x overlaps with out_x ± clearance
+                    y_in_corridor = model.NewBoolVar(f'y_in_corr_n_{i}_{out_idx}')
+                    x_in_corridor = model.NewBoolVar(f'x_in_corr_n_{i}_{out_idx}')
+                    model.Add(machine_y[i] < clearance_distance).OnlyEnforceIf(y_in_corridor)
+                    model.Add(machine_y[i] >= clearance_distance).OnlyEnforceIf(y_in_corridor.Not())
+                    model.Add(machine_x[i] + w > out_x - clearance_distance).OnlyEnforceIf(x_in_corridor)
+                    model.Add(machine_x[i] + w <= out_x - clearance_distance).OnlyEnforceIf(x_in_corridor.Not())
+                    x_in_corridor2 = model.NewBoolVar(f'x_in_corr_n2_{i}_{out_idx}')
+                    model.Add(machine_x[i] < out_x + clearance_distance).OnlyEnforceIf(x_in_corridor2)
+                    model.Add(machine_x[i] >= out_x + clearance_distance).OnlyEnforceIf(x_in_corridor2.Not())
+                    model.AddBoolAnd([y_in_corridor, x_in_corridor, x_in_corridor2]).OnlyEnforceIf(in_corridor)
+                    model.AddBoolOr([y_in_corridor.Not(), x_in_corridor.Not(), x_in_corridor2.Not()]).OnlyEnforceIf(in_corridor.Not())
+
+                elif out_side == Side.SOUTH:
+                    # Corridor: y + h > grid_height - clearance_distance and x overlaps
+                    y_in_corridor = model.NewBoolVar(f'y_in_corr_s_{i}_{out_idx}')
+                    x_in_corridor = model.NewBoolVar(f'x_in_corr_s_{i}_{out_idx}')
+                    model.Add(machine_y[i] + h > self.grid_height - clearance_distance).OnlyEnforceIf(y_in_corridor)
+                    model.Add(machine_y[i] + h <= self.grid_height - clearance_distance).OnlyEnforceIf(y_in_corridor.Not())
+                    model.Add(machine_x[i] + w > out_x - clearance_distance).OnlyEnforceIf(x_in_corridor)
+                    model.Add(machine_x[i] + w <= out_x - clearance_distance).OnlyEnforceIf(x_in_corridor.Not())
+                    x_in_corridor2 = model.NewBoolVar(f'x_in_corr_s2_{i}_{out_idx}')
+                    model.Add(machine_x[i] < out_x + clearance_distance).OnlyEnforceIf(x_in_corridor2)
+                    model.Add(machine_x[i] >= out_x + clearance_distance).OnlyEnforceIf(x_in_corridor2.Not())
+                    model.AddBoolAnd([y_in_corridor, x_in_corridor, x_in_corridor2]).OnlyEnforceIf(in_corridor)
+                    model.AddBoolOr([y_in_corridor.Not(), x_in_corridor.Not(), x_in_corridor2.Not()]).OnlyEnforceIf(in_corridor.Not())
+
+                elif out_side == Side.EAST:
+                    # Corridor: x + w > grid_width - clearance_distance and y overlaps
+                    x_in_corridor = model.NewBoolVar(f'x_in_corr_e_{i}_{out_idx}')
+                    y_in_corridor = model.NewBoolVar(f'y_in_corr_e_{i}_{out_idx}')
+                    model.Add(machine_x[i] + w > self.grid_width - clearance_distance).OnlyEnforceIf(x_in_corridor)
+                    model.Add(machine_x[i] + w <= self.grid_width - clearance_distance).OnlyEnforceIf(x_in_corridor.Not())
+                    model.Add(machine_y[i] + h > out_y - clearance_distance).OnlyEnforceIf(y_in_corridor)
+                    model.Add(machine_y[i] + h <= out_y - clearance_distance).OnlyEnforceIf(y_in_corridor.Not())
+                    y_in_corridor2 = model.NewBoolVar(f'y_in_corr_e2_{i}_{out_idx}')
+                    model.Add(machine_y[i] < out_y + clearance_distance).OnlyEnforceIf(y_in_corridor2)
+                    model.Add(machine_y[i] >= out_y + clearance_distance).OnlyEnforceIf(y_in_corridor2.Not())
+                    model.AddBoolAnd([x_in_corridor, y_in_corridor, y_in_corridor2]).OnlyEnforceIf(in_corridor)
+                    model.AddBoolOr([x_in_corridor.Not(), y_in_corridor.Not(), y_in_corridor2.Not()]).OnlyEnforceIf(in_corridor.Not())
+
+                else:  # WEST
+                    # Corridor: x < clearance_distance and y overlaps
+                    x_in_corridor = model.NewBoolVar(f'x_in_corr_w_{i}_{out_idx}')
+                    y_in_corridor = model.NewBoolVar(f'y_in_corr_w_{i}_{out_idx}')
+                    model.Add(machine_x[i] < clearance_distance).OnlyEnforceIf(x_in_corridor)
+                    model.Add(machine_x[i] >= clearance_distance).OnlyEnforceIf(x_in_corridor.Not())
+                    model.Add(machine_y[i] + h > out_y - clearance_distance).OnlyEnforceIf(y_in_corridor)
+                    model.Add(machine_y[i] + h <= out_y - clearance_distance).OnlyEnforceIf(y_in_corridor.Not())
+                    y_in_corridor2 = model.NewBoolVar(f'y_in_corr_w2_{i}_{out_idx}')
+                    model.Add(machine_y[i] < out_y + clearance_distance).OnlyEnforceIf(y_in_corridor2)
+                    model.Add(machine_y[i] >= out_y + clearance_distance).OnlyEnforceIf(y_in_corridor2.Not())
+                    model.AddBoolAnd([x_in_corridor, y_in_corridor, y_in_corridor2]).OnlyEnforceIf(in_corridor)
+                    model.AddBoolOr([x_in_corridor.Not(), y_in_corridor.Not(), y_in_corridor2.Not()]).OnlyEnforceIf(in_corridor.Not())
+
+                # Penalize if machine is in corridor AND on same floor as output
+                in_blocked_zone = model.NewBoolVar(f'blocked_{i}_{out_idx}')
+                model.AddBoolAnd([same_floor_out, in_corridor]).OnlyEnforceIf(in_blocked_zone)
+                model.AddBoolOr([same_floor_out.Not(), in_corridor.Not()]).OnlyEnforceIf(in_blocked_zone.Not())
+
+                # Heavy penalty for blocking output routing path
+                block_penalty = model.NewIntVar(0, 50, f'block_pen_{i}_{out_idx}')
+                model.Add(block_penalty == 50).OnlyEnforceIf(in_blocked_zone)
+                model.Add(block_penalty == 0).OnlyEnforceIf(in_blocked_zone.Not())
+                output_clearance_penalty.append(block_penalty)
+
         # Objective: minimize total distance while encouraging spatial separation
         # Prefer different X or Y coordinates for better routing
         center_x = self.grid_width // 2
@@ -1092,6 +1184,11 @@ class CPSATFullSolver:
         flow_weight = 2        # Moderate preference for flow direction
 
         objective_terms = []
+
+        # Output clearance (critical - prevents routing failures due to blocked paths)
+        if output_clearance_penalty:
+            clearance_weight = 10  # Highest priority
+            objective_terms.extend([p * clearance_weight for p in output_clearance_penalty])
 
         # Port-aware placement (highest priority - helps routing succeed)
         if port_distance_terms:
