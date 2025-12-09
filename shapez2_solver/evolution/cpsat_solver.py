@@ -573,6 +573,119 @@ class CPSATFullSolver:
             # At least one machine must be in a different position
             model.AddBoolOr(different_position_vars)
 
+        # === PORT-AWARE PLACEMENT ===
+        # Root machines should be near input ports, leaf machines near output ports
+        port_distance_terms = []
+
+        num_inputs = len(self.input_positions)
+        num_outputs = len(self.output_positions)
+
+        if num_machines > 0 and num_inputs > 0:
+            # Calculate machines per tree (for multi-input scenarios)
+            machines_per_tree = max(1, num_machines // num_inputs)
+
+            for i in range(num_machines):
+                tree_idx = i // machines_per_tree if machines_per_tree > 0 else 0
+                position_in_tree = i % machines_per_tree if machines_per_tree > 0 else i
+
+                # Root machines (first in each tree) should be near input ports
+                if position_in_tree == 0 and tree_idx < num_inputs:
+                    inp_x, inp_y, inp_floor, inp_side = self.input_positions[tree_idx]
+
+                    # Distance from machine to input port
+                    inp_dx = model.NewIntVar(-self.grid_width, self.grid_width, f'inp_dx_{i}')
+                    inp_dy = model.NewIntVar(-self.grid_height, self.grid_height, f'inp_dy_{i}')
+                    inp_abs_dx = model.NewIntVar(0, self.grid_width, f'inp_abs_dx_{i}')
+                    inp_abs_dy = model.NewIntVar(0, self.grid_height, f'inp_abs_dy_{i}')
+
+                    model.Add(inp_dx == machine_x[i] - inp_x)
+                    model.Add(inp_dy == machine_y[i] - inp_y)
+                    model.AddAbsEquality(inp_abs_dx, inp_dx)
+                    model.AddAbsEquality(inp_abs_dy, inp_dy)
+
+                    # Root machines strongly prefer being near inputs (weight 3)
+                    port_distance_terms.append(inp_abs_dx * 3)
+                    port_distance_terms.append(inp_abs_dy * 3)
+
+                # Leaf machines (last in each tree) should be near output ports
+                elif position_in_tree == machines_per_tree - 1 and num_outputs > 0:
+                    # Map this leaf to its target output port
+                    # Distribute outputs evenly among leaf machines
+                    leaves_count = num_inputs  # One leaf per tree
+                    leaf_idx = tree_idx
+                    outputs_per_leaf = max(1, num_outputs // leaves_count)
+                    target_output_idx = min(leaf_idx * outputs_per_leaf, num_outputs - 1)
+
+                    out_x, out_y, out_floor, out_side = self.output_positions[target_output_idx]
+
+                    # Distance from machine to output port
+                    out_dx = model.NewIntVar(-self.grid_width, self.grid_width, f'out_dx_{i}')
+                    out_dy = model.NewIntVar(-self.grid_height, self.grid_height, f'out_dy_{i}')
+                    out_abs_dx = model.NewIntVar(0, self.grid_width, f'out_abs_dx_{i}')
+                    out_abs_dy = model.NewIntVar(0, self.grid_height, f'out_abs_dy_{i}')
+
+                    model.Add(out_dx == machine_x[i] - out_x)
+                    model.Add(out_dy == machine_y[i] - out_y)
+                    model.AddAbsEquality(out_abs_dx, out_dx)
+                    model.AddAbsEquality(out_abs_dy, out_dy)
+
+                    # Leaf machines prefer being near outputs (weight 2)
+                    port_distance_terms.append(out_abs_dx * 2)
+                    port_distance_terms.append(out_abs_dy * 2)
+
+        # === FLOW DIRECTION BIAS ===
+        # Encourage machines to be ordered along the flow direction (input -> output)
+        flow_order_terms = []
+
+        if num_inputs > 0 and num_outputs > 0:
+            # Determine primary flow direction from input/output sides
+            from collections import Counter
+            input_sides = [side for _, _, _, side in self.input_positions]
+            output_sides = [side for _, _, _, side in self.output_positions]
+
+            primary_input_side = Counter(input_sides).most_common(1)[0][0]
+            primary_output_side = Counter(output_sides).most_common(1)[0][0]
+
+            # Add soft ordering constraints based on flow direction
+            for i in range(num_machines - 1):
+                # Only order machines within the same tree
+                tree_i = i // machines_per_tree if machines_per_tree > 0 else 0
+                tree_next = (i + 1) // machines_per_tree if machines_per_tree > 0 else 0
+
+                if tree_i != tree_next:
+                    continue  # Don't order across trees
+
+                # Horizontal flow (WEST -> EAST or EAST -> WEST)
+                if primary_input_side in [Side.WEST, Side.EAST]:
+                    flow_violation = model.NewIntVar(0, self.grid_width, f'flow_viol_x_{i}')
+                    if primary_input_side == Side.WEST:
+                        # Flow is left-to-right: machine i should be left of machine i+1
+                        diff = model.NewIntVar(-self.grid_width, self.grid_width, f'flow_diff_x_{i}')
+                        model.Add(diff == machine_x[i] - machine_x[i + 1])
+                        # Penalize if machine i is to the right of machine i+1
+                        model.AddMaxEquality(flow_violation, [diff, 0])
+                    else:
+                        # Flow is right-to-left: machine i should be right of machine i+1
+                        diff = model.NewIntVar(-self.grid_width, self.grid_width, f'flow_diff_x_{i}')
+                        model.Add(diff == machine_x[i + 1] - machine_x[i])
+                        model.AddMaxEquality(flow_violation, [diff, 0])
+                    flow_order_terms.append(flow_violation)
+
+                # Vertical flow (NORTH -> SOUTH or SOUTH -> NORTH)
+                elif primary_input_side in [Side.NORTH, Side.SOUTH]:
+                    flow_violation = model.NewIntVar(0, self.grid_height, f'flow_viol_y_{i}')
+                    if primary_input_side == Side.NORTH:
+                        # Flow is top-to-bottom: machine i should be above machine i+1
+                        diff = model.NewIntVar(-self.grid_height, self.grid_height, f'flow_diff_y_{i}')
+                        model.Add(diff == machine_y[i] - machine_y[i + 1])
+                        model.AddMaxEquality(flow_violation, [diff, 0])
+                    else:
+                        # Flow is bottom-to-top: machine i should be below machine i+1
+                        diff = model.NewIntVar(-self.grid_height, self.grid_height, f'flow_diff_y_{i}')
+                        model.Add(diff == machine_y[i + 1] - machine_y[i])
+                        model.AddMaxEquality(flow_violation, [diff, 0])
+                    flow_order_terms.append(flow_violation)
+
         # Objective: minimize total distance while encouraging spatial separation
         # Prefer different X or Y coordinates for better routing
         center_x = self.grid_width // 2
@@ -582,10 +695,10 @@ class CPSATFullSolver:
         overlap_penalty_terms = []
 
         for i in range(num_machines):
-            dx = model.NewIntVar(-self.grid_width, self.grid_width, f'dx_{i}')
-            dy = model.NewIntVar(-self.grid_height, self.grid_height, f'dy_{i}')
-            abs_dx = model.NewIntVar(0, self.grid_width, f'abs_dx_{i}')
-            abs_dy = model.NewIntVar(0, self.grid_height, f'abs_dy_{i}')
+            dx = model.NewIntVar(-self.grid_width, self.grid_width, f'ctr_dx_{i}')
+            dy = model.NewIntVar(-self.grid_height, self.grid_height, f'ctr_dy_{i}')
+            abs_dx = model.NewIntVar(0, self.grid_width, f'ctr_abs_dx_{i}')
+            abs_dy = model.NewIntVar(0, self.grid_height, f'ctr_abs_dy_{i}')
 
             model.Add(dx == machine_x[i] - center_x)
             model.Add(dy == machine_y[i] - center_y)
@@ -622,13 +735,25 @@ class CPSATFullSolver:
         # Later iterations: compact (minimize distance more)
         spread_weight = max(5, 20 - iteration * 2)  # Decreases from 20 to 5
         compact_weight = min(3, iteration // 2)     # Increases from 0 to 3
+        port_aware_weight = 4  # Strong preference for port-aware placement
+        flow_weight = 2        # Moderate preference for flow direction
 
         objective_terms = []
+
+        # Port-aware placement (highest priority - helps routing succeed)
+        if port_distance_terms:
+            objective_terms.extend([p * port_aware_weight for p in port_distance_terms])
+
+        # Flow direction ordering (helps routing be more direct)
+        if flow_order_terms:
+            objective_terms.extend([f * flow_weight for f in flow_order_terms])
+
+        # Penalize vertical stacking (harder to route)
         if overlap_penalty_terms:
-            # Heavily penalize vertical stacking (harder to route)
             objective_terms.extend([p * spread_weight for p in overlap_penalty_terms])
+
+        # Some compactness (but less important than port-awareness)
         if distance_terms and compact_weight > 0:
-            # Some compactness (but less important than spreading)
             objective_terms.extend([d * compact_weight for d in distance_terms])
 
         if objective_terms:
