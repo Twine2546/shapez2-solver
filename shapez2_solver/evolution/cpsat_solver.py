@@ -46,6 +46,13 @@ SOLVER_MACHINES = [
     BuildingType.SWAPPER,
 ]
 
+# Mapping from base machine type to its mirrored variant
+# Mirroring affects port positions (different from rotation)
+MIRRORED_VARIANTS = {
+    BuildingType.CUTTER: BuildingType.CUTTER_MIRRORED,
+    BuildingType.STACKER_BENT: BuildingType.STACKER_BENT_MIRRORED,
+}
+
 
 @dataclass
 class CPSATSolution:
@@ -1009,6 +1016,7 @@ class CPSATFullSolver:
         machine_y = []
         machine_floor = []
         machine_rotation = []
+        machine_mirrored = []  # Boolean: use mirrored variant if available
 
         for i, bt in enumerate(machine_types):
             spec = BUILDING_SPECS.get(bt)
@@ -1023,6 +1031,12 @@ class CPSATFullSolver:
             machine_y.append(model.NewIntVar(1, max(1, max_y), f'y_{i}'))
             machine_floor.append(model.NewIntVar(0, self.num_floors - 1, f'floor_{i}'))
             machine_rotation.append(model.NewIntVar(0, 3, f'rot_{i}'))
+
+            # Add mirrored variant option for machines that have one
+            if bt in MIRRORED_VARIANTS:
+                machine_mirrored.append(model.NewBoolVar(f'mirror_{i}'))
+            else:
+                machine_mirrored.append(None)  # No mirrored variant available
 
         # No overlap constraints
         for i in range(num_machines):
@@ -1422,7 +1436,13 @@ class CPSATFullSolver:
             floor = solver.Value(machine_floor[i])
             rot_val = solver.Value(machine_rotation[i])
             rot = [Rotation.EAST, Rotation.SOUTH, Rotation.WEST, Rotation.NORTH][rot_val]
-            machines.append((bt, x, y, floor, rot))
+
+            # Use mirrored variant if the solver chose it
+            actual_type = bt
+            if machine_mirrored[i] is not None and solver.Value(machine_mirrored[i]):
+                actual_type = MIRRORED_VARIANTS.get(bt, bt)
+
+            machines.append((actual_type, x, y, floor, rot))
 
         return machines, status_name
 
