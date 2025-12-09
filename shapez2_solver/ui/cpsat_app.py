@@ -833,20 +833,42 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
         pygame.draw.rect(self._screen, (50, 50, 50), rect)
         pygame.draw.rect(self._screen, (100, 100, 100), rect, 2)
 
+        # Read current text from UI elements (updates in real-time as user types)
+        current_inputs_text = self.inputs_text
+        current_outputs_text = self.outputs_text
+
+        if 'inputs_text' in self._ui_elements and self._ui_elements['inputs_text']:
+            try:
+                current_inputs_text = self._ui_elements['inputs_text'].get_text()
+            except:
+                pass
+
+        if 'outputs_text' in self._ui_elements and self._ui_elements['outputs_text']:
+            try:
+                current_outputs_text = self._ui_elements['outputs_text'].get_text()
+            except:
+                pass
+
         # Parse inputs and outputs
         inputs = []
-        for line in self.inputs_text.split('\n'):
+        for line in current_inputs_text.split('\n'):
             if line.strip():
                 parts = line.split(',')
                 if len(parts) >= 3:
-                    inputs.append((parts[0].strip(), int(parts[1]), int(parts[2])))
+                    try:
+                        inputs.append((parts[0].strip(), int(parts[1]), int(parts[2])))
+                    except (ValueError, IndexError):
+                        pass  # Skip invalid lines
 
         outputs = []
-        for line in self.outputs_text.split('\n'):
+        for line in current_outputs_text.split('\n'):
             if line.strip():
                 parts = line.split(',')
                 if len(parts) >= 3:
-                    outputs.append((parts[0].strip(), int(parts[1]), int(parts[2])))
+                    try:
+                        outputs.append((parts[0].strip(), int(parts[1]), int(parts[2])))
+                    except (ValueError, IndexError):
+                        pass  # Skip invalid lines
 
         # Calculate dimensions
         max_dim = max(spec.units_x, spec.units_y)
