@@ -54,6 +54,47 @@ MIRRORED_VARIANTS = {
 }
 
 
+def rotate_offset(dx: int, dy: int, rotation: Rotation) -> Tuple[int, int]:
+    """Rotate a relative offset (dx, dy) based on machine rotation.
+
+    EAST (default): no rotation
+    SOUTH: 90° clockwise
+    WEST: 180°
+    NORTH: 270° clockwise (90° counter-clockwise)
+    """
+    if rotation == Rotation.EAST:
+        return (dx, dy)
+    elif rotation == Rotation.SOUTH:
+        return (-dy, dx)
+    elif rotation == Rotation.WEST:
+        return (-dx, -dy)
+    elif rotation == Rotation.NORTH:
+        return (dy, -dx)
+    return (dx, dy)
+
+
+def get_machine_port_positions(
+    bt: BuildingType, x: int, y: int, floor: int, rot: Rotation
+) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
+    """Get world positions of input and output ports for a placed machine.
+
+    Returns (input_positions, output_positions) as lists of (x, y, floor) tuples.
+    """
+    ports = BUILDING_PORTS.get(bt, {'inputs': [(-1, 0, 0)], 'outputs': [(1, 0, 0)]})
+
+    input_positions = []
+    for rel_x, rel_y, rel_z in ports.get('inputs', [(-1, 0, 0)]):
+        rot_x, rot_y = rotate_offset(rel_x, rel_y, rot)
+        input_positions.append((x + rot_x, y + rot_y, floor + rel_z))
+
+    output_positions = []
+    for rel_x, rel_y, rel_z in ports.get('outputs', [(1, 0, 0)]):
+        rot_x, rot_y = rotate_offset(rel_x, rel_y, rot)
+        output_positions.append((x + rot_x, y + rot_y, floor + rel_z))
+
+    return input_positions, output_positions
+
+
 @dataclass
 class CPSATSolution:
     """Solution from CP-SAT solver."""
@@ -1483,52 +1524,20 @@ class CPSATFullSolver:
 
         router.set_occupied(occupied)
 
-        # Get machine input/output positions
-        machine_inputs = []  # List of (x, y, floor) for each machine's input
-        machine_outputs = []  # List of (x, y, floor) for each machine's output
-
-        for bt, mx, my, mfloor, rot in machines:
-            ports = BUILDING_PORTS.get(bt, {'inputs': [(0, 0, 0)], 'outputs': [(0, 0, 0)]})
-
-            # Get first input port position (relative to machine)
-            if ports['inputs']:
-                inp = ports['inputs'][0]
-                # Adjust based on rotation (simplified - assume EAST facing)
-                input_pos = (mx + inp[0], my + inp[1], mfloor + inp[2])
-                # Move input position to be adjacent to machine (accessible)
-                input_pos = (mx - 1, my, mfloor)  # Input from west
-            else:
-                input_pos = (mx - 1, my, mfloor)
-
-            machine_inputs.append(input_pos)
-
-            # Get first output port position
-            if ports['outputs']:
-                out = ports['outputs'][0]
-                spec = BUILDING_SPECS.get(bt)
-                w = spec.width if spec else 1
-                output_pos = (mx + w, my + out[1], mfloor + out[2])
-            else:
-                spec = BUILDING_SPECS.get(bt)
-                w = spec.width if spec else 1
-                output_pos = (mx + w, my, mfloor)
-
-            machine_outputs.append(output_pos)
-
-        # Collect all output positions from all machines
+        # Get machine input/output positions (rotation-aware)
+        machine_inputs = []  # List of (x, y, floor) for each machine's first input
+        machine_outputs = []  # List of (x, y, floor) for each machine's first output
         all_machine_outputs = []  # List of lists: machine_outputs[machine_idx][output_idx] = (x, y, floor)
+
         for bt, mx, my, mfloor, rot in machines:
-            ports = BUILDING_PORTS.get(bt, {'outputs': [(0, 0, 0)]})
-            spec = BUILDING_SPECS.get(bt)
-            w = spec.width if spec else 1
+            input_positions, output_positions = get_machine_port_positions(bt, mx, my, mfloor, rot)
 
-            outputs_for_machine = []
-            for out in ports['outputs']:
-                # Output position relative to machine
-                output_pos = (mx + w, my + out[1], mfloor + out[2])
-                outputs_for_machine.append(output_pos)
+            # First input/output for simple routing
+            machine_inputs.append(input_positions[0] if input_positions else (mx - 1, my, mfloor))
+            machine_outputs.append(output_positions[0] if output_positions else (mx + 1, my, mfloor))
 
-            all_machine_outputs.append(outputs_for_machine)
+            # All outputs for multi-output machines
+            all_machine_outputs.append(output_positions)
 
         # Determine tree structure
         # With N inputs, M outputs, and K machines:
@@ -1800,32 +1809,22 @@ class CPSATFullSolver:
         # Build list of all connections
         connections = []  # List of (source_pos, dest_pos)
 
-        # Get machine input/output positions
+        # Get machine input/output positions (rotation-aware)
         machine_inputs = []
         machine_outputs = []
         all_machine_outputs = []
 
         for bt, mx, my, mfloor, rot in machines:
-            ports = BUILDING_PORTS.get(bt, {'inputs': [(0, 0, 0)], 'outputs': [(0, 0, 0)]})
-            spec = BUILDING_SPECS.get(bt)
-            w = spec.width if spec else 1
+            input_positions, output_positions = get_machine_port_positions(bt, mx, my, mfloor, rot)
 
-            # Input position (from west side of machine)
-            input_pos = (mx - 1, my, mfloor)
-            machine_inputs.append(input_pos)
+            # First input for simple routing
+            machine_inputs.append(input_positions[0] if input_positions else (mx - 1, my, mfloor))
 
-            # All output positions
-            outputs_for_machine = []
-            for out in ports['outputs']:
-                output_pos = (mx + w, my + out[1], mfloor + out[2])
-                outputs_for_machine.append(output_pos)
-            all_machine_outputs.append(outputs_for_machine)
+            # All outputs for multi-output machines
+            all_machine_outputs.append(output_positions)
 
             # First output for simple routing
-            if outputs_for_machine:
-                machine_outputs.append(outputs_for_machine[0])
-            else:
-                machine_outputs.append((mx + w, my, mfloor))
+            machine_outputs.append(output_positions[0] if output_positions else (mx + 1, my, mfloor))
 
         # Build connections following tree structure
         num_machines = len(machines)
@@ -2014,23 +2013,14 @@ class CPSATFullSolver:
                     for dz in range(d):
                         occupied.add((x + dx, y + dy, floor + dz))
 
-        # Get machine input/output positions
+        # Get machine input/output positions (rotation-aware)
         machine_inputs = []
         all_machine_outputs = []
 
         for bt, mx, my, mfloor, rot in machines:
-            ports = BUILDING_PORTS.get(bt, {'inputs': [(0, 0, 0)], 'outputs': [(0, 0, 0)]})
-            spec = BUILDING_SPECS.get(bt)
-            w = spec.width if spec else 1
-
-            input_pos = (mx - 1, my, mfloor)
-            machine_inputs.append(input_pos)
-
-            outputs_for_machine = []
-            for out in ports['outputs']:
-                output_pos = (mx + w, my + out[1], mfloor + out[2])
-                outputs_for_machine.append(output_pos)
-            all_machine_outputs.append(outputs_for_machine)
+            input_positions, output_positions = get_machine_port_positions(bt, mx, my, mfloor, rot)
+            machine_inputs.append(input_positions[0] if input_positions else (mx - 1, my, mfloor))
+            all_machine_outputs.append(output_positions)
 
         # Calculate tree structure
         num_machines = len(machines)
@@ -2561,16 +2551,10 @@ class CPSATFullSolver:
         machine_outputs = []
 
         for bt, mx, my, mfloor, rot in machines:
-            ports = BUILDING_PORTS.get(bt, {'inputs': [(0, 0, 0)], 'outputs': [(0, 0, 0)]})
-            spec = BUILDING_SPECS.get(bt)
-            w = spec.width if spec else 1
-
-            input_pos = (mx - 1, my, mfloor)
-            machine_inputs.append(input_pos)
-
-            for out in ports['outputs']:
-                output_pos = (mx + w, my + out[1], mfloor + out[2])
-                machine_outputs.append(output_pos)
+            input_positions, output_positions = get_machine_port_positions(bt, mx, my, mfloor, rot)
+            machine_inputs.append(input_positions[0] if input_positions else (mx - 1, my, mfloor))
+            for out_pos in output_positions:
+                machine_outputs.append(out_pos)
 
         # Input ports -> first machine
         for inp_x, inp_y, inp_floor, inp_side in self.input_positions:
