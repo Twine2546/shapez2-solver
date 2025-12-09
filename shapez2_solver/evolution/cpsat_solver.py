@@ -592,7 +592,7 @@ class CPSATFullSolver:
                 if position_in_tree == 0 and tree_idx < num_inputs:
                     inp_x, inp_y, inp_floor, inp_side = self.input_positions[tree_idx]
 
-                    # Distance from machine to input port
+                    # Distance from machine to input port (X, Y)
                     inp_dx = model.NewIntVar(-self.grid_width, self.grid_width, f'inp_dx_{i}')
                     inp_dy = model.NewIntVar(-self.grid_height, self.grid_height, f'inp_dy_{i}')
                     inp_abs_dx = model.NewIntVar(0, self.grid_width, f'inp_abs_dx_{i}')
@@ -607,6 +607,15 @@ class CPSATFullSolver:
                     port_distance_terms.append(inp_abs_dx * 3)
                     port_distance_terms.append(inp_abs_dy * 3)
 
+                    # Floor alignment: root machines STRONGLY prefer same floor as input
+                    # This avoids needing lifts for the critical input->machine connection
+                    inp_df = model.NewIntVar(-self.num_floors, self.num_floors, f'inp_df_{i}')
+                    inp_abs_df = model.NewIntVar(0, self.num_floors, f'inp_abs_df_{i}')
+                    model.Add(inp_df == machine_floor[i] - inp_floor)
+                    model.AddAbsEquality(inp_abs_df, inp_df)
+                    # Heavy penalty for floor mismatch (weight 10) - floor changes are expensive
+                    port_distance_terms.append(inp_abs_df * 10)
+
                 # Leaf machines (last in each tree) should be near output ports
                 elif position_in_tree == machines_per_tree - 1 and num_outputs > 0:
                     # Map this leaf to its target output port
@@ -618,7 +627,7 @@ class CPSATFullSolver:
 
                     out_x, out_y, out_floor, out_side = self.output_positions[target_output_idx]
 
-                    # Distance from machine to output port
+                    # Distance from machine to output port (X, Y)
                     out_dx = model.NewIntVar(-self.grid_width, self.grid_width, f'out_dx_{i}')
                     out_dy = model.NewIntVar(-self.grid_height, self.grid_height, f'out_dy_{i}')
                     out_abs_dx = model.NewIntVar(0, self.grid_width, f'out_abs_dx_{i}')
@@ -632,6 +641,14 @@ class CPSATFullSolver:
                     # Leaf machines prefer being near outputs (weight 2)
                     port_distance_terms.append(out_abs_dx * 2)
                     port_distance_terms.append(out_abs_dy * 2)
+
+                    # Floor alignment: leaf machines prefer same floor as their target output
+                    out_df = model.NewIntVar(-self.num_floors, self.num_floors, f'out_df_{i}')
+                    out_abs_df = model.NewIntVar(0, self.num_floors, f'out_abs_df_{i}')
+                    model.Add(out_df == machine_floor[i] - out_floor)
+                    model.AddAbsEquality(out_abs_df, out_df)
+                    # Moderate penalty for floor mismatch (weight 5) - less critical than input
+                    port_distance_terms.append(out_abs_df * 5)
 
         # === FLOW DIRECTION BIAS ===
         # Encourage machines to be ordered along the flow direction (input -> output)

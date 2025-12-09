@@ -854,10 +854,12 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
     def _render(self):
         """Render the UI."""
         self._screen.fill((30, 30, 30))
-        self._manager.draw_ui(self._screen)
 
-        # Draw custom visuals on top
+        # Draw custom visuals first (before UI elements)
         self._draw_combined_visual()
+
+        # Draw UI on top so dropdowns and dialogs appear above visualization
+        self._manager.draw_ui(self._screen)
 
         pygame.display.flip()
 
