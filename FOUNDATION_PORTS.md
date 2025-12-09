@@ -276,9 +276,9 @@ t 6          │         6 t
 
 **Ports per side:**
 - North: 0-11 (12 ports - across all 3 top units)
-- South: 4-7 (4 ports - only on middle bottom unit)
-- East: 0-3 (4 ports - rightmost unit top portion only)
-- West: 0-3 (4 ports - leftmost unit top portion only)
+- South: 0-11 (12 ports - middle bottom unit has 4 exposed faces: south external + north/east/west internal)
+- East: 0-7 (8 ports - right top unit external + middle bottom unit internal)
+- West: 0-7 (8 ports - left top unit external + middle bottom unit internal)
 
 ---
 
@@ -309,10 +309,10 @@ t 7 │               │ 7 t
 ```
 
 **Ports per side:**
-- North: 0-7 (8 ports)
-- South: 0-3 (4 ports - left unit only)
-- East: 0-3 (4 ports - right unit top only)
-- West: 0-7 (8 ports - both left units)
+- North: 0-7 (8 ports - both top units)
+- South: 0-7 (8 ports - left bottom external + right top internal)
+- East: 0-7 (8 ports - right top external + left bottom internal)
+- West: 0-7 (8 ports - both left units external)
 
 ---
 
@@ -343,10 +343,10 @@ t 7 │     │     │     │ 7 a
 ```
 
 **Ports per side:**
-- North: 0-3 (4 ports - top left unit)
+- North: 0-11 (12 ports - top left external + bottom units internal)
 - South: 0-11 (12 ports - all 3 bottom units)
-- East: 4-7 (4 ports - rightmost bottom unit)
-- West: 0-7 (8 ports - both left units)
+- East: 0-7 (8 ports - right bottom external + top left internal)
+- West: 0-7 (8 ports - both left units external)
 
 ---
 
@@ -376,10 +376,10 @@ t 7          └──┴─────┘ 7 t
 ```
 
 **Ports per side:**
-- North: 0-7 (8 ports - top two units)
-- South: 4-11 (8 ports - bottom two units)
-- East: 4-7 (4 ports - right bottom unit)
-- West: 0-3 (4 ports - left top unit)
+- North: 0-11 (12 ports - top two external + middle bottom internal)
+- South: 0-11 (12 ports - bottom two external + middle top internal)
+- East: 0-7 (8 ports - right bottom external + middle units internal)
+- West: 0-7 (8 ports - left top external + middle units internal)
 
 ---
 
@@ -416,10 +416,10 @@ t   └─────┼─────┼─────┘   t
 ```
 
 **Ports per side:**
-- North: 4-7 (4 ports - top middle unit)
-- South: 4-7 (4 ports - bottom middle unit)
-- East: 4-7 (4 ports - right middle unit)
-- West: 4-7 (4 ports - left middle unit)
+- North: 0-11 (12 ports - top middle external + left/center/right internal)
+- South: 0-11 (12 ports - bottom middle external + left/center/right internal)
+- East: 0-11 (12 ports - right middle external + top/center/bottom internal)
+- West: 0-11 (12 ports - left middle external + top/center/bottom internal)
 
 ---
 
@@ -435,11 +435,11 @@ t   └─────┼─────┼─────┘   t
 | 3×2        | 40          | 0-11  | 0-11  | 0-7  | 0-7  | 54×34     |
 | 2×3        | 40          | 0-7   | 0-7   | 0-11 | 0-11 | 34×54     |
 | 3×3        | 48          | 0-11  | 0-11  | 0-11 | 0-11 | 54×54     |
-| T          | 32          | 0-11  | 4-7   | 0-3  | 0-3  | 54×34     |
-| L          | 24          | 0-7   | 0-3   | 0-3  | 0-7  | 34×34     |
-| L4         | 32          | 0-3   | 0-11  | 4-7  | 0-7  | 54×34     |
-| S4         | 32          | 0-7   | 4-11  | 4-7  | 0-3  | 54×34     |
-| Cross      | 16          | 4-7   | 4-7   | 4-7  | 4-7  | 54×54     |
+| T          | 40          | 0-11  | 0-11  | 0-7  | 0-7  | 54×34     |
+| L          | 32          | 0-7   | 0-7   | 0-7  | 0-7  | 34×34     |
+| L4         | 40          | 0-11  | 0-11  | 0-7  | 0-7  | 54×34     |
+| S4         | 40          | 0-11  | 0-11  | 0-7  | 0-7  | 54×34     |
+| Cross      | 48          | 0-11  | 0-11  | 0-11 | 0-11 | 54×54     |
 
 ---
 
