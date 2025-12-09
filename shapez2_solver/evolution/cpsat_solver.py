@@ -1253,24 +1253,30 @@ class CPSATFullSolver:
             print(f"    Machines: {num_machines} ({machines_per_input:.1f} per input)")
             print(f"    Outputs: {num_outputs_needed} ({outputs_per_input:.1f} per input)\n")
 
+        # Group outputs by side for smart assignment
+        outputs_by_side = {Side.NORTH: [], Side.SOUTH: [], Side.EAST: [], Side.WEST: []}
+        for out_idx, (_, _, _, out_side) in enumerate(self.output_positions):
+            outputs_by_side[out_side].append(out_idx)
+
         # Route each independent tree
         for tree_idx in range(num_inputs):
             # Determine machine range for this tree
             machine_start = int(tree_idx * machines_per_input)
             machine_end = int((tree_idx + 1) * machines_per_input)
 
-            # Determine output range for this tree
-            output_start = int(tree_idx * outputs_per_input)
-            output_end = int((tree_idx + 1) * outputs_per_input)
-
             tree_machines = list(range(machine_start, min(machine_end, num_machines)))
-            tree_outputs = list(range(output_start, min(output_end, num_outputs_needed)))
+
+            # Smart output assignment: distribute outputs across sides
+            num_outputs_for_tree = int(outputs_per_input)
+            tree_outputs = self._assign_tree_outputs(
+                tree_idx, num_inputs, num_outputs_for_tree, outputs_by_side, verbose and tree_idx == 0
+            )
 
             if not tree_machines or not tree_outputs:
                 continue
 
             if verbose:
-                print(f"  Tree {tree_idx}: Machines {machine_start}-{machine_end-1}, Outputs {output_start}-{output_end-1}")
+                print(f"  Tree {tree_idx}: Machines {machine_start}-{machine_end-1}, Outputs {tree_outputs}")
 
             # Route input to root machine of this tree
             if tree_idx < len(self.input_positions):
@@ -1311,11 +1317,12 @@ class CPSATFullSolver:
                 machine_idx = tree_machines[0]
                 machine_outputs_list = all_machine_outputs[machine_idx]
 
-                for local_out_idx, output_idx in enumerate(tree_outputs):
-                    if local_out_idx >= len(machine_outputs_list):
-                        break
+                # Smart matching: match machine outputs to foundation outputs by proximity
+                matched_outputs = self._match_machine_to_foundation_outputs(
+                    machine_outputs_list, tree_outputs, verbose=False
+                )
 
-                    start = machine_outputs_list[local_out_idx]
+                for start, output_idx in matched_outputs:
                     out_x, out_y, out_floor, out_side = self.output_positions[output_idx]
 
                     if out_side == Side.EAST:
@@ -1373,47 +1380,45 @@ class CPSATFullSolver:
                         if verbose:
                             print(f"      FAILED")
 
-                # Route child machines to output ports
-                # Distribute outputs evenly among children
-                outputs_per_child = len(tree_outputs) // max(1, len(tree_machines) - 1)
-
-                for child_local_idx, child_machine_idx in enumerate(tree_machines[1:]):
+                # Route child machines to output ports using smart matching
+                # Collect all child output ports
+                all_child_outputs = []
+                for child_machine_idx in tree_machines[1:]:
                     child_outputs = all_machine_outputs[child_machine_idx]
-                    child_output_start = child_local_idx * outputs_per_child
-                    child_output_end = (child_local_idx + 1) * outputs_per_child
+                    all_child_outputs.extend(child_outputs)
 
-                    for local_out_idx, child_output_pos in enumerate(child_outputs):
-                        output_global_idx = child_output_start + local_out_idx
-                        if output_global_idx >= len(tree_outputs):
-                            break
+                # Match all child outputs to foundation outputs
+                matched_outputs = self._match_machine_to_foundation_outputs(
+                    all_child_outputs, tree_outputs, verbose=False
+                )
 
-                        port_idx = tree_outputs[output_global_idx]
-                        out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
+                for child_output_pos, port_idx in matched_outputs:
+                    out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
 
-                        if out_side == Side.EAST:
-                            goal = (self.grid_width - 2, out_y, out_floor)
-                        elif out_side == Side.WEST:
-                            goal = (1, out_y, out_floor)
-                        elif out_side == Side.SOUTH:
-                            goal = (out_x, self.grid_height - 2, out_floor)
-                        else:  # NORTH
-                            goal = (out_x, 1, out_floor)
+                    if out_side == Side.EAST:
+                        goal = (self.grid_width - 2, out_y, out_floor)
+                    elif out_side == Side.WEST:
+                        goal = (1, out_y, out_floor)
+                    elif out_side == Side.SOUTH:
+                        goal = (out_x, self.grid_height - 2, out_floor)
+                    else:  # NORTH
+                        goal = (out_x, 1, out_floor)
 
+                    if verbose:
+                        print(f"    Machine output {child_output_pos} -> Output {port_idx}")
+
+                    path = router.find_path(child_output_pos, goal, allow_belt_ports=True)
+                    if path:
+                        belts = router.path_to_belts(path)
+                        all_belts.extend(belts)
+                        for bx, by, bf, _, _ in belts:
+                            router.add_occupied(bx, by, bf)
                         if verbose:
-                            print(f"    Machine {child_machine_idx} -> Output {port_idx}")
-
-                        path = router.find_path(child_output_pos, goal, allow_belt_ports=True)
-                        if path:
-                            belts = router.path_to_belts(path)
-                            all_belts.extend(belts)
-                            for bx, by, bf, _, _ in belts:
-                                router.add_occupied(bx, by, bf)
-                            if verbose:
-                                print(f"      Success: {len(belts)} belts")
-                        else:
-                            all_success = False
-                            if verbose:
-                                print(f"      FAILED")
+                            print(f"      Success: {len(belts)} belts")
+                    else:
+                        all_success = False
+                        if verbose:
+                            print(f"      FAILED")
 
         # Add edge connection belts from ports to the routing start/end positions
         if all_success:
@@ -1539,15 +1544,23 @@ class CPSATFullSolver:
             print(f"  Machines: {num_machines} ({machines_per_input:.1f} per input)")
             print(f"  Outputs: {num_outputs_needed} ({outputs_per_input:.1f} per input)")
 
+        # Group outputs by side for smart assignment
+        outputs_by_side = {Side.NORTH: [], Side.SOUTH: [], Side.EAST: [], Side.WEST: []}
+        for out_idx, (_, _, _, out_side) in enumerate(self.output_positions):
+            outputs_by_side[out_side].append(out_idx)
+
         # Build connections for each tree
         for tree_idx in range(num_inputs):
             machine_start = int(tree_idx * machines_per_input)
             machine_end = int((tree_idx + 1) * machines_per_input)
-            output_start = int(tree_idx * outputs_per_input)
-            output_end = int((tree_idx + 1) * outputs_per_input)
 
             tree_machines = list(range(machine_start, min(machine_end, num_machines)))
-            tree_outputs = list(range(output_start, min(output_end, num_outputs_needed)))
+
+            # Smart output assignment
+            num_outputs_for_tree = int(outputs_per_input)
+            tree_outputs = self._assign_tree_outputs(
+                tree_idx, num_inputs, num_outputs_for_tree, outputs_by_side, verbose=False
+            )
 
             if not tree_machines or not tree_outputs:
                 continue
@@ -1571,15 +1584,15 @@ class CPSATFullSolver:
 
             # Route tree internals and outputs
             if len(tree_machines) == 1:
-                # Single machine: route outputs to ports
+                # Single machine: route outputs to ports using smart matching
                 machine_idx = tree_machines[0]
                 machine_outputs_list = all_machine_outputs[machine_idx]
 
-                for local_out_idx, output_idx in enumerate(tree_outputs):
-                    if local_out_idx >= len(machine_outputs_list):
-                        break
+                matched_outputs = self._match_machine_to_foundation_outputs(
+                    machine_outputs_list, tree_outputs, verbose=False
+                )
 
-                    start = machine_outputs_list[local_out_idx]
+                for start, output_idx in matched_outputs:
                     out_x, out_y, out_floor, out_side = self.output_positions[output_idx]
 
                     if out_side == Side.EAST:
@@ -1606,31 +1619,29 @@ class CPSATFullSolver:
                     goal = machine_inputs[child_idx]
                     connections.append((start, goal))
 
-                # Children -> outputs
-                outputs_per_child = len(tree_outputs) // max(1, len(tree_machines) - 1)
-
-                for child_local_idx, child_machine_idx in enumerate(tree_machines[1:]):
+                # Children -> outputs using smart matching
+                all_child_outputs = []
+                for child_machine_idx in tree_machines[1:]:
                     child_outputs = all_machine_outputs[child_machine_idx]
-                    child_output_start = child_local_idx * outputs_per_child
+                    all_child_outputs.extend(child_outputs)
 
-                    for local_out_idx, child_output_pos in enumerate(child_outputs):
-                        output_global_idx = child_output_start + local_out_idx
-                        if output_global_idx >= len(tree_outputs):
-                            break
+                matched_outputs = self._match_machine_to_foundation_outputs(
+                    all_child_outputs, tree_outputs, verbose=False
+                )
 
-                        port_idx = tree_outputs[output_global_idx]
-                        out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
+                for child_output_pos, port_idx in matched_outputs:
+                    out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
 
-                        if out_side == Side.EAST:
-                            goal = (self.grid_width - 2, out_y, out_floor)
-                        elif out_side == Side.WEST:
-                            goal = (1, out_y, out_floor)
-                        elif out_side == Side.SOUTH:
-                            goal = (out_x, self.grid_height - 2, out_floor)
-                        else:  # NORTH
-                            goal = (out_x, 1, out_floor)
+                    if out_side == Side.EAST:
+                        goal = (self.grid_width - 2, out_y, out_floor)
+                    elif out_side == Side.WEST:
+                        goal = (1, out_y, out_floor)
+                    elif out_side == Side.SOUTH:
+                        goal = (out_x, self.grid_height - 2, out_floor)
+                    else:  # NORTH
+                        goal = (out_x, 1, out_floor)
 
-                        connections.append((child_output_pos, goal))
+                    connections.append((child_output_pos, goal))
 
         if verbose:
             print(f"  Total connections to route: {len(connections)}")
