@@ -466,3 +466,30 @@ S,7,3,RuRuRuRu:CuCuCuCu  # South port 7, floor 3, 2-layer stack
 3. **Use multiple floors** (0-3) to route parallel streams without collisions
 4. **Irregular shapes** have fewer ports but save space
 5. **Each port is a 1×4 notch** in the actual game
+
+---
+
+## IMPORTANT UPDATE: Irregular Foundation Ports
+
+**Internal exposed faces also have ports!**
+
+For irregular foundations with gaps, any face exposed to empty space (including internal gaps) has 4 ports. This significantly increases port counts:
+
+### Updated Port Counts (Internal Faces Included):
+
+| Foundation | Total Ports | North | South | East | West |
+|------------|-------------|-------|-------|------|------|
+| Cross      | 48          | 0-11  | 0-11  | 0-11 | 0-11 |
+| T          | 40          | 0-11  | 0-11  | 0-7  | 0-7  |
+| L          | 32          | 0-7   | 0-7   | 0-7  | 0-7  |
+| L4         | 40          | 0-11  | 0-11  | 0-7  | 0-7  |
+| S4         | 40          | 0-11  | 0-11  | 0-7  | 0-7  |
+
+**Cross Example:**
+- Unit (0,1): Has North, South, West faces exposed → contributes ports to all 3 sides
+- Unit (1,0): Has North, East, West faces exposed → contributes to 3 sides
+- Unit (1,1): Center - all faces connected → NO ports
+- Unit (2,1): Has North, South, East faces exposed → contributes to 3 sides
+- Unit (1,2): Has South, East, West faces exposed → contributes to 3 sides
+
+**Result:** 3 units expose north faces = 12 north ports, etc.
