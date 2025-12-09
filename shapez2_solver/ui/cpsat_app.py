@@ -50,6 +50,7 @@ class CPSATSolverApp:
 
         # Auto-scaling state
         self._solving_state = None  # For multi-step foundation trying
+        self._continue_dialog = None  # For continue/next dialog
 
     def run(self):
         """Run the application."""
@@ -80,6 +81,11 @@ class CPSATSolverApp:
 
                 if event.type == pygame_gui.UI_CONFIRMATION_DIALOG_CONFIRMED:
                     self._handle_dialog_confirmed(event)
+
+                if event.type == pygame_gui.UI_BUTTON_PRESSED:
+                    # Check if it's our custom continue button
+                    if hasattr(event.ui_element, 'text') and event.ui_element.text == "Continue This Foundation":
+                        self._handle_continue_button()
 
                 self._manager.process_events(event)
 
@@ -307,6 +313,14 @@ Output: E,0,0,Su------
             self._solving_state['dialog'] = None
             self._continue_solving()
 
+    def _handle_continue_button(self):
+        """Handle continue button press."""
+        if self._continue_dialog:
+            self._continue_dialog.kill()
+            self._continue_dialog = None
+        # Continue on same foundation
+        self._continue_current_foundation()
+
     def _solve(self):
         """Solve using CP-SAT."""
         # Read current text from UI elements (in case events didn't fire)
@@ -366,7 +380,10 @@ Output: E,0,0,Su------
             'progression': foundation_progression,
             'current_idx': start_idx,
             'tried_foundations': [],
-            'dialog': None
+            'dialog': None,
+            'nogood_placements': [],  # Persist across continuations
+            'total_iterations': 0,     # Track total iterations on this foundation
+            'start_time': time.time()  # Track total time on this foundation
         }
 
         print("\n" + "="*70)
@@ -383,8 +400,12 @@ Output: E,0,0,Su------
         # Start solving with the first foundation
         self._try_current_foundation()
 
-    def _try_current_foundation(self):
-        """Try solving with the current foundation in the progression."""
+    def _try_current_foundation(self, is_continuation=False):
+        """Try solving with the current foundation in the progression.
+
+        Args:
+            is_continuation: If True, continue on same foundation with existing nogoods
+        """
         if not self._solving_state:
             return
 
@@ -398,14 +419,31 @@ Output: E,0,0,Su------
             return
 
         current_foundation = progression[current_idx]
-        state['tried_foundations'].append(current_foundation)
+
+        # Only add to tried list if not a continuation
+        if not is_continuation:
+            if current_foundation not in state['tried_foundations']:
+                state['tried_foundations'].append(current_foundation)
+            # Reset nogood placements and iteration count for new foundation
+            state['nogood_placements'] = []
+            state['total_iterations'] = 0
+            state['start_time'] = time.time()
+
+        continuation_msg = " (CONTINUING)" if is_continuation else ""
+        total_time = time.time() - state['start_time']
 
         print(f"\n{'='*70}")
-        print(f"TRYING FOUNDATION: {current_foundation} ({current_idx + 1}/{len(progression)})")
-        print(f"Timeout: {self.time_limit} seconds (per foundation)")
+        print(f"TRYING FOUNDATION: {current_foundation} ({current_idx + 1}/{len(progression)}){continuation_msg}")
+        if is_continuation:
+            print(f"Previous iterations: {state['total_iterations']}, Total time: {total_time:.1f}s")
+            print(f"Nogood placements from previous attempts: {len(state['nogood_placements'])}")
+        print(f"Timeout: {self.time_limit} seconds (per attempt)")
         print(f"{'='*70}")
+        sys.stdout.flush()
 
         try:
+            # Continue searching with fresh solver instance
+            # Different random seeds per iteration mean we explore different search space
             solution = solve_with_cpsat(
                 foundation_type=current_foundation,
                 input_specs=state['inputs'],
@@ -414,6 +452,9 @@ Output: E,0,0,Su------
                 time_limit=self.time_limit,
                 verbose=True
             )
+
+            # Track iterations (approximation - solver restarts each time)
+            state['total_iterations'] += 1
 
             if solution and hasattr(solution, 'routing_success') and solution.routing_success:
                 # Success!
@@ -442,7 +483,7 @@ Output: E,0,0,Su------
             self._prompt_next_foundation()
 
     def _prompt_next_foundation(self):
-        """Prompt user to try the next foundation."""
+        """Prompt user to continue on same foundation or try next."""
         if not self._solving_state:
             return
 
@@ -452,29 +493,74 @@ Output: E,0,0,Su------
         current_foundation = progression[current_idx]
 
         # Check if there are more foundations to try
-        if current_idx + 1 >= len(progression):
-            # No more foundations
-            self._finish_solving(all_failed=True)
-            return
+        has_next = current_idx + 1 < len(progression)
+        next_foundation = progression[current_idx + 1] if has_next else None
 
-        next_foundation = progression[current_idx + 1]
+        total_time = time.time() - state['start_time']
 
-        # Create confirmation dialog
-        dialog = pygame_gui.windows.UIConfirmationDialog(
-            rect=pygame.Rect((self.width // 2 - 250, self.height // 2 - 100), (500, 200)),
+        # Create custom dialog with Continue and Try Next buttons
+        dialog_rect = pygame.Rect((self.width // 2 - 300, self.height // 2 - 150), (600, 300))
+
+        if has_next:
+            desc = f"""Foundation '{current_foundation}' could not complete routing.
+
+Total time on this foundation: {total_time:.1f}s
+Iterations attempted: {state['total_iterations']}
+Nogood constraints: {len(state['nogood_placements'])}
+
+Options:
+• Continue: Keep searching this foundation (adds {self.time_limit}s more)
+• Try Next: Move to '{next_foundation}'
+
+Tried: {', '.join(state['tried_foundations'])}
+Remaining: {len(progression) - current_idx - 1} foundation(s)"""
+        else:
+            desc = f"""Foundation '{current_foundation}' could not complete routing.
+
+Total time: {total_time:.1f}s
+Iterations: {state['total_iterations']}
+
+This is the last foundation. You can:
+• Continue: Keep searching (adds {self.time_limit}s more)
+• Cancel: Stop and show best attempt"""
+
+        # Create window manually to add custom button
+        self._continue_dialog = pygame_gui.elements.UIWindow(
+            rect=dialog_rect,
             manager=self._manager,
-            window_title="Foundation Failed",
-            action_long_desc=f"""Foundation '{current_foundation}' could not complete routing within {self.time_limit} seconds.
-
-Would you like to try the next foundation: '{next_foundation}'?
-
-Tried so far: {', '.join(state['tried_foundations'])}
-Remaining: {len(progression) - current_idx - 1} foundation(s)""",
-            action_short_name="Try Next",
-            blocking=False  # Non-blocking so GUI stays responsive
+            window_display_title="Foundation Search Failed"
         )
 
-        state['dialog'] = dialog
+        # Add message
+        msg_rect = pygame.Rect(10, 10, 580, 200)
+        pygame_gui.elements.UITextBox(
+            html_text=f"<font face='monospace' size=3>{desc}</font>",
+            relative_rect=msg_rect,
+            manager=self._manager,
+            container=self._continue_dialog
+        )
+
+        # Add Continue button
+        continue_btn_rect = pygame.Rect(10, 220, 280, 40)
+        continue_btn = pygame_gui.elements.UIButton(
+            relative_rect=continue_btn_rect,
+            text="Continue This Foundation",
+            manager=self._manager,
+            container=self._continue_dialog
+        )
+
+        # Add Try Next button (or Cancel if last foundation)
+        if has_next:
+            next_btn_rect = pygame.Rect(300, 220, 280, 40)
+            dialog = pygame_gui.windows.UIConfirmationDialog(
+                rect=pygame.Rect((self.width // 2 - 250, self.height // 2 - 100), (500, 200)),
+                manager=self._manager,
+                window_title="Try Next Foundation?",
+                action_long_desc=f"Move to next foundation: '{next_foundation}'?",
+                action_short_name="Try Next",
+                blocking=False
+            )
+            state['dialog'] = dialog
 
     def _continue_solving(self):
         """Continue solving with the next foundation."""
@@ -482,7 +568,20 @@ Remaining: {len(progression) - current_idx - 1} foundation(s)""",
             return
 
         self._solving_state['current_idx'] += 1
-        self._try_current_foundation()
+        self._try_current_foundation(is_continuation=False)
+
+    def _continue_current_foundation(self):
+        """Continue solving on the same foundation with existing constraints."""
+        if not self._solving_state:
+            return
+
+        print(f"\n{'='*70}")
+        print(f"CONTINUING SEARCH ON CURRENT FOUNDATION")
+        print(f"{'='*70}")
+        sys.stdout.flush()
+
+        # Continue on same foundation, keeping nogood constraints
+        self._try_current_foundation(is_continuation=True)
 
     def _finish_solving(self, all_failed=False):
         """Finish the solving process and display results."""
