@@ -204,21 +204,40 @@ class CPSATFullSolver:
         if verbose:
             print("\nPhase 2: Iterative Placement + Routing")
 
-        max_iterations = 10
+        # No hard iteration limit - keep trying until timeout
         nogood_placements = []  # Store failed placements to avoid
         best_solution = None
+        iteration = 0
 
-        for iteration in range(max_iterations):
-            if time.time() - start_time > self.time_limit:
+        while True:
+            iteration += 1
+
+            # Check timeout
+            remaining_time = self.time_limit - (time.time() - start_time)
+            if remaining_time <= 0:
                 if verbose:
-                    print(f"\nIteration {iteration + 1}: Timeout")
+                    print(f"\nIteration {iteration}: Timeout reached")
+                break
+
+            # Need at least 5 seconds for placement + routing
+            if remaining_time < 5:
+                if verbose:
+                    print(f"\nIteration {iteration}: Insufficient time remaining ({remaining_time:.1f}s)")
                 break
 
             if verbose:
-                print(f"\n--- Iteration {iteration + 1} ---")
+                remaining_time = self.time_limit - (time.time() - start_time)
+                print(f"\n--- Iteration {iteration} (time remaining: {remaining_time:.1f}s) ---")
 
             # Solve placement with CP-SAT (excluding nogood placements)
-            placement = self._solve_placement(machine_types, nogood_placements, verbose)
+            # Give placement solver limited time to allow multiple attempts
+            placement_time_limit = min(30.0, remaining_time * 0.3)  # 30% of remaining time, max 30s
+            placement = self._solve_placement(
+                machine_types, nogood_placements,
+                time_limit=placement_time_limit,
+                iteration=iteration,
+                verbose=verbose
+            )
 
             if placement is None:
                 if verbose:
@@ -281,7 +300,7 @@ class CPSATFullSolver:
             # If routing succeeded, we're done!
             if routing_success:
                 if verbose:
-                    print(f"\n✓ SUCCESS in {iteration + 1} iteration(s)")
+                    print(f"\n✓ SUCCESS in {iteration} iteration(s)")
                 break
 
             # Routing failed - add this placement to nogood list
@@ -445,6 +464,8 @@ class CPSATFullSolver:
         self,
         machine_types: List[BuildingType],
         nogood_placements: List[Tuple[Tuple[int, int, int], ...]] = None,
+        time_limit: float = 30.0,
+        iteration: int = 1,
         verbose: bool = False
     ) -> Optional[Tuple[List[Tuple[BuildingType, int, int, int, Rotation]], str]]:
         """
@@ -596,14 +617,31 @@ class CPSATFullSolver:
 
                 overlap_penalty_terms.append(penalty)
 
-        # Combined objective: minimize distance + minimize vertical stacking
-        if distance_terms or overlap_penalty_terms:
-            model.Minimize(sum(distance_terms) + sum(overlap_penalty_terms) * 2)
+        # Objective changes based on iteration to encourage diversity
+        # Early iterations: spread out (minimize overlap penalty more)
+        # Later iterations: compact (minimize distance more)
+        spread_weight = max(5, 20 - iteration * 2)  # Decreases from 20 to 5
+        compact_weight = min(3, iteration // 2)     # Increases from 0 to 3
 
-        # Solve
+        objective_terms = []
+        if overlap_penalty_terms:
+            # Heavily penalize vertical stacking (harder to route)
+            objective_terms.extend([p * spread_weight for p in overlap_penalty_terms])
+        if distance_terms and compact_weight > 0:
+            # Some compactness (but less important than spreading)
+            objective_terms.extend([d * compact_weight for d in distance_terms])
+
+        if objective_terms:
+            model.Minimize(sum(objective_terms))
+
+        # Solve with limited time per attempt
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = self.time_limit / 2
+        solver.parameters.max_time_in_seconds = time_limit
         solver.parameters.num_search_workers = 8
+
+        # Encourage diversity through search parameters
+        if iteration > 1:
+            solver.parameters.random_seed = iteration * 42  # Different seed each iteration
 
         status = solver.Solve(model)
 
