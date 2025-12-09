@@ -425,14 +425,20 @@ class CPSATFullSolver:
         output_specs: List[Tuple[str, int, int, str]],
         max_machines: int = 10,
         time_limit_seconds: float = 60.0,
-        use_global_routing: bool = False,
+        routing_mode: str = 'astar',  # 'astar', 'global', or 'hybrid'
+        use_global_routing: bool = False,  # Deprecated, use routing_mode
     ):
         self.foundation_type = foundation_type
         self.input_specs = input_specs
         self.output_specs = output_specs
         self.max_machines = max_machines
         self.time_limit = time_limit_seconds
-        self.use_global_routing = use_global_routing
+
+        # Handle routing mode
+        if use_global_routing:
+            self.routing_mode = 'global'
+        else:
+            self.routing_mode = routing_mode
 
         # Get foundation dimensions
         self.spec = FOUNDATION_SPECS.get(foundation_type)
@@ -568,13 +574,19 @@ class CPSATFullSolver:
 
             # Try routing with this placement
             if verbose:
-                routing_method = "global CP-SAT" if self.use_global_routing else "A*"
-                print(f"Attempting routing ({routing_method})...")
+                routing_names = {'astar': 'A*', 'global': 'global CP-SAT', 'hybrid': 'hybrid (divide & conquer)'}
+                print(f"Attempting routing ({routing_names.get(self.routing_mode, self.routing_mode)})...")
 
-            if self.use_global_routing:
+            routing_time = min(60.0, remaining_time * 0.5)  # 50% of remaining time
+
+            if self.routing_mode == 'global':
                 # Use global CP-SAT routing - solves all paths simultaneously
-                routing_time = min(60.0, remaining_time * 0.5)  # 50% of remaining time
                 belts, routing_success = self._route_all_connections_global(
+                    machines, time_limit=routing_time, verbose=verbose
+                )
+            elif self.routing_mode == 'hybrid':
+                # Use hybrid routing - divide and conquer with A* fallback
+                belts, routing_success = self._route_all_connections_hybrid(
                     machines, time_limit=routing_time, verbose=verbose
                 )
             else:
@@ -1661,6 +1673,283 @@ class CPSATFullSolver:
                 print(f"    Added {len(self.output_positions)} output edge belts")
 
         return belts, success
+
+    def _route_all_connections_hybrid(
+        self,
+        machines: List[Tuple[BuildingType, int, int, int, Rotation]],
+        time_limit: float = 60.0,
+        verbose: bool = False
+    ) -> Tuple[List[Tuple[int, int, int, BuildingType, Rotation]], bool]:
+        """
+        Hybrid routing: divide-and-conquer with A* fallback.
+
+        Strategy:
+        1. Route each tree separately using global CP-SAT (smaller subproblems)
+        2. If global fails for a tree, fall back to A* with backtracking
+        3. After each tree, mark cells as occupied for subsequent trees
+
+        This scales much better than routing all connections simultaneously.
+        """
+        # Build occupied set from machine positions
+        occupied = set()
+        for bt, x, y, floor, rot in machines:
+            spec = BUILDING_SPECS.get(bt)
+            w = spec.width if spec else 1
+            h = spec.height if spec else 1
+            d = spec.depth if spec else 1
+
+            for dx in range(w):
+                for dy in range(h):
+                    for dz in range(d):
+                        occupied.add((x + dx, y + dy, floor + dz))
+
+        # Get machine input/output positions
+        machine_inputs = []
+        all_machine_outputs = []
+
+        for bt, mx, my, mfloor, rot in machines:
+            ports = BUILDING_PORTS.get(bt, {'inputs': [(0, 0, 0)], 'outputs': [(0, 0, 0)]})
+            spec = BUILDING_SPECS.get(bt)
+            w = spec.width if spec else 1
+
+            input_pos = (mx - 1, my, mfloor)
+            machine_inputs.append(input_pos)
+
+            outputs_for_machine = []
+            for out in ports['outputs']:
+                output_pos = (mx + w, my + out[1], mfloor + out[2])
+                outputs_for_machine.append(output_pos)
+            all_machine_outputs.append(outputs_for_machine)
+
+        # Calculate tree structure
+        num_machines = len(machines)
+        num_inputs = len(self.input_positions)
+        num_outputs_needed = len(self.output_positions)
+
+        if num_inputs == 0 or num_machines == 0:
+            return [], True
+
+        outputs_per_input = num_outputs_needed / num_inputs if num_inputs > 0 else num_outputs_needed
+        machines_per_input = num_machines / num_inputs if num_inputs > 0 else num_machines
+
+        if verbose:
+            print(f"\n=== Hybrid Routing (Divide & Conquer) ===")
+            print(f"  Trees: {num_inputs}")
+            print(f"  Machines per tree: {machines_per_input:.1f}")
+            print(f"  Outputs per tree: {outputs_per_input:.1f}")
+
+        all_belts = []
+        all_success = True
+        time_per_tree = time_limit / max(1, num_inputs)
+
+        # Route each tree separately
+        for tree_idx in range(num_inputs):
+            machine_start = int(tree_idx * machines_per_input)
+            machine_end = int((tree_idx + 1) * machines_per_input)
+            output_start = int(tree_idx * outputs_per_input)
+            output_end = int((tree_idx + 1) * outputs_per_input)
+
+            tree_machines = list(range(machine_start, min(machine_end, num_machines)))
+            tree_outputs = list(range(output_start, min(output_end, num_outputs_needed)))
+
+            if not tree_machines or not tree_outputs:
+                continue
+
+            # Build connections for this tree only
+            tree_connections = []
+
+            # Input -> Root machine
+            if tree_idx < len(self.input_positions):
+                inp_x, inp_y, inp_floor, inp_side = self.input_positions[tree_idx]
+
+                if inp_side == Side.WEST:
+                    start = (1, inp_y, inp_floor)
+                elif inp_side == Side.EAST:
+                    start = (self.grid_width - 2, inp_y, inp_floor)
+                elif inp_side == Side.NORTH:
+                    start = (inp_x, 1, inp_floor)
+                else:  # SOUTH
+                    start = (inp_x, self.grid_height - 2, inp_floor)
+
+                root_machine = tree_machines[0]
+                goal = machine_inputs[root_machine]
+                tree_connections.append((start, goal))
+
+            # Tree internal routing and outputs
+            if len(tree_machines) == 1:
+                machine_idx = tree_machines[0]
+                machine_outputs_list = all_machine_outputs[machine_idx]
+
+                for local_out_idx, output_idx in enumerate(tree_outputs):
+                    if local_out_idx >= len(machine_outputs_list):
+                        break
+
+                    start = machine_outputs_list[local_out_idx]
+                    out_x, out_y, out_floor, out_side = self.output_positions[output_idx]
+
+                    if out_side == Side.EAST:
+                        goal = (self.grid_width - 2, out_y, out_floor)
+                    elif out_side == Side.WEST:
+                        goal = (1, out_y, out_floor)
+                    elif out_side == Side.SOUTH:
+                        goal = (out_x, self.grid_height - 2, out_floor)
+                    else:  # NORTH
+                        goal = (out_x, 1, out_floor)
+
+                    tree_connections.append((start, goal))
+
+            elif len(tree_machines) >= 2:
+                root_machine = tree_machines[0]
+                root_outputs = all_machine_outputs[root_machine]
+
+                # Root -> children
+                for i, child_idx in enumerate(tree_machines[1:], start=1):
+                    if i - 1 >= len(root_outputs):
+                        break
+                    start = root_outputs[i - 1]
+                    goal = machine_inputs[child_idx]
+                    tree_connections.append((start, goal))
+
+                # Children -> outputs
+                outputs_per_child = len(tree_outputs) // max(1, len(tree_machines) - 1)
+
+                for child_local_idx, child_machine_idx in enumerate(tree_machines[1:]):
+                    child_outputs = all_machine_outputs[child_machine_idx]
+                    child_output_start = child_local_idx * outputs_per_child
+
+                    for local_out_idx, child_output_pos in enumerate(child_outputs):
+                        output_global_idx = child_output_start + local_out_idx
+                        if output_global_idx >= len(tree_outputs):
+                            break
+
+                        port_idx = tree_outputs[output_global_idx]
+                        out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
+
+                        if out_side == Side.EAST:
+                            goal = (self.grid_width - 2, out_y, out_floor)
+                        elif out_side == Side.WEST:
+                            goal = (1, out_y, out_floor)
+                        elif out_side == Side.SOUTH:
+                            goal = (out_x, self.grid_height - 2, out_floor)
+                        else:  # NORTH
+                            goal = (out_x, 1, out_floor)
+
+                        tree_connections.append((child_output_pos, goal))
+
+            if verbose:
+                print(f"\n  Tree {tree_idx}: {len(tree_connections)} connections")
+
+            # Try global CP-SAT routing for this tree
+            tree_router = GlobalBeltRouter(
+                self.grid_width, self.grid_height, self.num_floors,
+                occupied, time_limit=time_per_tree
+            )
+
+            tree_belts, tree_success = tree_router.route_all(tree_connections, verbose=verbose)
+
+            if not tree_success:
+                # Fall back to A* with backtracking
+                if verbose:
+                    print(f"    Global routing failed, trying A* with backtracking...")
+
+                tree_belts, tree_success = self._route_tree_with_backtracking(
+                    tree_connections, occupied, verbose=verbose
+                )
+
+            if tree_success:
+                all_belts.extend(tree_belts)
+                # Mark new belt positions as occupied for next trees
+                for bx, by, bz, _, _ in tree_belts:
+                    occupied.add((bx, by, bz))
+                if verbose:
+                    print(f"    Tree {tree_idx} SUCCESS: {len(tree_belts)} belts")
+            else:
+                all_success = False
+                if verbose:
+                    print(f"    Tree {tree_idx} FAILED")
+
+        # Add edge connection belts
+        if all_success:
+            if verbose:
+                print(f"\n  Adding edge connection belts...")
+
+            for tree_idx, (inp_x, inp_y, inp_floor, inp_side) in enumerate(self.input_positions):
+                if inp_side == Side.WEST:
+                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.EAST))
+                elif inp_side == Side.EAST:
+                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.WEST))
+                elif inp_side == Side.NORTH:
+                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.SOUTH))
+                else:  # SOUTH
+                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.NORTH))
+
+            for out_x, out_y, out_floor, out_side in self.output_positions:
+                if out_side == Side.EAST:
+                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.EAST))
+                elif out_side == Side.WEST:
+                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.WEST))
+                elif out_side == Side.SOUTH:
+                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.SOUTH))
+                else:  # NORTH
+                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.NORTH))
+
+        return all_belts, all_success
+
+    def _route_tree_with_backtracking(
+        self,
+        connections: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]],
+        occupied: Set[Tuple[int, int, int]],
+        max_attempts: int = 3,
+        verbose: bool = False
+    ) -> Tuple[List[Tuple[int, int, int, BuildingType, Rotation]], bool]:
+        """
+        Route a single tree using A* with backtracking.
+
+        If any route fails, backtrack and try different route orders.
+        """
+        from itertools import permutations
+
+        # Try different routing orders (critical connections first)
+        # Sort by estimated difficulty (longer distances first)
+        def connection_difficulty(conn):
+            src, dst = conn
+            return abs(src[0] - dst[0]) + abs(src[1] - dst[1]) + abs(src[2] - dst[2]) * 5
+
+        # Try original order first, then sorted by difficulty
+        orders_to_try = [
+            connections,  # Original order
+            sorted(connections, key=connection_difficulty, reverse=True),  # Hardest first
+            sorted(connections, key=connection_difficulty),  # Easiest first
+        ]
+
+        for attempt, conn_order in enumerate(orders_to_try[:max_attempts]):
+            if verbose and attempt > 0:
+                print(f"      Backtrack attempt {attempt + 1}...")
+
+            router = BeltRouter(
+                self.grid_width, self.grid_height, self.num_floors,
+                use_belt_ports=True, max_belt_ports=4
+            )
+            router.set_occupied(occupied.copy())
+
+            all_belts = []
+            success = True
+
+            for src, dst in conn_order:
+                path = router.find_path(src, dst, allow_belt_ports=True)
+                if path:
+                    belts = router.path_to_belts(path)
+                    all_belts.extend(belts)
+                    for bx, by, bz, _, _ in belts:
+                        router.add_occupied(bx, by, bz)
+                else:
+                    success = False
+                    break
+
+            if success:
+                return all_belts, True
+
+        return [], False
 
     def _calculate_throughput(
         self,
