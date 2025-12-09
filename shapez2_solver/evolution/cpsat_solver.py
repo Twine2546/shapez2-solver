@@ -1740,17 +1740,34 @@ class CPSATFullSolver:
 
         all_belts = []
         all_success = True
-        time_per_tree = time_limit / max(1, num_inputs)
+
+        # Better time allocation: minimum 15s per tree, up to 30s for complex cases
+        min_time_per_tree = 15.0
+        max_time_per_tree = 30.0
+        base_time_per_tree = time_limit / max(1, num_inputs)
+        time_per_tree = max(min_time_per_tree, min(max_time_per_tree, base_time_per_tree))
+
+        if verbose:
+            print(f"  Time per tree: {time_per_tree:.1f}s (base: {base_time_per_tree:.1f}s)")
+
+        # Group outputs by direction/side for smarter assignment
+        outputs_by_side = {Side.NORTH: [], Side.SOUTH: [], Side.EAST: [], Side.WEST: []}
+        for out_idx, (_, _, _, out_side) in enumerate(self.output_positions):
+            outputs_by_side[out_side].append(out_idx)
 
         # Route each tree separately
         for tree_idx in range(num_inputs):
             machine_start = int(tree_idx * machines_per_input)
             machine_end = int((tree_idx + 1) * machines_per_input)
-            output_start = int(tree_idx * outputs_per_input)
-            output_end = int((tree_idx + 1) * outputs_per_input)
 
             tree_machines = list(range(machine_start, min(machine_end, num_machines)))
-            tree_outputs = list(range(output_start, min(output_end, num_outputs_needed)))
+
+            # Smart output assignment: distribute outputs across sides for better routability
+            # Instead of sequential assignment, pick one output from each side per tree
+            num_outputs_for_tree = int(outputs_per_input)
+            tree_outputs = self._assign_tree_outputs(
+                tree_idx, num_inputs, num_outputs_for_tree, outputs_by_side, verbose
+            )
 
             if not tree_machines or not tree_outputs:
                 continue
@@ -1780,11 +1797,12 @@ class CPSATFullSolver:
                 machine_idx = tree_machines[0]
                 machine_outputs_list = all_machine_outputs[machine_idx]
 
-                for local_out_idx, output_idx in enumerate(tree_outputs):
-                    if local_out_idx >= len(machine_outputs_list):
-                        break
+                # Smart matching: match each machine output port to the closest foundation output
+                matched_outputs = self._match_machine_to_foundation_outputs(
+                    machine_outputs_list, tree_outputs, verbose
+                )
 
-                    start = machine_outputs_list[local_out_idx]
+                for machine_out_pos, output_idx in matched_outputs:
                     out_x, out_y, out_floor, out_side = self.output_positions[output_idx]
 
                     if out_side == Side.EAST:
@@ -1796,7 +1814,7 @@ class CPSATFullSolver:
                     else:  # NORTH
                         goal = (out_x, 1, out_floor)
 
-                    tree_connections.append((start, goal))
+                    tree_connections.append((machine_out_pos, goal))
 
             elif len(tree_machines) >= 2:
                 root_machine = tree_machines[0]
@@ -1810,47 +1828,61 @@ class CPSATFullSolver:
                     goal = machine_inputs[child_idx]
                     tree_connections.append((start, goal))
 
-                # Children -> outputs
-                outputs_per_child = len(tree_outputs) // max(1, len(tree_machines) - 1)
-
-                for child_local_idx, child_machine_idx in enumerate(tree_machines[1:]):
+                # Children -> outputs (smart matching)
+                # Collect all child output ports
+                all_child_outputs = []
+                for child_machine_idx in tree_machines[1:]:
                     child_outputs = all_machine_outputs[child_machine_idx]
-                    child_output_start = child_local_idx * outputs_per_child
+                    all_child_outputs.extend(child_outputs)
 
-                    for local_out_idx, child_output_pos in enumerate(child_outputs):
-                        output_global_idx = child_output_start + local_out_idx
-                        if output_global_idx >= len(tree_outputs):
-                            break
+                # Match all child outputs to foundation outputs
+                matched_outputs = self._match_machine_to_foundation_outputs(
+                    all_child_outputs, tree_outputs, verbose
+                )
 
-                        port_idx = tree_outputs[output_global_idx]
-                        out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
+                for machine_out_pos, port_idx in matched_outputs:
+                    out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
 
-                        if out_side == Side.EAST:
-                            goal = (self.grid_width - 2, out_y, out_floor)
-                        elif out_side == Side.WEST:
-                            goal = (1, out_y, out_floor)
-                        elif out_side == Side.SOUTH:
-                            goal = (out_x, self.grid_height - 2, out_floor)
-                        else:  # NORTH
-                            goal = (out_x, 1, out_floor)
+                    if out_side == Side.EAST:
+                        goal = (self.grid_width - 2, out_y, out_floor)
+                    elif out_side == Side.WEST:
+                        goal = (1, out_y, out_floor)
+                    elif out_side == Side.SOUTH:
+                        goal = (out_x, self.grid_height - 2, out_floor)
+                    else:  # NORTH
+                        goal = (out_x, 1, out_floor)
 
-                        tree_connections.append((child_output_pos, goal))
+                    tree_connections.append((machine_out_pos, goal))
 
             if verbose:
                 print(f"\n  Tree {tree_idx}: {len(tree_connections)} connections")
 
-            # Try global CP-SAT routing for this tree
-            tree_router = GlobalBeltRouter(
-                self.grid_width, self.grid_height, self.num_floors,
-                occupied, time_limit=time_per_tree
-            )
+            # Try global CP-SAT routing with progressive timeout
+            # Start with base time, increase on failure up to 2x
+            tree_belts = []
+            tree_success = False
 
-            tree_belts, tree_success = tree_router.route_all(tree_connections, verbose=verbose)
+            for attempt, timeout_multiplier in enumerate([1.0, 2.0]):
+                current_timeout = time_per_tree * timeout_multiplier
+
+                tree_router = GlobalBeltRouter(
+                    self.grid_width, self.grid_height, self.num_floors,
+                    occupied, time_limit=current_timeout
+                )
+
+                tree_belts, tree_success = tree_router.route_all(tree_connections, verbose=verbose)
+
+                if tree_success:
+                    break
+
+                if attempt == 0 and timeout_multiplier < 2.0:
+                    if verbose:
+                        print(f"    Retrying with {current_timeout * 2:.0f}s timeout...")
 
             if not tree_success:
                 # Fall back to A* with backtracking
                 if verbose:
-                    print(f"    Global routing failed, trying A* with backtracking...")
+                    print(f"    Global routing failed after retries, trying A* with backtracking...")
 
                 tree_belts, tree_success = self._route_tree_with_backtracking(
                     tree_connections, occupied, verbose=verbose
@@ -1951,6 +1983,153 @@ class CPSATFullSolver:
 
         return [], False
 
+    def _assign_tree_outputs(
+        self,
+        tree_idx: int,
+        num_trees: int,
+        num_outputs_for_tree: int,
+        outputs_by_side: Dict[Side, List[int]],
+        verbose: bool = False
+    ) -> List[int]:
+        """
+        Assign outputs to a tree, distributing across different sides.
+
+        Key insight: When we have multiple trees, each tree should get outputs
+        that are spatially separated to avoid routing conflicts. Each tree
+        should get at most ONE output per side to prevent crossing routes.
+
+        Strategy:
+        - Divide outputs on each side among trees
+        - Tree 0 gets outputs 0,N,2N,... from each side
+        - Tree 1 gets outputs 1,N+1,2N+1,... from each side
+        - This ensures trees don't compete for adjacent outputs
+        """
+        tree_outputs = []
+
+        # Get active sides (those with outputs)
+        active_sides = [side for side in [Side.NORTH, Side.SOUTH, Side.EAST, Side.WEST]
+                       if outputs_by_side[side]]
+
+        if not active_sides:
+            return []
+
+        # Calculate how many outputs this tree should get from each side
+        # to meet num_outputs_for_tree while staying balanced
+        outputs_needed = num_outputs_for_tree
+        side_quotas = {}  # How many outputs from each side
+
+        # First pass: assign up to 1 output per side per tree
+        for side in active_sides:
+            side_count = len(outputs_by_side[side])
+            # Each tree gets side_count / num_trees outputs from this side
+            # Tree i gets outputs i, i+num_trees, i+2*num_trees, ...
+            my_outputs_from_side = []
+            idx = tree_idx
+            while idx < side_count:
+                my_outputs_from_side.append(outputs_by_side[side][idx])
+                idx += num_trees
+
+            side_quotas[side] = my_outputs_from_side
+
+        # Collect outputs from each side in round-robin fashion
+        # This ensures we don't take too many from one side
+        round_num = 0
+        while len(tree_outputs) < outputs_needed:
+            added_any = False
+            for side in active_sides:
+                if len(tree_outputs) >= outputs_needed:
+                    break
+                quota = side_quotas[side]
+                if round_num < len(quota):
+                    tree_outputs.append(quota[round_num])
+                    added_any = True
+
+            round_num += 1
+            if not added_any:
+                # No more outputs available
+                break
+
+        if verbose and tree_idx == 0:
+            print(f"  Output assignment: {num_trees} trees, balanced across {len(active_sides)} sides")
+
+        return tree_outputs[:num_outputs_for_tree]
+
+    def _match_machine_to_foundation_outputs(
+        self,
+        machine_outputs: List[Tuple[int, int, int]],
+        foundation_output_indices: List[int],
+        verbose: bool = False
+    ) -> List[Tuple[Tuple[int, int, int], int]]:
+        """
+        Match machine output ports to foundation outputs based on direction/proximity.
+
+        For each machine output port, find the closest foundation output in terms
+        of routing direction. This prevents situations where a machine output on
+        the east side of the foundation is routed to a north output.
+
+        Returns list of (machine_output_pos, foundation_output_idx) pairs.
+        """
+        if not machine_outputs or not foundation_output_indices:
+            return []
+
+        # Get foundation output positions and their preferred direction
+        foundation_targets = []
+        for out_idx in foundation_output_indices:
+            out_x, out_y, out_floor, out_side = self.output_positions[out_idx]
+            # Calculate the target routing position
+            if out_side == Side.EAST:
+                target = (self.grid_width - 2, out_y, out_floor)
+                preferred_x = self.grid_width  # Prefer machine outputs with high x
+            elif out_side == Side.WEST:
+                target = (1, out_y, out_floor)
+                preferred_x = 0  # Prefer machine outputs with low x
+            elif out_side == Side.SOUTH:
+                target = (out_x, self.grid_height - 2, out_floor)
+                preferred_x = out_x  # Prefer machine outputs near this x
+            else:  # NORTH
+                target = (out_x, 1, out_floor)
+                preferred_x = out_x
+
+            foundation_targets.append((out_idx, target, out_side, preferred_x))
+
+        # Use Hungarian algorithm-style greedy matching based on Manhattan distance
+        matched = []
+        used_foundation = set()
+        used_machine = set()
+
+        # Calculate all distances
+        distances = []
+        for m_idx, m_pos in enumerate(machine_outputs):
+            for f_idx, (out_idx, target, out_side, pref_x) in enumerate(foundation_targets):
+                # Manhattan distance with direction preference
+                dist = abs(m_pos[0] - target[0]) + abs(m_pos[1] - target[1]) + abs(m_pos[2] - target[2]) * 5
+
+                # Bonus for matching direction (machine output naturally faces the foundation output side)
+                if out_side == Side.EAST and m_pos[0] > self.grid_width / 2:
+                    dist -= 5  # Machine is on east side, matches east output
+                elif out_side == Side.WEST and m_pos[0] < self.grid_width / 2:
+                    dist -= 5
+                elif out_side == Side.SOUTH and m_pos[1] > self.grid_height / 2:
+                    dist -= 5
+                elif out_side == Side.NORTH and m_pos[1] < self.grid_height / 2:
+                    dist -= 5
+
+                distances.append((dist, m_idx, f_idx, m_pos, out_idx))
+
+        # Sort by distance and greedily match
+        distances.sort()
+
+        for dist, m_idx, f_idx, m_pos, out_idx in distances:
+            if m_idx not in used_machine and f_idx not in used_foundation:
+                matched.append((m_pos, out_idx))
+                used_machine.add(m_idx)
+                used_foundation.add(f_idx)
+
+                if len(matched) >= min(len(machine_outputs), len(foundation_output_indices)):
+                    break
+
+        return matched
+
     def _calculate_throughput(
         self,
         machines: List[Tuple[BuildingType, int, int, int, Rotation]],
@@ -2049,9 +2228,13 @@ def solve_with_cpsat(
     max_machines: int = 10,
     time_limit: float = 60.0,
     verbose: bool = False,
+    routing_mode: str = 'hybrid',  # 'astar', 'global', or 'hybrid'
 ) -> Optional[Candidate]:
     """
     Convenience function to solve using CP-SAT.
+
+    Args:
+        routing_mode: 'astar' (sequential), 'global' (all paths at once), 'hybrid' (divide & conquer)
 
     Returns:
         Candidate solution or None if no solution found
@@ -2062,6 +2245,7 @@ def solve_with_cpsat(
         output_specs=output_specs,
         max_machines=max_machines,
         time_limit_seconds=time_limit,
+        routing_mode=routing_mode,
     )
 
     solution = solver.solve(verbose=verbose)
