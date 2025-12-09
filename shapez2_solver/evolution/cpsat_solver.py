@@ -11,14 +11,26 @@ Features:
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Tuple, Set, TYPE_CHECKING
 from ortools.sat.python import cp_model
 
 from ..shapes.shape import Shape
-from ..blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS, BUILDING_PORTS
+from ..blueprint.building_types import (
+    BuildingType, Rotation, BUILDING_SPECS, BUILDING_PORTS,
+    BELT_THROUGHPUT_TIER5
+)
 from .foundation_evolution import PlacedBuilding, Candidate
 from .foundation_config import FOUNDATION_SPECS, FoundationSpec, Side
 from .router import BeltRouter, Connection
+
+# Learning module integration (optional)
+try:
+    from ..learning import RoutingLogger, DifficultyPredictor, extract_connection_features
+    HAS_LEARNING = True
+except ImportError:
+    HAS_LEARNING = False
+    RoutingLogger = None
+    DifficultyPredictor = None
 
 
 # Machine types available for solving
@@ -139,12 +151,17 @@ class GlobalBeltRouter:
         num_floors: int,
         occupied: Set[Tuple[int, int, int]],
         time_limit: float = 30.0,
+        allow_shape_merging: bool = False,
+        max_belt_throughput: float = None,
     ):
         self.grid_width = grid_width
         self.grid_height = grid_height
         self.num_floors = num_floors
         self.occupied = occupied
         self.time_limit = time_limit
+        self.allow_shape_merging = allow_shape_merging
+        # Use actual belt throughput from game data (180 ops/min = 3 items/sec)
+        self.max_belt_throughput = max_belt_throughput if max_belt_throughput else BELT_THROUGHPUT_TIER5
 
     def _is_valid_cell(self, x: int, y: int, z: int) -> bool:
         """Check if cell is within bounds and not occupied."""
@@ -173,7 +190,9 @@ class GlobalBeltRouter:
     def route_all(
         self,
         connections: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]],
-        verbose: bool = False
+        verbose: bool = False,
+        shape_codes: List[Optional[str]] = None,
+        throughputs: List[float] = None,
     ) -> Tuple[List[Tuple[int, int, int, BuildingType, Rotation]], bool]:
         """
         Route all connections simultaneously using CP-SAT.
@@ -181,6 +200,8 @@ class GlobalBeltRouter:
         Args:
             connections: List of (source, dest) tuples, each being (x, y, floor)
             verbose: Print debug info
+            shape_codes: Shape code per connection (for merge compatibility)
+            throughputs: Throughput per connection in items/second
 
         Returns:
             Tuple of (belt_placements, success)
@@ -191,8 +212,16 @@ class GlobalBeltRouter:
 
         num_routes = len(connections)
 
+        # Default shape codes and throughputs
+        if shape_codes is None:
+            shape_codes = [None] * num_routes
+        if throughputs is None:
+            throughputs = [0.75] * num_routes  # Default tier 5 machine output
+
         if verbose:
             print(f"\n=== Global Router: {num_routes} connections ===")
+            if self.allow_shape_merging:
+                print(f"  Shape-aware merging enabled (max {self.max_belt_throughput} items/s per belt)")
 
         model = cp_model.CpModel()
 
@@ -241,10 +270,78 @@ class GlobalBeltRouter:
                     if neighbor and neighbor in cell_to_idx:
                         flow_out[r][c_idx][d] = model.NewBoolVar(f'flow_r{r}_c{c_idx}_d{d}')
 
-        # Constraint 1: Cell exclusivity - each cell used by at most one route
-        for c_idx in range(num_cells):
-            route_uses = [in_route[r][c_idx] for r in range(num_routes)]
-            model.Add(sum(route_uses) <= 1)
+        # Constraint 1: Cell sharing with shape-aware merging and throughput limits
+        if not self.allow_shape_merging:
+            # Simple exclusivity: each cell used by at most one route
+            for c_idx in range(num_cells):
+                route_uses = [in_route[r][c_idx] for r in range(num_routes)]
+                model.Add(sum(route_uses) <= 1)
+        else:
+            # Shape-aware merging: routes with same shape can share cells
+            # if total throughput <= max_belt_throughput
+
+            # Group routes by shape code
+            shape_groups: Dict[Optional[str], List[int]] = {}
+            for r in range(num_routes):
+                shape = shape_codes[r]
+                if shape not in shape_groups:
+                    shape_groups[shape] = []
+                shape_groups[shape].append(r)
+
+            for c_idx in range(num_cells):
+                # Routes with no shape code (None) - strict exclusivity among them
+                if None in shape_groups:
+                    no_shape_routes = shape_groups[None]
+                    if len(no_shape_routes) > 1:
+                        no_shape_uses = [in_route[r][c_idx] for r in no_shape_routes]
+                        model.Add(sum(no_shape_uses) <= 1)
+
+                # For each shape group: allow sharing but limit throughput
+                for shape, routes_in_group in shape_groups.items():
+                    if shape is None:
+                        continue  # Already handled above
+
+                    if len(routes_in_group) == 1:
+                        continue  # Single route, no sharing constraint needed
+
+                    # Throughput constraint: sum of throughputs for routes using this cell <= max
+                    # We use scaled integer arithmetic (multiply by 100 for precision)
+                    scale = 100
+                    max_scaled = int(self.max_belt_throughput * scale)
+
+                    # weighted_sum = sum(in_route[r][c_idx] * throughput[r] * scale)
+                    weighted_uses = []
+                    for r in routes_in_group:
+                        scaled_throughput = int(throughputs[r] * scale)
+                        # Create auxiliary variable for weighted use
+                        weighted_var = model.NewIntVar(0, scaled_throughput, f'w_r{r}_c{c_idx}')
+                        model.Add(weighted_var == scaled_throughput).OnlyEnforceIf(in_route[r][c_idx])
+                        model.Add(weighted_var == 0).OnlyEnforceIf(in_route[r][c_idx].Not())
+                        weighted_uses.append(weighted_var)
+
+                    model.Add(sum(weighted_uses) <= max_scaled)
+
+                # Cross-shape exclusivity: different shapes can't share the same cell
+                for shape1, routes1 in shape_groups.items():
+                    for shape2, routes2 in shape_groups.items():
+                        if shape1 is None or shape2 is None:
+                            continue
+                        if shape1 >= shape2:  # Avoid duplicate pairs
+                            continue
+                        # If any route from shape1 uses cell, no route from shape2 can
+                        for r1 in routes1:
+                            for r2 in routes2:
+                                # in_route[r1][c_idx] + in_route[r2][c_idx] <= 1
+                                model.Add(in_route[r1][c_idx] + in_route[r2][c_idx] <= 1)
+
+                # Also: no-shape routes can't share with shaped routes
+                if None in shape_groups:
+                    for r_none in shape_groups[None]:
+                        for shape, shaped_routes in shape_groups.items():
+                            if shape is None:
+                                continue
+                            for r_shaped in shaped_routes:
+                                model.Add(in_route[r_none][c_idx] + in_route[r_shaped][c_idx] <= 1)
 
         # Constraint 2: Flow implies membership
         # If flow_out[r][c][d] is true, then in_route[r][c] must be true
@@ -283,6 +380,24 @@ class GlobalBeltRouter:
                 out_flows = list(flow_out[r][dst_idx].values())
                 if out_flows:
                     model.Add(sum(out_flows) == 0)
+
+                # Exactly one incoming flow to destination (THE MISSING CONSTRAINT!)
+                in_flows = []
+                for d in range(6):
+                    neighbor = self._get_neighbor(dst[0], dst[1], dst[2], d, endpoints)
+                    if neighbor and neighbor in cell_to_idx:
+                        n_idx = cell_to_idx[neighbor]
+                        opposite_d = self.DIR_OPPOSITE[d]
+                        if opposite_d in flow_out[r][n_idx]:
+                            in_flows.append(flow_out[r][n_idx][opposite_d])
+
+                if in_flows:
+                    model.Add(sum(in_flows) == 1)
+                else:
+                    # No valid inflows - impossible route
+                    if verbose:
+                        print(f"  Route {r}: Destination {dst} has no valid inflow neighbors!")
+                    return [], False
             else:
                 if verbose:
                     print(f"  Route {r}: Destination {dst} is invalid/occupied!")
@@ -427,6 +542,9 @@ class CPSATFullSolver:
         time_limit_seconds: float = 60.0,
         routing_mode: str = 'astar',  # 'astar', 'global', or 'hybrid'
         use_global_routing: bool = False,  # Deprecated, use routing_mode
+        enable_logging: bool = False,  # Log routing attempts for ML training
+        log_db_path: str = "routing_data.db",  # Path to logging database
+        difficulty_model_path: Optional[str] = None,  # Path to trained difficulty model
     ):
         self.foundation_type = foundation_type
         self.input_specs = input_specs
@@ -439,6 +557,17 @@ class CPSATFullSolver:
             self.routing_mode = 'global'
         else:
             self.routing_mode = routing_mode
+
+        # Learning module integration
+        self.enable_logging = enable_logging and HAS_LEARNING
+        self.routing_logger = None
+        self.difficulty_predictor = None
+
+        if self.enable_logging and RoutingLogger is not None:
+            self.routing_logger = RoutingLogger(log_db_path)
+
+        if difficulty_model_path and HAS_LEARNING and DifficultyPredictor is not None:
+            self.difficulty_predictor = DifficultyPredictor(difficulty_model_path)
 
         # Get foundation dimensions
         self.spec = FOUNDATION_SPECS.get(foundation_type)
@@ -596,6 +725,60 @@ class CPSATFullSolver:
             if verbose:
                 print(f"Routing success: {routing_success}")
                 print(f"Total belts placed: {len(belts)}")
+
+            # Log routing attempt for ML training
+            if self.routing_logger is not None:
+                try:
+                    # Build connections list for logging
+                    log_connections = self._build_connection_list(machines)
+
+                    # Extract paths from belts (simplified - group consecutive belts)
+                    log_paths = self._extract_paths_from_belts(belts)
+
+                    # Build occupied set
+                    log_occupied = set()
+                    for bt, x, y, floor, rot in machines:
+                        spec = BUILDING_SPECS.get(bt)
+                        w = spec.width if spec else 1
+                        h = spec.height if spec else 1
+                        for dx in range(w):
+                            for dy in range(h):
+                                log_occupied.add((x + dx, y + dy, floor))
+
+                    # Calculate throughput for logging
+                    log_throughput = self._calculate_throughput(machines) if machines else 0.0
+
+                    # Start and log the attempt
+                    self.routing_logger.start_attempt(
+                        foundation_type=self.foundation_type,
+                        grid_width=self.grid_width,
+                        grid_height=self.grid_height,
+                        num_floors=self.num_floors,
+                        routing_mode=self.routing_mode,
+                        input_positions=[(x, y, f) for x, y, f, _ in self.input_positions],
+                        output_positions=[(x, y, f) for x, y, f, _ in self.output_positions],
+                        connections=log_connections,
+                    )
+
+                    self.routing_logger.log_result(
+                        machines=machines,
+                        belts=belts,
+                        paths=log_paths,
+                        input_positions=[(x, y, f) for x, y, f, _ in self.input_positions],
+                        output_positions=[(x, y, f) for x, y, f, _ in self.output_positions],
+                        connections=log_connections,
+                        occupied=log_occupied,
+                        routing_success=routing_success,
+                        throughput=log_throughput,
+                    )
+
+                    self.routing_logger.save()
+
+                    if verbose:
+                        print(f"Logged routing attempt to database")
+                except Exception as e:
+                    if verbose:
+                        print(f"Warning: Failed to log routing attempt: {e}")
 
             # Calculate fitness for this solution
             fitness = 0.0
@@ -2049,11 +2232,23 @@ class CPSATFullSolver:
         """
         from itertools import permutations
 
-        # Try different routing orders (critical connections first)
-        # Sort by estimated difficulty (longer distances first)
-        def connection_difficulty(conn):
-            src, dst = conn
-            return abs(src[0] - dst[0]) + abs(src[1] - dst[1]) + abs(src[2] - dst[2]) * 5
+        # Use learned difficulty model if available, otherwise use heuristic
+        if self.difficulty_predictor is not None and HAS_LEARNING:
+            # Learned difficulty prediction
+            def connection_difficulty(conn):
+                src, dst = conn
+                features = extract_connection_features(
+                    connection=(src, dst),
+                    grid_width=self.grid_width,
+                    grid_height=self.grid_height,
+                    occupied=occupied,
+                )
+                return self.difficulty_predictor.predict(features)
+        else:
+            # Heuristic: longer distances + floor changes are harder
+            def connection_difficulty(conn):
+                src, dst = conn
+                return abs(src[0] - dst[0]) + abs(src[1] - dst[1]) + abs(src[2] - dst[2]) * 5
 
         # Try original order first, then sorted by difficulty
         orders_to_try = [
@@ -2328,6 +2523,87 @@ class CPSATFullSolver:
 
         return throughput_per_output
 
+    def _build_connection_list(
+        self,
+        machines: List[Tuple[BuildingType, int, int, int, Rotation]]
+    ) -> List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]]:
+        """
+        Build a list of connections for logging.
+        Simplified version - captures input->machine and machine->output connections.
+        """
+        connections = []
+
+        if not machines:
+            return connections
+
+        # Get machine input/output positions
+        machine_inputs = []
+        machine_outputs = []
+
+        for bt, mx, my, mfloor, rot in machines:
+            ports = BUILDING_PORTS.get(bt, {'inputs': [(0, 0, 0)], 'outputs': [(0, 0, 0)]})
+            spec = BUILDING_SPECS.get(bt)
+            w = spec.width if spec else 1
+
+            input_pos = (mx - 1, my, mfloor)
+            machine_inputs.append(input_pos)
+
+            for out in ports['outputs']:
+                output_pos = (mx + w, my + out[1], mfloor + out[2])
+                machine_outputs.append(output_pos)
+
+        # Input ports -> first machine
+        for inp_x, inp_y, inp_floor, inp_side in self.input_positions:
+            if inp_side == Side.WEST:
+                start = (1, inp_y, inp_floor)
+            elif inp_side == Side.EAST:
+                start = (self.grid_width - 2, inp_y, inp_floor)
+            elif inp_side == Side.NORTH:
+                start = (inp_x, 1, inp_floor)
+            else:
+                start = (inp_x, self.grid_height - 2, inp_floor)
+
+            if machine_inputs:
+                connections.append((start, machine_inputs[0]))
+
+        # Machine outputs -> output ports
+        for i, (out_x, out_y, out_floor, out_side) in enumerate(self.output_positions):
+            if out_side == Side.EAST:
+                goal = (self.grid_width - 2, out_y, out_floor)
+            elif out_side == Side.WEST:
+                goal = (1, out_y, out_floor)
+            elif out_side == Side.SOUTH:
+                goal = (out_x, self.grid_height - 2, out_floor)
+            else:
+                goal = (out_x, 1, out_floor)
+
+            if i < len(machine_outputs):
+                connections.append((machine_outputs[i], goal))
+
+        return connections
+
+    def _extract_paths_from_belts(
+        self,
+        belts: List[Tuple[int, int, int, BuildingType, Rotation]]
+    ) -> List[List[Tuple[int, int, int]]]:
+        """
+        Extract approximate paths from belt placements.
+        Groups consecutive belt positions into paths.
+        """
+        if not belts:
+            return []
+
+        # Simple approach: create one path with all belt positions
+        # A more sophisticated version would trace actual paths
+        positions = [(b[0], b[1], b[2]) for b in belts]
+
+        # Sort by position to group nearby belts
+        positions.sort()
+
+        # For now, return as a single path (simplified)
+        # The feature extraction handles this gracefully
+        return [positions] if positions else []
+
 
 def solve_with_cpsat(
     foundation_type: str,
@@ -2366,3 +2642,385 @@ def solve_with_cpsat(
 # Keep old class names for backwards compatibility
 CPSATLayoutSolver = CPSATFullSolver
 CPSATSystemSolver = CPSATFullSolver
+
+
+# =============================================================================
+# ML-Enhanced CP-SAT Router
+# =============================================================================
+
+class MLEnhancedGlobalRouter(GlobalBeltRouter):
+    """
+    CP-SAT router enhanced with ML predictions for hard problems.
+
+    Uses ML direction predictor to:
+    1. Provide solution hints to CP-SAT (warm start)
+    2. Add soft preferences in objective for ML-predicted directions
+
+    This can significantly speed up solving for complex routing problems
+    where the search space is large.
+    """
+
+    def __init__(
+        self,
+        grid_width: int,
+        grid_height: int,
+        num_floors: int,
+        occupied: Set[Tuple[int, int, int]],
+        time_limit: float = 30.0,
+        ml_router=None,  # MLGuidedRouter instance
+        ml_hint_weight: int = 10,  # Soft preference weight for ML directions
+    ):
+        super().__init__(grid_width, grid_height, num_floors, occupied, time_limit)
+        self.ml_router = ml_router
+        self.ml_hint_weight = ml_hint_weight
+        self._direction_grid = None
+
+    def _precompute_ml_directions(
+        self,
+        inputs: List[Tuple[int, int, int]],
+        outputs: List[Tuple[int, int, int]],
+    ):
+        """Pre-compute ML direction predictions for the grid."""
+        if self.ml_router is None:
+            return
+
+        # Convert to 2D for floor 0 (most common)
+        inputs_2d = [(x, y) for x, y, z in inputs if z == 0]
+        outputs_2d = [(x, y) for x, y, z in outputs if z == 0]
+        occupied_2d = {(x, y) for x, y, z in self.occupied if z == 0}
+
+        if hasattr(self.ml_router, 'direction_predictor') and self.ml_router.direction_predictor:
+            self._direction_grid = self.ml_router.direction_predictor.predict_grid(
+                self.grid_width, self.grid_height,
+                occupied_2d, inputs_2d, outputs_2d
+            )
+
+    def _get_ml_preferred_direction(self, x: int, y: int, z: int) -> Optional[int]:
+        """
+        Get ML-predicted direction for a cell.
+
+        Returns CP-SAT direction (0-5) or None if no prediction.
+        ML directions: 0=N, 1=E, 2=S, 3=W, 4=none
+        CP-SAT directions: 0=E, 1=W, 2=S, 3=N, 4=UP, 5=DOWN
+        """
+        if self._direction_grid is None or z != 0:
+            return None
+
+        if 0 <= y < self._direction_grid.shape[0] and 0 <= x < self._direction_grid.shape[1]:
+            ml_dir = int(self._direction_grid[y, x])
+            # Map ML direction to CP-SAT direction
+            ml_to_cpsat = {
+                0: self.DIR_NORTH,  # N -> North
+                1: self.DIR_EAST,   # E -> East
+                2: self.DIR_SOUTH,  # S -> South
+                3: self.DIR_WEST,   # W -> West
+                4: None,            # none
+            }
+            return ml_to_cpsat.get(ml_dir)
+        return None
+
+    def route_all_ml_guided(
+        self,
+        connections: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]],
+        verbose: bool = False
+    ) -> Tuple[List[Tuple[int, int, int, BuildingType, Rotation]], bool]:
+        """
+        Route all connections with ML guidance using CP-SAT hints.
+
+        This version adds:
+        1. Solution hints from ML predictions
+        2. Soft objective penalties for non-ML directions
+        """
+        if not connections:
+            return [], True
+
+        num_routes = len(connections)
+
+        # Pre-compute ML directions
+        all_inputs = [src for src, dst in connections]
+        all_outputs = [dst for src, dst in connections]
+        self._precompute_ml_directions(all_inputs, all_outputs)
+
+        if verbose:
+            print(f"\n=== ML-Enhanced Global Router: {num_routes} connections ===")
+            if self._direction_grid is not None:
+                print(f"  ML direction grid computed")
+
+        model = cp_model.CpModel()
+
+        # Collect endpoints
+        endpoints = set()
+        for src, dst in connections:
+            endpoints.add(src)
+            endpoints.add(dst)
+
+        # Build valid cells
+        valid_cells = []
+        cell_to_idx = {}
+        for x in range(self.grid_width):
+            for y in range(self.grid_height):
+                for z in range(self.num_floors):
+                    cell = (x, y, z)
+                    if self._is_valid_cell(x, y, z) or cell in endpoints:
+                        if 0 <= x < self.grid_width and 0 <= y < self.grid_height and 0 <= z < self.num_floors:
+                            idx = len(valid_cells)
+                            valid_cells.append(cell)
+                            cell_to_idx[cell] = idx
+
+        num_cells = len(valid_cells)
+
+        if verbose:
+            print(f"  Valid cells: {num_cells}")
+
+        # Create variables
+        in_route = {}
+        flow_out = {}
+
+        for r in range(num_routes):
+            in_route[r] = {}
+            flow_out[r] = {}
+            for c_idx, (x, y, z) in enumerate(valid_cells):
+                in_route[r][c_idx] = model.NewBoolVar(f'in_r{r}_c{c_idx}')
+                flow_out[r][c_idx] = {}
+                for d in range(6):
+                    neighbor = self._get_neighbor(x, y, z, d, endpoints)
+                    if neighbor and neighbor in cell_to_idx:
+                        flow_out[r][c_idx][d] = model.NewBoolVar(f'flow_r{r}_c{c_idx}_d{d}')
+
+        # Constraint 1: Cell exclusivity (simple version for ML-guided - uses base settings)
+        # Note: For shape-aware merging, use route_all() with shape_codes parameter
+        for c_idx in range(num_cells):
+            route_uses = [in_route[r][c_idx] for r in range(num_routes)]
+            model.Add(sum(route_uses) <= 1)
+
+        # Constraint 2: Flow implies membership
+        for r in range(num_routes):
+            for c_idx in range(num_cells):
+                for d, flow_var in flow_out[r][c_idx].items():
+                    model.AddImplication(flow_var, in_route[r][c_idx])
+
+        # Constraint 3: Source and destination constraints
+        for r, (src, dst) in enumerate(connections):
+            if src in cell_to_idx:
+                src_idx = cell_to_idx[src]
+                model.Add(in_route[r][src_idx] == 1)
+                out_flows = list(flow_out[r][src_idx].values())
+                if out_flows:
+                    model.Add(sum(out_flows) == 1)
+                else:
+                    return [], False
+            else:
+                return [], False
+
+            if dst in cell_to_idx:
+                dst_idx = cell_to_idx[dst]
+                model.Add(in_route[r][dst_idx] == 1)
+                out_flows = list(flow_out[r][dst_idx].values())
+                if out_flows:
+                    model.Add(sum(out_flows) == 0)
+            else:
+                return [], False
+
+        # Constraint 4: Flow conservation
+        for r, (src, dst) in enumerate(connections):
+            src_idx = cell_to_idx.get(src)
+            dst_idx = cell_to_idx.get(dst)
+
+            for c_idx, (x, y, z) in enumerate(valid_cells):
+                if c_idx == src_idx or c_idx == dst_idx:
+                    continue
+
+                inflows = []
+                outflows = list(flow_out[r][c_idx].values())
+
+                for d in range(6):
+                    neighbor = self._get_neighbor(x, y, z, d, endpoints)
+                    if neighbor and neighbor in cell_to_idx:
+                        n_idx = cell_to_idx[neighbor]
+                        opposite_d = self.DIR_OPPOSITE[d]
+                        if opposite_d in flow_out[r][n_idx]:
+                            inflows.append(flow_out[r][n_idx][opposite_d])
+
+                if inflows:
+                    total_inflow = sum(inflows)
+                else:
+                    total_inflow = 0
+
+                if outflows:
+                    total_outflow = sum(outflows)
+                else:
+                    total_outflow = 0
+
+                if inflows and outflows:
+                    model.Add(total_inflow == 1).OnlyEnforceIf(in_route[r][c_idx])
+                    model.Add(total_outflow == 1).OnlyEnforceIf(in_route[r][c_idx])
+                    model.Add(total_inflow == 0).OnlyEnforceIf(in_route[r][c_idx].Not())
+                    model.Add(total_outflow == 0).OnlyEnforceIf(in_route[r][c_idx].Not())
+                elif outflows:
+                    model.Add(in_route[r][c_idx] == 0)
+                elif inflows:
+                    model.Add(in_route[r][c_idx] == 0)
+
+        # === ML ENHANCEMENTS ===
+
+        # 1. Add solution hints from ML predictions
+        hint_count = 0
+        for r in range(num_routes):
+            for c_idx, (x, y, z) in enumerate(valid_cells):
+                preferred_dir = self._get_ml_preferred_direction(x, y, z)
+                if preferred_dir is not None and preferred_dir in flow_out[r][c_idx]:
+                    # Hint that this direction is likely good
+                    model.AddHint(flow_out[r][c_idx][preferred_dir], 1)
+                    hint_count += 1
+
+        if verbose and hint_count > 0:
+            print(f"  Added {hint_count} ML direction hints")
+
+        # 2. Soft objective: prefer ML-predicted directions
+        all_in_route = []
+        ml_penalty = []
+
+        for r in range(num_routes):
+            for c_idx, (x, y, z) in enumerate(valid_cells):
+                all_in_route.append(in_route[r][c_idx])
+
+                # Add penalty for going against ML prediction
+                preferred_dir = self._get_ml_preferred_direction(x, y, z)
+                if preferred_dir is not None:
+                    for d, flow_var in flow_out[r][c_idx].items():
+                        if d != preferred_dir:
+                            # Penalty for choosing non-preferred direction
+                            ml_penalty.append(flow_var)
+
+        # Combined objective: minimize belts + soft penalty for non-ML directions
+        if ml_penalty and self.ml_hint_weight > 0:
+            # Scale factor ensures ML preference doesn't overwhelm belt minimization
+            model.Minimize(
+                sum(all_in_route) * 100 +  # Primary: minimize belts
+                sum(ml_penalty) * self.ml_hint_weight  # Secondary: prefer ML directions
+            )
+        else:
+            model.Minimize(sum(all_in_route))
+
+        # Solve
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = self.time_limit
+        solver.parameters.num_search_workers = 8
+
+        if verbose:
+            print(f"  Solving with {self.time_limit}s limit...")
+
+        status = solver.Solve(model)
+
+        if status not in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
+            if verbose:
+                status_name = {
+                    cp_model.INFEASIBLE: 'infeasible',
+                    cp_model.MODEL_INVALID: 'invalid',
+                    cp_model.UNKNOWN: 'timeout',
+                }.get(status, 'unknown')
+                print(f"  Failed: {status_name}")
+            return [], False
+
+        if verbose:
+            total_belts = sum(solver.Value(v) for v in all_in_route)
+            print(f"  Success! Total belt cells: {total_belts}")
+
+        # Extract solution
+        belts = []
+        for r in range(num_routes):
+            for c_idx, (x, y, z) in enumerate(valid_cells):
+                if solver.Value(in_route[r][c_idx]):
+                    out_dir = None
+                    for d, flow_var in flow_out[r][c_idx].items():
+                        if solver.Value(flow_var):
+                            out_dir = d
+                            break
+
+                    if out_dir is None:
+                        belt_type = BuildingType.BELT_FORWARD
+                        rotation = Rotation.EAST
+                    elif out_dir == self.DIR_UP:
+                        belt_type = BuildingType.LIFT_UP
+                        rotation = Rotation.EAST
+                    elif out_dir == self.DIR_DOWN:
+                        belt_type = BuildingType.LIFT_DOWN
+                        rotation = Rotation.EAST
+                    else:
+                        belt_type = BuildingType.BELT_FORWARD
+                        rotation = {
+                            self.DIR_EAST: Rotation.EAST,
+                            self.DIR_WEST: Rotation.WEST,
+                            self.DIR_SOUTH: Rotation.SOUTH,
+                            self.DIR_NORTH: Rotation.NORTH,
+                        }[out_dir]
+
+                    belts.append((x, y, z, belt_type, rotation))
+
+        return belts, True
+
+    def route_all(
+        self,
+        connections: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]],
+        verbose: bool = False
+    ) -> Tuple[List[Tuple[int, int, int, BuildingType, Rotation]], bool]:
+        """Override to use ML-guided routing when available."""
+        if self.ml_router is not None:
+            return self.route_all_ml_guided(connections, verbose)
+        return super().route_all(connections, verbose)
+
+
+def create_ml_cpsat_router(
+    grid_width: int,
+    grid_height: int,
+    num_floors: int,
+    occupied: Set[Tuple[int, int, int]],
+    time_limit: float = 30.0,
+    model_dir: str = None,
+) -> MLEnhancedGlobalRouter:
+    """
+    Create an ML-enhanced CP-SAT router.
+
+    Args:
+        grid_width: Width of the grid
+        grid_height: Height of the grid
+        num_floors: Number of floors
+        occupied: Set of occupied positions
+        time_limit: CP-SAT time limit
+        model_dir: Directory containing trained ML models
+
+    Returns:
+        MLEnhancedGlobalRouter instance
+    """
+    from pathlib import Path
+
+    if model_dir is None:
+        model_dir = Path(__file__).parent.parent / "learning" / "models"
+    else:
+        model_dir = Path(model_dir)
+
+    ml_router = None
+
+    try:
+        from ..learning.ml_models import MLGuidedRouter
+
+        solvability_path = model_dir / "solvability_classifier.pkl"
+        direction_path = model_dir / "direction_predictor.pkl"
+
+        if direction_path.exists():
+            ml_router = MLGuidedRouter(
+                solvability_model_path=str(solvability_path) if solvability_path.exists() else None,
+                direction_model_path=str(direction_path),
+            )
+            print(f"ML-enhanced CP-SAT router loaded with direction model")
+    except ImportError as e:
+        print(f"ML models not available: {e}")
+
+    return MLEnhancedGlobalRouter(
+        grid_width=grid_width,
+        grid_height=grid_height,
+        num_floors=num_floors,
+        occupied=occupied,
+        time_limit=time_limit,
+        ml_router=ml_router,
+    )

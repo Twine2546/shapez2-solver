@@ -174,7 +174,12 @@ BUILDING_PORTS: Dict[BuildingType, Dict[str, List[Tuple[int, int, int]]]] = {
     # Cutter: 1x2, input on one side, two outputs
     BuildingType.CUTTER: {
         'inputs': [(-1, 0, 0)],  # Input from west
-        'outputs': [(1, 0, 0), (1, 1, 0)],  # Two outputs to east (left half, right half)
+        'outputs': [(1, 0, 0), (1, 1, 0)],  # Two outputs to east (top half at y=0, bottom half at y=1)
+    },
+    # Cutter Mirrored: 1x2, same input, outputs mirrored
+    BuildingType.CUTTER_MIRRORED: {
+        'inputs': [(-1, 0, 0)],  # Input from west (same as normal)
+        'outputs': [(1, 0, 0), (1, -1, 0)],  # Two outputs to east (top half at y=0, bottom half at y=-1)
     },
     # Swapper: 2x2, two inputs, two outputs
     BuildingType.SWAPPER: {
@@ -318,3 +323,19 @@ def get_building_rate(building_type: BuildingType, tier: int = 1) -> float:
     tier = max(1, min(5, tier))
     rate_range = spec.max_rate - spec.base_rate
     return spec.base_rate + (rate_range * (tier - 1) / 4)
+
+
+def get_throughput_per_second(building_type: BuildingType, tier: int = 1) -> float:
+    """Get items per second for a building at given tier (1-5)."""
+    ops_per_min = get_building_rate(building_type, tier)
+    return ops_per_min / 60.0
+
+
+def get_belt_max_throughput(tier: int = 5) -> float:
+    """Get max belt throughput in items/second at given tier."""
+    return get_throughput_per_second(BuildingType.BELT_FORWARD, tier)
+
+
+# Belt throughput constants (items per second)
+BELT_THROUGHPUT_TIER1 = 3.0   # 180 ops/min = 3 items/sec
+BELT_THROUGHPUT_TIER5 = 3.0   # Belts don't upgrade speed, always 180 ops/min

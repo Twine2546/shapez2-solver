@@ -1,0 +1,23 @@
+{
+  "trainings": [
+    {
+      "timestamp": "2025-12-09T13:39:18.255147",
+      "problem_count": 387,
+      "results": {
+        "skipped": false,
+        "started_at": "2025-12-09T13:39:17.848593",
+        "solvability": {
+          "accuracy": 0.9743589743589743,
+          "difficulty_accuracy": 1.0
+        },
+        "direction": {
+          "accuracy": 0.9745042492917847
+        },
+        "finished_at": "2025-12-09T13:39:18.255135",
+        "problem_count": 387
+      }
+    }
+  ],
+  "last_problem_count": 387,
+  "created_at": "2025-12-09T13:39:17.842771"
+}
