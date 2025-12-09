@@ -3,6 +3,9 @@
 import sys
 import json
 
+# Ensure console output isn't buffered
+sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
+
 PYGAME_AVAILABLE = False
 _PYGAME_ERROR = ""
 
@@ -124,9 +127,9 @@ class CPSATSolverApp:
         )
         y_pos += 40
 
-        # Foundation visual preview
-        self._foundation_visual_rect = pygame.Rect(margin, y_pos, left_panel_width, 120)
-        y_pos += 130
+        # Combined Foundation + I/O visual preview (larger)
+        self._foundation_visual_rect = pygame.Rect(margin, y_pos, left_panel_width, 280)
+        y_pos += 290
 
         # Timeout input
         pygame_gui.elements.UILabel(
@@ -177,9 +180,8 @@ class CPSATSolverApp:
             self._ui_elements['outputs_text'].set_text(self.outputs_text)
         y_pos += 160
 
-        # I/O port visual preview
-        self._io_visual_rect = pygame.Rect(margin, y_pos, left_panel_width, 100)
-        y_pos += 110
+        # No separate I/O visual - it's combined with foundation preview now
+        self._io_visual_rect = None  # Will use foundation_visual_rect for both
 
         # Solve button
         self._ui_elements['solve_button'] = pygame_gui.elements.UIButton(
@@ -374,6 +376,7 @@ Output: E,0,0,Su------
         print(f"Inputs: {len(inputs)}, Outputs: {len(outputs)}")
         print(f"Timeout per foundation: {self.time_limit} seconds")
         print("="*70)
+        sys.stdout.flush()
 
         self.solution = None
 
@@ -468,7 +471,7 @@ Would you like to try the next foundation: '{next_foundation}'?
 Tried so far: {', '.join(state['tried_foundations'])}
 Remaining: {len(progression) - current_idx - 1} foundation(s)""",
             action_short_name="Try Next",
-            blocking=True
+            blocking=False  # Non-blocking so GUI stays responsive
         )
 
         state['dialog'] = dialog
@@ -755,48 +758,67 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
         self._manager.draw_ui(self._screen)
 
         # Draw custom visuals on top
-        self._draw_foundation_visual()
-        self._draw_io_visual()
+        self._draw_combined_visual()
 
         pygame.display.flip()
 
-    def _draw_foundation_visual(self):
-        """Draw a visual representation of the selected foundation."""
+    def _draw_combined_visual(self):
+        """Draw combined foundation + I/O port visualization with grid."""
         if not self._foundation_visual_rect:
             return
 
-        from ..evolution.foundation_config import FOUNDATION_SPECS
+        from ..evolution.foundation_config import FOUNDATION_SPECS, Side
 
         # Get foundation spec
         spec = FOUNDATION_SPECS.get(self.foundation_type)
         if not spec:
             return
 
-        # Draw background
         rect = self._foundation_visual_rect
-        pygame.draw.rect(self._screen, (50, 50, 50), rect)
+
+        # Draw background
+        pygame.draw.rect(self._screen, (40, 40, 40), rect)
         pygame.draw.rect(self._screen, (100, 100, 100), rect, 2)
 
-        # Calculate cell size based on foundation dimensions
+        # Title
+        if hasattr(pygame, 'font'):
+            font = pygame.font.SysFont('monospace', 14)
+            bold_font = pygame.font.SysFont('monospace', 14, bold=True)
+
+            title = bold_font.render(f"{self.foundation_type} Foundation", True, (220, 220, 220))
+            self._screen.blit(title, (rect.x + 5, rect.y + 5))
+
+        # Calculate grid size - use most of the space
+        grid_margin = 40
+        available_width = rect.width - grid_margin * 2
+        available_height = rect.height - grid_margin - 25  # Space for title
+
+        # Each unit is divided into a 14x14 internal grid
         max_dim = max(spec.units_x, spec.units_y)
-        cell_size = min((rect.width - 40) // max_dim, (rect.height - 40) // max_dim)
+        cell_size = min(available_width // max_dim, available_height // max_dim)
 
-        # Center the foundation drawing
+        # Center the grid
         start_x = rect.x + (rect.width - spec.units_x * cell_size) // 2
-        start_y = rect.y + (rect.height - spec.units_y * cell_size) // 2
+        start_y = rect.y + 30 + (rect.height - 30 - spec.units_y * cell_size) // 2
 
-        # Draw foundation cells
+        # Draw foundation units
         if spec.present_cells:
             # Irregular foundation
+            cells_set = set(spec.present_cells)
             for x, y in spec.present_cells:
                 cell_rect = pygame.Rect(
                     start_x + x * cell_size,
                     start_y + y * cell_size,
-                    cell_size - 2,
-                    cell_size - 2
+                    cell_size,
+                    cell_size
                 )
-                pygame.draw.rect(self._screen, (80, 150, 220), cell_rect)
-                pygame.draw.rect(self._screen, (120, 180, 255), cell_rect, 2)
+                # Fill
+                pygame.draw.rect(self._screen, (70, 130, 200), cell_rect)
+                # Border
+                pygame.draw.rect(self._screen, (100, 160, 240), cell_rect, 2)
+
+                # Draw internal grid (14x14)
+                self._draw_internal_grid(cell_rect, 14, (90, 140, 210))
         else:
             # Regular rectangular foundation
             for x in range(spec.units_x):
@@ -804,36 +826,46 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
                     cell_rect = pygame.Rect(
                         start_x + x * cell_size,
                         start_y + y * cell_size,
-                        cell_size - 2,
-                        cell_size - 2
+                        cell_size,
+                        cell_size
                     )
-                    pygame.draw.rect(self._screen, (80, 150, 220), cell_rect)
-                    pygame.draw.rect(self._screen, (120, 180, 255), cell_rect, 2)
+                    # Fill
+                    pygame.draw.rect(self._screen, (70, 130, 200), cell_rect)
+                    # Border
+                    pygame.draw.rect(self._screen, (100, 160, 240), cell_rect, 2)
 
-        # Draw label
-        if hasattr(pygame, 'font'):
-            font = pygame.font.SysFont('monospace', 14)
-            label = font.render(f"{self.foundation_type} Foundation Preview", True, (200, 200, 200))
-            self._screen.blit(label, (rect.x + 5, rect.y + 5))
+                    # Draw internal grid (14x14)
+                    self._draw_internal_grid(cell_rect, 14, (90, 140, 210))
 
-    def _draw_io_visual(self):
-        """Draw a visual representation of inputs and outputs."""
-        if not self._io_visual_rect:
+        # Now draw I/O ports on top
+        self._draw_io_ports_on_foundation(spec, start_x, start_y, cell_size)
+
+    def _draw_internal_grid(self, cell_rect, divisions, color):
+        """Draw internal grid lines within a cell."""
+        cell_size = cell_rect.width
+        grid_spacing = cell_size / divisions
+
+        # Only draw grid if cells are large enough
+        if cell_size < 50:
             return
 
-        from ..evolution.foundation_config import FOUNDATION_SPECS
+        for i in range(1, divisions):
+            # Vertical lines
+            x = cell_rect.x + int(i * grid_spacing)
+            pygame.draw.line(self._screen, color,
+                           (x, cell_rect.y),
+                           (x, cell_rect.y + cell_rect.height), 1)
+            # Horizontal lines
+            y = cell_rect.y + int(i * grid_spacing)
+            pygame.draw.line(self._screen, color,
+                           (cell_rect.x, y),
+                           (cell_rect.x + cell_rect.width, y), 1)
 
-        # Get foundation spec
-        spec = FOUNDATION_SPECS.get(self.foundation_type)
-        if not spec:
-            return
+    def _draw_io_ports_on_foundation(self, spec, start_x, start_y, cell_size):
+        """Draw I/O port markers on the foundation."""
+        from ..evolution.foundation_config import Side
 
-        # Draw background
-        rect = self._io_visual_rect
-        pygame.draw.rect(self._screen, (50, 50, 50), rect)
-        pygame.draw.rect(self._screen, (100, 100, 100), rect, 2)
-
-        # Read current text from UI elements (updates in real-time as user types)
+        # Read current text from UI elements
         current_inputs_text = self.inputs_text
         current_outputs_text = self.outputs_text
 
@@ -849,7 +881,7 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
             except:
                 pass
 
-        # Parse inputs and outputs
+        # Parse inputs
         inputs = []
         for line in current_inputs_text.split('\n'):
             if line.strip():
@@ -858,8 +890,9 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
                     try:
                         inputs.append((parts[0].strip(), int(parts[1]), int(parts[2])))
                     except (ValueError, IndexError):
-                        pass  # Skip invalid lines
+                        pass
 
+        # Parse outputs
         outputs = []
         for line in current_outputs_text.split('\n'):
             if line.strip():
@@ -868,79 +901,71 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
                     try:
                         outputs.append((parts[0].strip(), int(parts[1]), int(parts[2])))
                     except (ValueError, IndexError):
-                        pass  # Skip invalid lines
-
-        # Calculate dimensions
-        max_dim = max(spec.units_x, spec.units_y)
-        box_size = min((rect.width - 60) // max_dim, (rect.height - 40) // max_dim)
-
-        # Center the drawing
-        start_x = rect.x + (rect.width - spec.units_x * box_size) // 2
-        start_y = rect.y + 25 + (rect.height - 25 - spec.units_y * box_size) // 2
-
-        # Draw foundation outline
-        foundation_width = spec.units_x * box_size
-        foundation_height = spec.units_y * box_size
-        pygame.draw.rect(self._screen, (80, 80, 80),
-                        pygame.Rect(start_x, start_y, foundation_width, foundation_height), 2)
+                        pass
 
         # Draw input ports (green)
         for side, pos, floor in inputs:
-            self._draw_port_marker(side, pos, spec, start_x, start_y, box_size, (100, 255, 100))
+            self._draw_port_marker_enhanced(side, pos, spec, start_x, start_y, cell_size, (100, 255, 100))
 
         # Draw output ports (red)
         for side, pos, floor in outputs:
-            self._draw_port_marker(side, pos, spec, start_x, start_y, box_size, (255, 100, 100))
+            self._draw_port_marker_enhanced(side, pos, spec, start_x, start_y, cell_size, (255, 100, 100))
 
-        # Draw label and legend
+        # Draw legend
         if hasattr(pygame, 'font'):
-            font = pygame.font.SysFont('monospace', 14)
-            label = font.render(f"I/O Ports: ", True, (200, 200, 200))
-            self._screen.blit(label, (rect.x + 5, rect.y + 5))
+            font = pygame.font.SysFont('monospace', 12)
+            legend_y = start_y + spec.units_y * cell_size + 10
 
-            # Legend
-            input_label = font.render(f"Inputs: {len(inputs)}", True, (100, 255, 100))
-            output_label = font.render(f"Outputs: {len(outputs)}", True, (255, 100, 100))
-            self._screen.blit(input_label, (rect.x + 100, rect.y + 5))
-            self._screen.blit(output_label, (rect.x + 250, rect.y + 5))
+            # Input count
+            pygame.draw.circle(self._screen, (100, 255, 100),
+                             (start_x + 10, legend_y), 5)
+            label = font.render(f"Inputs: {len(inputs)}", True, (100, 255, 100))
+            self._screen.blit(label, (start_x + 20, legend_y - 8))
 
-    def _draw_port_marker(self, side, pos, spec, start_x, start_y, box_size, color):
-        """Draw a port marker on the foundation edge."""
+            # Output count
+            pygame.draw.circle(self._screen, (255, 100, 100),
+                             (start_x + 150, legend_y), 5)
+            label = font.render(f"Outputs: {len(outputs)}", True, (255, 100, 100))
+            self._screen.blit(label, (start_x + 160, legend_y - 8))
+
+    def _draw_port_marker_enhanced(self, side, pos, spec, start_x, start_y, cell_size, color):
+        """Draw a port marker on the foundation edge (enhanced version)."""
         from ..evolution.foundation_config import Side
 
-        # Get ports per side
         ports_per_side = spec.ports_per_side
-
-        # Calculate port position based on side
-        marker_size = 6
+        marker_size = 8  # Larger markers
 
         if side.upper() == 'N':
             total_ports = ports_per_side[Side.NORTH]
             if total_ports > 0 and pos < total_ports:
-                port_x = start_x + (pos / total_ports) * spec.units_x * box_size
-                port_y = start_y - marker_size
+                port_x = start_x + ((pos + 0.5) / total_ports) * spec.units_x * cell_size
+                port_y = start_y - marker_size - 2
                 pygame.draw.circle(self._screen, color, (int(port_x), int(port_y)), marker_size)
+                pygame.draw.circle(self._screen, (255, 255, 255), (int(port_x), int(port_y)), marker_size, 2)
 
         elif side.upper() == 'S':
             total_ports = ports_per_side[Side.SOUTH]
             if total_ports > 0 and pos < total_ports:
-                port_x = start_x + (pos / total_ports) * spec.units_x * box_size
-                port_y = start_y + spec.units_y * box_size + marker_size
+                port_x = start_x + ((pos + 0.5) / total_ports) * spec.units_x * cell_size
+                port_y = start_y + spec.units_y * cell_size + marker_size + 2
                 pygame.draw.circle(self._screen, color, (int(port_x), int(port_y)), marker_size)
+                pygame.draw.circle(self._screen, (255, 255, 255), (int(port_x), int(port_y)), marker_size, 2)
 
         elif side.upper() == 'E':
             total_ports = ports_per_side[Side.EAST]
             if total_ports > 0 and pos < total_ports:
-                port_x = start_x + spec.units_x * box_size + marker_size
-                port_y = start_y + (pos / total_ports) * spec.units_y * box_size
+                port_x = start_x + spec.units_x * cell_size + marker_size + 2
+                port_y = start_y + ((pos + 0.5) / total_ports) * spec.units_y * cell_size
                 pygame.draw.circle(self._screen, color, (int(port_x), int(port_y)), marker_size)
+                pygame.draw.circle(self._screen, (255, 255, 255), (int(port_x), int(port_y)), marker_size, 2)
 
         elif side.upper() == 'W':
             total_ports = ports_per_side[Side.WEST]
             if total_ports > 0 and pos < total_ports:
-                port_x = start_x - marker_size
-                port_y = start_y + (pos / total_ports) * spec.units_y * box_size
+                port_x = start_x - marker_size - 2
+                port_y = start_y + ((pos + 0.5) / total_ports) * spec.units_y * cell_size
                 pygame.draw.circle(self._screen, color, (int(port_x), int(port_y)), marker_size)
+                pygame.draw.circle(self._screen, (255, 255, 255), (int(port_x), int(port_y)), marker_size, 2)
 
 
 def main():
