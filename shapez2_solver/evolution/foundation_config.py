@@ -114,12 +114,50 @@ class FoundationSpec:
 
     @property
     def ports_per_side(self) -> Dict[Side, int]:
-        """Get number of port positions per side (4 per 1x1 unit on that edge)."""
+        """Get number of port positions per side (4 per 1x1 unit on that edge).
+
+        For irregular foundations, counts ALL exposed faces including internal gaps.
+        """
+        # For rectangular foundations (no gaps)
+        if self.present_cells is None:
+            return {
+                Side.NORTH: self.units_x * 4,
+                Side.SOUTH: self.units_x * 4,
+                Side.EAST: self.units_y * 4,
+                Side.WEST: self.units_y * 4,
+            }
+
+        # For irregular foundations: find all exposed faces (perimeter + internal gaps)
+        cells = set(self.present_cells)
+
+        # Count exposed faces in each direction
+        north_faces = []  # (x, y) of units with exposed north face
+        south_faces = []
+        east_faces = []
+        west_faces = []
+
+        for x, y in cells:
+            # North face (y-1): exposed if (x, y-1) not present
+            if (x, y - 1) not in cells:
+                north_faces.append((x, y))
+
+            # South face (y+1): exposed if (x, y+1) not present
+            if (x, y + 1) not in cells:
+                south_faces.append((x, y))
+
+            # West face (x-1): exposed if (x-1, y) not present
+            if (x - 1, y) not in cells:
+                west_faces.append((x, y))
+
+            # East face (x+1): exposed if (x+1, y) not present
+            if (x + 1, y) not in cells:
+                east_faces.append((x, y))
+
         return {
-            Side.NORTH: self.units_x * 4,
-            Side.SOUTH: self.units_x * 4,
-            Side.EAST: self.units_y * 4,
-            Side.WEST: self.units_y * 4,
+            Side.NORTH: len(north_faces) * 4,
+            Side.SOUTH: len(south_faces) * 4,
+            Side.EAST: len(east_faces) * 4,
+            Side.WEST: len(west_faces) * 4,
         }
 
     @property
@@ -133,26 +171,66 @@ class FoundationSpec:
 
         Ports are centered on each 1x1 unit. Each unit has 4 ports.
         Port indices 0-3 are on unit 0, 4-7 on unit 1, etc.
+
+        For irregular foundations, port indices map to exposed faces sorted by position.
         """
         unit_index = port_index // 4
         port_in_unit = port_index % 4  # 0-3 within the unit
 
-        # Center of each 1x1 unit (first unit centered at 7, then +20 for each)
-        unit_center = 7 + unit_index * 20
+        # For irregular foundations, need to find which unit this port belongs to
+        if self.present_cells is not None:
+            cells = set(self.present_cells)
+            exposed_units = []
 
-        # Ports are spread around center: positions -1.5, -0.5, +0.5, +1.5 tiles
-        # Simplified to integer positions: center-2, center-1, center, center+1
-        port_offset = port_in_unit - 1  # -1, 0, 1, 2 -> adjusted
-        port_pos = unit_center + (port_in_unit - 1)  # Spread ports around center
+            # Find units with exposed faces in this direction
+            for x, y in cells:
+                is_exposed = False
+                if side == Side.NORTH and (x, y - 1) not in cells:
+                    is_exposed = True
+                elif side == Side.SOUTH and (x, y + 1) not in cells:
+                    is_exposed = True
+                elif side == Side.WEST and (x - 1, y) not in cells:
+                    is_exposed = True
+                elif side == Side.EAST and (x + 1, y) not in cells:
+                    is_exposed = True
+
+                if is_exposed:
+                    exposed_units.append((x, y))
+
+            # Sort units by position (x for N/S, y for E/W)
+            if side in (Side.NORTH, Side.SOUTH):
+                exposed_units.sort(key=lambda u: u[0])  # Sort by x
+            else:
+                exposed_units.sort(key=lambda u: u[1])  # Sort by y
+
+            # Get the unit for this port index
+            if unit_index < len(exposed_units):
+                unit_x, unit_y = exposed_units[unit_index]
+                unit_center_x = 7 + unit_x * 20
+                unit_center_y = 7 + unit_y * 20
+            else:
+                # Fallback if index out of range
+                unit_center_x = 7 + unit_index * 20
+                unit_center_y = 7 + unit_index * 20
+        else:
+            # Rectangular foundation
+            unit_center_x = 7 + unit_index * 20
+            unit_center_y = 7 + unit_index * 20
+
+        # Calculate port position within the unit
+        # Ports spread around center: center+offset where offset in {-1.5, -0.5, 0.5, 1.5}
+        # Approximated as integer offsets: -2, -1, 1, 2 (skip 0 to spread evenly)
+        offsets = [-2, -1, 1, 2]
+        port_offset = offsets[port_in_unit] if port_in_unit < len(offsets) else 0
 
         if side == Side.NORTH:
-            return (port_pos, 0)
+            return (unit_center_x + port_offset, 0)
         elif side == Side.SOUTH:
-            return (port_pos, self.grid_height - 1)
+            return (unit_center_x + port_offset, self.grid_height - 1)
         elif side == Side.WEST:
-            return (0, port_pos)
+            return (0, unit_center_y + port_offset)
         elif side == Side.EAST:
-            return (self.grid_width - 1, port_pos)
+            return (self.grid_width - 1, unit_center_y + port_offset)
         return (0, 0)
 
 
