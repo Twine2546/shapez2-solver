@@ -2,6 +2,7 @@
 
 import sys
 import json
+import time
 
 # Ensure console output isn't buffered
 sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
