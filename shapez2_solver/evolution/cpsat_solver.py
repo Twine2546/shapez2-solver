@@ -98,6 +98,319 @@ def get_direction_for_side(side: Side, entering: bool = True) -> Rotation:
         }[side]
 
 
+class GlobalBeltRouter:
+    """
+    Global belt router using CP-SAT for simultaneous multi-path routing.
+
+    Unlike A* which routes paths sequentially (where early routes can block later ones),
+    this router finds all paths simultaneously, guaranteeing a valid solution if one exists.
+
+    Uses multi-commodity flow formulation:
+    - Each connection (source → dest) is a "commodity"
+    - Each cell can be used by at most one commodity (exclusivity)
+    - Flow conservation ensures connected paths
+    """
+
+    # Direction encoding: 0=EAST(+x), 1=WEST(-x), 2=SOUTH(+y), 3=NORTH(-y), 4=UP(+z), 5=DOWN(-z)
+    DIR_EAST = 0
+    DIR_WEST = 1
+    DIR_SOUTH = 2
+    DIR_NORTH = 3
+    DIR_UP = 4
+    DIR_DOWN = 5
+
+    # Direction deltas: (dx, dy, dz)
+    DIR_DELTAS = {
+        0: (1, 0, 0),   # EAST
+        1: (-1, 0, 0),  # WEST
+        2: (0, 1, 0),   # SOUTH
+        3: (0, -1, 0),  # NORTH
+        4: (0, 0, 1),   # UP
+        5: (0, 0, -1),  # DOWN
+    }
+
+    # Opposite directions
+    DIR_OPPOSITE = {0: 1, 1: 0, 2: 3, 3: 2, 4: 5, 5: 4}
+
+    def __init__(
+        self,
+        grid_width: int,
+        grid_height: int,
+        num_floors: int,
+        occupied: Set[Tuple[int, int, int]],
+        time_limit: float = 30.0,
+    ):
+        self.grid_width = grid_width
+        self.grid_height = grid_height
+        self.num_floors = num_floors
+        self.occupied = occupied
+        self.time_limit = time_limit
+
+    def _is_valid_cell(self, x: int, y: int, z: int) -> bool:
+        """Check if cell is within bounds and not occupied."""
+        if x < 0 or x >= self.grid_width:
+            return False
+        if y < 0 or y >= self.grid_height:
+            return False
+        if z < 0 or z >= self.num_floors:
+            return False
+        if (x, y, z) in self.occupied:
+            return False
+        return True
+
+    def _get_neighbor(self, x: int, y: int, z: int, direction: int, endpoints: Set[Tuple[int, int, int]] = None) -> Optional[Tuple[int, int, int]]:
+        """Get neighbor cell in given direction, or None if invalid."""
+        dx, dy, dz = self.DIR_DELTAS[direction]
+        nx, ny, nz = x + dx, y + dy, z + dz
+        # Allow neighbor if it's valid OR if it's an endpoint
+        if self._is_valid_cell(nx, ny, nz):
+            return (nx, ny, nz)
+        if endpoints and (nx, ny, nz) in endpoints:
+            if 0 <= nx < self.grid_width and 0 <= ny < self.grid_height and 0 <= nz < self.num_floors:
+                return (nx, ny, nz)
+        return None
+
+    def route_all(
+        self,
+        connections: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]],
+        verbose: bool = False
+    ) -> Tuple[List[Tuple[int, int, int, BuildingType, Rotation]], bool]:
+        """
+        Route all connections simultaneously using CP-SAT.
+
+        Args:
+            connections: List of (source, dest) tuples, each being (x, y, floor)
+            verbose: Print debug info
+
+        Returns:
+            Tuple of (belt_placements, success)
+            belt_placements: List of (x, y, floor, belt_type, rotation)
+        """
+        if not connections:
+            return [], True
+
+        num_routes = len(connections)
+
+        if verbose:
+            print(f"\n=== Global Router: {num_routes} connections ===")
+
+        model = cp_model.CpModel()
+
+        # Collect all connection endpoints - these are allowed even if "occupied"
+        # (they may overlap with machine adjacency positions)
+        endpoints = set()
+        for src, dst in connections:
+            endpoints.add(src)
+            endpoints.add(dst)
+
+        # Build list of valid cells (not occupied, or is an endpoint)
+        valid_cells = []
+        cell_to_idx = {}
+        for x in range(self.grid_width):
+            for y in range(self.grid_height):
+                for z in range(self.num_floors):
+                    cell = (x, y, z)
+                    # Allow cell if it's valid OR if it's a connection endpoint
+                    if self._is_valid_cell(x, y, z) or cell in endpoints:
+                        # Check bounds even for endpoints
+                        if 0 <= x < self.grid_width and 0 <= y < self.grid_height and 0 <= z < self.num_floors:
+                            idx = len(valid_cells)
+                            valid_cells.append(cell)
+                            cell_to_idx[cell] = idx
+
+        num_cells = len(valid_cells)
+
+        if verbose:
+            print(f"  Valid cells: {num_cells}")
+
+        # Variables:
+        # For each route r and cell c: in_route[r][c] = bool (is cell part of route r)
+        # For each route r and cell c and direction d: flow_out[r][c][d] = bool (route flows out in dir d)
+
+        in_route = {}  # in_route[r][cell_idx] = BoolVar
+        flow_out = {}  # flow_out[r][cell_idx][dir] = BoolVar
+
+        for r in range(num_routes):
+            in_route[r] = {}
+            flow_out[r] = {}
+            for c_idx, (x, y, z) in enumerate(valid_cells):
+                in_route[r][c_idx] = model.NewBoolVar(f'in_r{r}_c{c_idx}')
+                flow_out[r][c_idx] = {}
+                for d in range(6):  # 6 directions
+                    neighbor = self._get_neighbor(x, y, z, d, endpoints)
+                    if neighbor and neighbor in cell_to_idx:
+                        flow_out[r][c_idx][d] = model.NewBoolVar(f'flow_r{r}_c{c_idx}_d{d}')
+
+        # Constraint 1: Cell exclusivity - each cell used by at most one route
+        for c_idx in range(num_cells):
+            route_uses = [in_route[r][c_idx] for r in range(num_routes)]
+            model.Add(sum(route_uses) <= 1)
+
+        # Constraint 2: Flow implies membership
+        # If flow_out[r][c][d] is true, then in_route[r][c] must be true
+        for r in range(num_routes):
+            for c_idx in range(num_cells):
+                for d, flow_var in flow_out[r][c_idx].items():
+                    model.AddImplication(flow_var, in_route[r][c_idx])
+
+        # Constraint 3: Source and destination constraints
+        for r, (src, dst) in enumerate(connections):
+            # Source must be in route and have exactly one outflow
+            if src in cell_to_idx:
+                src_idx = cell_to_idx[src]
+                model.Add(in_route[r][src_idx] == 1)
+
+                # Exactly one outgoing flow from source
+                out_flows = list(flow_out[r][src_idx].values())
+                if out_flows:
+                    model.Add(sum(out_flows) == 1)
+                else:
+                    # No valid outflows - impossible route
+                    if verbose:
+                        print(f"  Route {r}: Source {src} has no valid neighbors!")
+                    return [], False
+            else:
+                if verbose:
+                    print(f"  Route {r}: Source {src} is invalid/occupied!")
+                return [], False
+
+            # Destination must be in route and have exactly one inflow (no outflow)
+            if dst in cell_to_idx:
+                dst_idx = cell_to_idx[dst]
+                model.Add(in_route[r][dst_idx] == 1)
+
+                # No outgoing flow from destination
+                out_flows = list(flow_out[r][dst_idx].values())
+                if out_flows:
+                    model.Add(sum(out_flows) == 0)
+            else:
+                if verbose:
+                    print(f"  Route {r}: Destination {dst} is invalid/occupied!")
+                return [], False
+
+        # Constraint 4: Flow conservation for intermediate cells
+        # If in_route[r][c] and c is not source/destination:
+        #   exactly one inflow and exactly one outflow
+        for r, (src, dst) in enumerate(connections):
+            src_idx = cell_to_idx.get(src)
+            dst_idx = cell_to_idx.get(dst)
+
+            for c_idx, (x, y, z) in enumerate(valid_cells):
+                if c_idx == src_idx or c_idx == dst_idx:
+                    continue
+
+                # Count inflows: for each direction d, check if neighbor in opposite direction flows to us
+                inflows = []
+                outflows = list(flow_out[r][c_idx].values())
+
+                for d in range(6):
+                    # Inflow from direction d means neighbor in direction d flows toward us (opposite direction)
+                    neighbor = self._get_neighbor(x, y, z, d, endpoints)
+                    if neighbor and neighbor in cell_to_idx:
+                        n_idx = cell_to_idx[neighbor]
+                        opposite_d = self.DIR_OPPOSITE[d]
+                        if opposite_d in flow_out[r][n_idx]:
+                            inflows.append(flow_out[r][n_idx][opposite_d])
+
+                # If cell is in route: exactly 1 inflow and exactly 1 outflow
+                # If cell is not in route: 0 inflows and 0 outflows
+
+                if inflows:
+                    total_inflow = sum(inflows)
+                else:
+                    total_inflow = 0
+
+                if outflows:
+                    total_outflow = sum(outflows)
+                else:
+                    total_outflow = 0
+
+                # in_route[r][c] => inflow == 1 and outflow == 1
+                # not in_route[r][c] => inflow == 0 and outflow == 0
+
+                if inflows and outflows:
+                    model.Add(total_inflow == 1).OnlyEnforceIf(in_route[r][c_idx])
+                    model.Add(total_outflow == 1).OnlyEnforceIf(in_route[r][c_idx])
+                    model.Add(total_inflow == 0).OnlyEnforceIf(in_route[r][c_idx].Not())
+                    model.Add(total_outflow == 0).OnlyEnforceIf(in_route[r][c_idx].Not())
+                elif outflows:
+                    # No possible inflows - cell can't be intermediate
+                    model.Add(in_route[r][c_idx] == 0)
+                elif inflows:
+                    # No possible outflows - cell can't be intermediate
+                    model.Add(in_route[r][c_idx] == 0)
+
+        # Objective: minimize total belt count
+        all_in_route = []
+        for r in range(num_routes):
+            for c_idx in range(num_cells):
+                all_in_route.append(in_route[r][c_idx])
+
+        model.Minimize(sum(all_in_route))
+
+        # Solve
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = self.time_limit
+        solver.parameters.num_search_workers = 8
+
+        if verbose:
+            print(f"  Solving with {self.time_limit}s limit...")
+
+        status = solver.Solve(model)
+
+        if status not in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
+            if verbose:
+                status_name = {
+                    cp_model.INFEASIBLE: 'infeasible',
+                    cp_model.MODEL_INVALID: 'invalid',
+                    cp_model.UNKNOWN: 'timeout',
+                }.get(status, 'unknown')
+                print(f"  Failed: {status_name}")
+            return [], False
+
+        if verbose:
+            total_belts = sum(solver.Value(v) for v in all_in_route)
+            print(f"  Success! Total belt cells: {total_belts}")
+
+        # Extract solution and convert to belt placements
+        belts = []
+
+        for r in range(num_routes):
+            for c_idx, (x, y, z) in enumerate(valid_cells):
+                if solver.Value(in_route[r][c_idx]):
+                    # Find which direction this cell flows to
+                    out_dir = None
+                    for d, flow_var in flow_out[r][c_idx].items():
+                        if solver.Value(flow_var):
+                            out_dir = d
+                            break
+
+                    # Determine belt type and rotation based on flow direction
+                    if out_dir is None:
+                        # Destination cell - need to check incoming direction
+                        # For now, use EAST as default
+                        belt_type = BuildingType.BELT_FORWARD
+                        rotation = Rotation.EAST
+                    elif out_dir == self.DIR_UP:
+                        belt_type = BuildingType.LIFT_UP
+                        rotation = Rotation.EAST
+                    elif out_dir == self.DIR_DOWN:
+                        belt_type = BuildingType.LIFT_DOWN
+                        rotation = Rotation.EAST
+                    else:
+                        belt_type = BuildingType.BELT_FORWARD
+                        rotation = {
+                            self.DIR_EAST: Rotation.EAST,
+                            self.DIR_WEST: Rotation.WEST,
+                            self.DIR_SOUTH: Rotation.SOUTH,
+                            self.DIR_NORTH: Rotation.NORTH,
+                        }[out_dir]
+
+                    belts.append((x, y, z, belt_type, rotation))
+
+        return belts, True
+
+
 class CPSATFullSolver:
     """
     Complete CP-SAT solver that handles system design, placement, and routing.
@@ -112,12 +425,14 @@ class CPSATFullSolver:
         output_specs: List[Tuple[str, int, int, str]],
         max_machines: int = 10,
         time_limit_seconds: float = 60.0,
+        use_global_routing: bool = False,
     ):
         self.foundation_type = foundation_type
         self.input_specs = input_specs
         self.output_specs = output_specs
         self.max_machines = max_machines
         self.time_limit = time_limit_seconds
+        self.use_global_routing = use_global_routing
 
         # Get foundation dimensions
         self.spec = FOUNDATION_SPECS.get(foundation_type)
@@ -253,9 +568,18 @@ class CPSATFullSolver:
 
             # Try routing with this placement
             if verbose:
-                print("Attempting routing...")
+                routing_method = "global CP-SAT" if self.use_global_routing else "A*"
+                print(f"Attempting routing ({routing_method})...")
 
-            belts, routing_success = self._route_all_connections(machines, verbose)
+            if self.use_global_routing:
+                # Use global CP-SAT routing - solves all paths simultaneously
+                routing_time = min(60.0, remaining_time * 0.5)  # 50% of remaining time
+                belts, routing_success = self._route_all_connections_global(
+                    machines, time_limit=routing_time, verbose=verbose
+                )
+            else:
+                # Use A* routing - faster but sequential
+                belts, routing_success = self._route_all_connections(machines, verbose)
 
             if verbose:
                 print(f"Routing success: {routing_success}")
@@ -1129,6 +1453,214 @@ class CPSATFullSolver:
                 print(f"    Added {len(self.output_positions)} output edge belts")
 
         return all_belts, all_success
+
+    def _route_all_connections_global(
+        self,
+        machines: List[Tuple[BuildingType, int, int, int, Rotation]],
+        time_limit: float = 60.0,
+        verbose: bool = False
+    ) -> Tuple[List[Tuple[int, int, int, BuildingType, Rotation]], bool]:
+        """
+        Route all belt connections using global CP-SAT optimization.
+
+        This routes ALL paths simultaneously, guaranteeing a valid solution if one exists.
+        Unlike A* which routes paths sequentially (where early routes can block later ones),
+        global routing finds non-conflicting paths for all connections at once.
+        """
+        # Build occupied set from machine positions
+        occupied = set()
+        for bt, x, y, floor, rot in machines:
+            spec = BUILDING_SPECS.get(bt)
+            w = spec.width if spec else 1
+            h = spec.height if spec else 1
+            d = spec.depth if spec else 1
+
+            for dx in range(w):
+                for dy in range(h):
+                    for dz in range(d):
+                        occupied.add((x + dx, y + dy, floor + dz))
+
+        # Build list of all connections
+        connections = []  # List of (source_pos, dest_pos)
+
+        # Get machine input/output positions
+        machine_inputs = []
+        machine_outputs = []
+        all_machine_outputs = []
+
+        for bt, mx, my, mfloor, rot in machines:
+            ports = BUILDING_PORTS.get(bt, {'inputs': [(0, 0, 0)], 'outputs': [(0, 0, 0)]})
+            spec = BUILDING_SPECS.get(bt)
+            w = spec.width if spec else 1
+
+            # Input position (from west side of machine)
+            input_pos = (mx - 1, my, mfloor)
+            machine_inputs.append(input_pos)
+
+            # All output positions
+            outputs_for_machine = []
+            for out in ports['outputs']:
+                output_pos = (mx + w, my + out[1], mfloor + out[2])
+                outputs_for_machine.append(output_pos)
+            all_machine_outputs.append(outputs_for_machine)
+
+            # First output for simple routing
+            if outputs_for_machine:
+                machine_outputs.append(outputs_for_machine[0])
+            else:
+                machine_outputs.append((mx + w, my, mfloor))
+
+        # Build connections following tree structure
+        num_machines = len(machines)
+        num_inputs = len(self.input_positions)
+        num_outputs_needed = len(self.output_positions)
+
+        if num_inputs == 0 or num_machines == 0:
+            return [], True
+
+        outputs_per_input = num_outputs_needed / num_inputs if num_inputs > 0 else num_outputs_needed
+        machines_per_input = num_machines / num_inputs if num_inputs > 0 else num_machines
+
+        if verbose:
+            print(f"\n=== Global Routing Setup ===")
+            print(f"  Inputs: {num_inputs}")
+            print(f"  Machines: {num_machines} ({machines_per_input:.1f} per input)")
+            print(f"  Outputs: {num_outputs_needed} ({outputs_per_input:.1f} per input)")
+
+        # Build connections for each tree
+        for tree_idx in range(num_inputs):
+            machine_start = int(tree_idx * machines_per_input)
+            machine_end = int((tree_idx + 1) * machines_per_input)
+            output_start = int(tree_idx * outputs_per_input)
+            output_end = int((tree_idx + 1) * outputs_per_input)
+
+            tree_machines = list(range(machine_start, min(machine_end, num_machines)))
+            tree_outputs = list(range(output_start, min(output_end, num_outputs_needed)))
+
+            if not tree_machines or not tree_outputs:
+                continue
+
+            # Connection: Input -> Root machine
+            if tree_idx < len(self.input_positions):
+                inp_x, inp_y, inp_floor, inp_side = self.input_positions[tree_idx]
+
+                if inp_side == Side.WEST:
+                    start = (1, inp_y, inp_floor)
+                elif inp_side == Side.EAST:
+                    start = (self.grid_width - 2, inp_y, inp_floor)
+                elif inp_side == Side.NORTH:
+                    start = (inp_x, 1, inp_floor)
+                else:  # SOUTH
+                    start = (inp_x, self.grid_height - 2, inp_floor)
+
+                root_machine = tree_machines[0]
+                goal = machine_inputs[root_machine]
+                connections.append((start, goal))
+
+            # Route tree internals and outputs
+            if len(tree_machines) == 1:
+                # Single machine: route outputs to ports
+                machine_idx = tree_machines[0]
+                machine_outputs_list = all_machine_outputs[machine_idx]
+
+                for local_out_idx, output_idx in enumerate(tree_outputs):
+                    if local_out_idx >= len(machine_outputs_list):
+                        break
+
+                    start = machine_outputs_list[local_out_idx]
+                    out_x, out_y, out_floor, out_side = self.output_positions[output_idx]
+
+                    if out_side == Side.EAST:
+                        goal = (self.grid_width - 2, out_y, out_floor)
+                    elif out_side == Side.WEST:
+                        goal = (1, out_y, out_floor)
+                    elif out_side == Side.SOUTH:
+                        goal = (out_x, self.grid_height - 2, out_floor)
+                    else:  # NORTH
+                        goal = (out_x, 1, out_floor)
+
+                    connections.append((start, goal))
+
+            elif len(tree_machines) >= 2:
+                # Multiple machines: binary tree
+                root_machine = tree_machines[0]
+                root_outputs = all_machine_outputs[root_machine]
+
+                # Root -> children
+                for i, child_idx in enumerate(tree_machines[1:], start=1):
+                    if i - 1 >= len(root_outputs):
+                        break
+                    start = root_outputs[i - 1]
+                    goal = machine_inputs[child_idx]
+                    connections.append((start, goal))
+
+                # Children -> outputs
+                outputs_per_child = len(tree_outputs) // max(1, len(tree_machines) - 1)
+
+                for child_local_idx, child_machine_idx in enumerate(tree_machines[1:]):
+                    child_outputs = all_machine_outputs[child_machine_idx]
+                    child_output_start = child_local_idx * outputs_per_child
+
+                    for local_out_idx, child_output_pos in enumerate(child_outputs):
+                        output_global_idx = child_output_start + local_out_idx
+                        if output_global_idx >= len(tree_outputs):
+                            break
+
+                        port_idx = tree_outputs[output_global_idx]
+                        out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
+
+                        if out_side == Side.EAST:
+                            goal = (self.grid_width - 2, out_y, out_floor)
+                        elif out_side == Side.WEST:
+                            goal = (1, out_y, out_floor)
+                        elif out_side == Side.SOUTH:
+                            goal = (out_x, self.grid_height - 2, out_floor)
+                        else:  # NORTH
+                            goal = (out_x, 1, out_floor)
+
+                        connections.append((child_output_pos, goal))
+
+        if verbose:
+            print(f"  Total connections to route: {len(connections)}")
+
+        # Use global router
+        router = GlobalBeltRouter(
+            self.grid_width, self.grid_height, self.num_floors,
+            occupied, time_limit=time_limit
+        )
+
+        belts, success = router.route_all(connections, verbose=verbose)
+
+        if success:
+            # Add edge connection belts
+            if verbose:
+                print(f"\n  Adding edge connection belts...")
+
+            for tree_idx, (inp_x, inp_y, inp_floor, inp_side) in enumerate(self.input_positions):
+                if inp_side == Side.WEST:
+                    belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.EAST))
+                elif inp_side == Side.EAST:
+                    belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.WEST))
+                elif inp_side == Side.NORTH:
+                    belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.SOUTH))
+                else:  # SOUTH
+                    belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.NORTH))
+
+            for out_x, out_y, out_floor, out_side in self.output_positions:
+                if out_side == Side.EAST:
+                    belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.EAST))
+                elif out_side == Side.WEST:
+                    belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.WEST))
+                elif out_side == Side.SOUTH:
+                    belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.SOUTH))
+                else:  # NORTH
+                    belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.NORTH))
+
+            if verbose:
+                print(f"    Added {len(self.input_positions)} input edge belts")
+                print(f"    Added {len(self.output_positions)} output edge belts")
+
+        return belts, success
 
     def _calculate_throughput(
         self,
