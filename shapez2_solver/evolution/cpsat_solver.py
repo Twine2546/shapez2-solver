@@ -664,7 +664,7 @@ class CPSATFullSolver:
         self.top_solutions: List[Candidate] = []
         self.config = None  # Set by caller if needed
 
-    def solve(self, verbose: bool = False) -> Optional[CPSATSolution]:
+    def solve(self, verbose: bool = False, initial_nogoods: List = None) -> Optional[CPSATSolution]:
         """
         Solve the complete problem: system design + placement + routing.
 
@@ -673,6 +673,10 @@ class CPSATFullSolver:
         2. Try routing
         3. If routing fails, add nogood constraint and retry
         4. Repeat until success or timeout
+
+        Args:
+            verbose: Print progress information
+            initial_nogoods: List of previously failed placements to exclude
 
         Returns:
             CPSATSolution with machines and belts, or None if infeasible
@@ -702,8 +706,10 @@ class CPSATFullSolver:
         if verbose:
             print("\nPhase 2: Iterative Placement + Routing")
 
-        # No hard iteration limit - keep trying until timeout
-        nogood_placements = []  # Store failed placements to avoid
+        # Start with any previously failed placements
+        nogood_placements = list(initial_nogoods) if initial_nogoods else []
+        if verbose and nogood_placements:
+            print(f"Starting with {len(nogood_placements)} excluded placements from previous attempts")
         best_solution = None
         iteration = 0
 
@@ -879,6 +885,9 @@ class CPSATFullSolver:
             nogood_placements.append(placement_tuple)
 
         total_time = time.time() - start_time
+
+        # Store final nogoods so they can be retrieved for continuation
+        self.final_nogood_placements = nogood_placements
 
         if best_solution is None:
             return CPSATSolution(
@@ -2618,15 +2627,19 @@ def solve_with_cpsat(
     time_limit: float = 60.0,
     verbose: bool = False,
     routing_mode: str = 'hybrid',  # 'astar', 'global', or 'hybrid'
-) -> Optional[Candidate]:
+    nogood_placements: List = None,  # Previous failed placements to exclude
+):
     """
     Convenience function to solve using CP-SAT.
 
     Args:
         routing_mode: 'astar' (sequential), 'global' (all paths at once), 'hybrid' (divide & conquer)
+        nogood_placements: List of previously failed placements to exclude.
+                          If provided, returns (solution, updated_nogoods) tuple.
 
     Returns:
-        Candidate solution or None if no solution found
+        If nogood_placements is None: Candidate solution or None
+        If nogood_placements provided: Tuple of (Candidate or None, updated_nogood_list)
     """
     solver = CPSATFullSolver(
         foundation_type=foundation_type,
@@ -2637,11 +2650,16 @@ def solve_with_cpsat(
         routing_mode=routing_mode,
     )
 
-    solution = solver.solve(verbose=verbose)
+    solution = solver.solve(verbose=verbose, initial_nogoods=nogood_placements)
 
+    result = None
     if solution and solution.status in ['optimal', 'feasible']:
-        return solution.to_candidate()
-    return None
+        result = solution.to_candidate()
+
+    # If caller provided nogoods, return tuple with updated list
+    if nogood_placements is not None:
+        return result, solver.final_nogood_placements
+    return result
 
 
 # Keep old class names for backwards compatibility

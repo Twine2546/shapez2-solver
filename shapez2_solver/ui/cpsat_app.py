@@ -444,15 +444,19 @@ Output: E,0,0,Su------
 
         try:
             # Continue searching with fresh solver instance
-            # Different random seeds per iteration mean we explore different search space
-            solution = solve_with_cpsat(
+            # Pass previous failed placements to exclude them
+            solution, updated_nogoods = solve_with_cpsat(
                 foundation_type=current_foundation,
                 input_specs=state['inputs'],
                 output_specs=state['outputs'],
                 max_machines=self.max_machines,
                 time_limit=self.time_limit,
-                verbose=True
+                verbose=True,
+                nogood_placements=state['nogood_placements']
             )
+
+            # Update nogoods for next continuation attempt
+            state['nogood_placements'] = updated_nogoods
 
             # Track iterations (approximation - solver restarts each time)
             state['total_iterations'] += 1
