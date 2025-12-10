@@ -136,9 +136,9 @@ def solve_with_reroute(problem: SyntheticProblem, use_smart_ports: bool = False)
 
     # Use the reroute loop
     if use_smart_ports:
-        results, stats = router.route_all_with_retry(connections, max_retries=3, use_smart_ports=True)
+        results = router.route_all_with_retry(connections, max_retries=3, use_smart_ports=True)
     else:
-        results, stats = router.route_with_reroute_loop(connections, max_retries=3)
+        results, _ = router.route_with_reroute_loop(connections, max_retries=3)
 
     solve_time = time.time() - start_time
 
