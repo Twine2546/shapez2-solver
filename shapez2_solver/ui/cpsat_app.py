@@ -452,6 +452,7 @@ Output: E,0,0,Su------
                 max_machines=self.max_machines,
                 time_limit=self.time_limit,
                 verbose=True,
+                routing_mode='reroute',  # Use reroute loop for better success rate
                 nogood_placements=state['nogood_placements']
             )
 
