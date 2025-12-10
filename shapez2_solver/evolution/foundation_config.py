@@ -112,6 +112,50 @@ class FoundationSpec:
         # Each connection adds area (20-14)*14 = 84 tiles approximately
         return connections * 140  # Adjusted based on actual game data
 
+    def get_valid_grid_cells(self) -> Optional[Set[Tuple[int, int]]]:
+        """Get set of valid (x, y) grid positions for this foundation.
+
+        Returns None for rectangular foundations (all cells valid).
+        For irregular foundations, returns set of valid tile coordinates.
+        """
+        if self.present_cells is None:
+            return None  # All cells are valid
+
+        valid_cells = set()
+        cells_set = set(self.present_cells)
+
+        for ux, uy in self.present_cells:
+            # Each 1x1 unit is 14x14 tiles
+            # First unit at (0,0), next at (20,0), etc.
+            start_x = ux * 20 if ux > 0 else 0
+            start_y = uy * 20 if uy > 0 else 0
+
+            # Add the 14x14 core of this unit
+            for dx in range(14):
+                for dy in range(14):
+                    valid_cells.add((start_x + dx, start_y + dy))
+
+            # Add connection strips to adjacent units
+            # Horizontal connection (to the right)
+            if (ux + 1, uy) in cells_set:
+                for dy in range(14):
+                    for dx in range(6):
+                        valid_cells.add((start_x + 14 + dx, start_y + dy))
+
+            # Vertical connection (downward)
+            if (ux, uy + 1) in cells_set:
+                for dx in range(14):
+                    for dy in range(6):
+                        valid_cells.add((start_x + dx, start_y + 14 + dy))
+
+            # Diagonal connection area (if both right and down neighbors exist)
+            if (ux + 1, uy) in cells_set and (ux, uy + 1) in cells_set and (ux + 1, uy + 1) in cells_set:
+                for dx in range(6):
+                    for dy in range(6):
+                        valid_cells.add((start_x + 14 + dx, start_y + 14 + dy))
+
+        return valid_cells
+
     @property
     def ports_per_side(self) -> Dict[Side, int]:
         """Get number of port positions per side (4 per 1x1 unit on that edge).

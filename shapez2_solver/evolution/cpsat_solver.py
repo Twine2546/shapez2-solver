@@ -96,6 +96,36 @@ def rotate_offset(dx: int, dy: int, rotation: Rotation) -> Tuple[int, int]:
     return (dx, dy)
 
 
+def get_rotated_dimensions(width: int, height: int, rotation: Rotation) -> Tuple[int, int]:
+    """Get effective width and height after rotation.
+
+    EAST/WEST: dimensions unchanged
+    SOUTH/NORTH: width and height swapped
+    """
+    if rotation in (Rotation.SOUTH, Rotation.NORTH):
+        return (height, width)
+    return (width, height)
+
+
+def get_machine_occupied_cells(
+    bt: BuildingType, x: int, y: int, floor: int, rot: Rotation
+) -> Set[Tuple[int, int, int]]:
+    """Get all grid cells occupied by a machine, accounting for rotation."""
+    spec = BUILDING_SPECS.get(bt)
+    base_w = spec.width if spec else 1
+    base_h = spec.height if spec else 1
+    depth = spec.depth if spec else 1
+
+    eff_w, eff_h = get_rotated_dimensions(base_w, base_h, rot)
+
+    occupied = set()
+    for dx in range(eff_w):
+        for dy in range(eff_h):
+            for dz in range(depth):
+                occupied.add((x + dx, y + dy, floor + dz))
+    return occupied
+
+
 def get_machine_port_positions(
     bt: BuildingType, x: int, y: int, floor: int, rot: Rotation
 ) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
@@ -224,6 +254,7 @@ class GlobalBeltRouter:
         time_limit: float = 30.0,
         allow_shape_merging: bool = False,
         max_belt_throughput: float = None,
+        valid_cells: Optional[Set[Tuple[int, int]]] = None,
     ):
         self.grid_width = grid_width
         self.grid_height = grid_height
@@ -233,9 +264,11 @@ class GlobalBeltRouter:
         self.allow_shape_merging = allow_shape_merging
         # Use actual belt throughput from game data (180 ops/min = 3 items/sec)
         self.max_belt_throughput = max_belt_throughput if max_belt_throughput else BELT_THROUGHPUT_TIER5
+        # For irregular foundations, only allow routing through valid cells
+        self.valid_cells = valid_cells
 
     def _is_valid_cell(self, x: int, y: int, z: int) -> bool:
-        """Check if cell is within bounds and not occupied."""
+        """Check if cell is within bounds, not occupied, and in valid foundation area."""
         if x < 0 or x >= self.grid_width:
             return False
         if y < 0 or y >= self.grid_height:
@@ -243,6 +276,9 @@ class GlobalBeltRouter:
         if z < 0 or z >= self.num_floors:
             return False
         if (x, y, z) in self.occupied:
+            return False
+        # For irregular foundations, check if (x, y) is in valid area
+        if self.valid_cells is not None and (x, y) not in self.valid_cells:
             return False
         return True
 
@@ -682,6 +718,9 @@ class CPSATFullSolver:
         self.grid_height = self.spec.grid_height
         self.num_floors = self.spec.num_floors
 
+        # Get valid cells for irregular foundations (L, T, Cross, etc.)
+        self.valid_cells = self.spec.get_valid_grid_cells()
+
         # Parse shapes
         self.input_shapes = [Shape.from_code(code) for _, _, _, code in input_specs]
         self.output_shapes = [Shape.from_code(code) for _, _, _, code in output_specs]
@@ -897,15 +936,10 @@ class CPSATFullSolver:
                     # Extract paths from belts (simplified - group consecutive belts)
                     log_paths = self._extract_paths_from_belts(belts)
 
-                    # Build occupied set
+                    # Build occupied set (rotation-aware)
                     log_occupied = set()
                     for bt, x, y, floor, rot in machines:
-                        spec = BUILDING_SPECS.get(bt)
-                        w = spec.width if spec else 1
-                        h = spec.height if spec else 1
-                        for dx in range(w):
-                            for dy in range(h):
-                                log_occupied.add((x + dx, y + dy, floor))
+                        log_occupied.update(get_machine_occupied_cells(bt, x, y, floor, rot))
 
                     # Calculate throughput for logging
                     log_throughput = self._calculate_throughput(machines) if machines else 0.0
@@ -1364,6 +1398,48 @@ class CPSATFullSolver:
                     no_y_overlap_bottom,
                 ])
 
+        # For irregular foundations, constrain machines to valid positions
+        if self.valid_cells is not None:
+            for i, bt in enumerate(machine_types):
+                spec = BUILDING_SPECS.get(bt)
+                base_w = spec.width if spec else 1
+                base_h = spec.height if spec else 1
+
+                # Find all valid (x, y, rotation) combinations
+                valid_placements = []
+                for rot_val in range(4):
+                    # Get effective dimensions for this rotation
+                    if rot_val in (1, 3):  # SOUTH or NORTH - swapped
+                        eff_w, eff_h = base_h, base_w
+                    else:
+                        eff_w, eff_h = base_w, base_h
+
+                    # Check all possible positions
+                    for x in range(1, self.grid_width - eff_w):
+                        for y in range(1, self.grid_height - eff_h):
+                            # Check if all cells of the machine are in valid_cells
+                            all_valid = True
+                            for dx in range(eff_w):
+                                for dy in range(eff_h):
+                                    if (x + dx, y + dy) not in self.valid_cells:
+                                        all_valid = False
+                                        break
+                                if not all_valid:
+                                    break
+                            if all_valid:
+                                valid_placements.append((x, y, rot_val))
+
+                if valid_placements:
+                    # Use AddAllowedAssignments to constrain to valid positions
+                    model.AddAllowedAssignments(
+                        [machine_x[i], machine_y[i], machine_rotation[i]],
+                        valid_placements
+                    )
+                else:
+                    # No valid placements - infeasible
+                    if verbose:
+                        print(f"  Warning: No valid placements for machine {i} ({bt.name}) in irregular foundation")
+
         # Add nogood constraints (exclude placements that failed routing)
         for nogood in nogood_placements:
             if len(nogood) != num_machines:
@@ -1763,21 +1839,14 @@ class CPSATFullSolver:
         # Create router
         router = BeltRouter(
             self.grid_width, self.grid_height, self.num_floors,
-            use_belt_ports=True, max_belt_ports=4
+            use_belt_ports=True, max_belt_ports=4,
+            valid_cells=self.valid_cells
         )
 
-        # Mark machine positions as occupied
+        # Mark machine positions as occupied (rotation-aware)
         occupied = set()
         for bt, x, y, floor, rot in machines:
-            spec = BUILDING_SPECS.get(bt)
-            w = spec.width if spec else 1
-            h = spec.height if spec else 1
-            d = spec.depth if spec else 1
-
-            for dx in range(w):
-                for dy in range(h):
-                    for dz in range(d):
-                        occupied.add((x + dx, y + dy, floor + dz))
+            occupied.update(get_machine_occupied_cells(bt, x, y, floor, rot))
 
         router.set_occupied(occupied)
 
@@ -2055,21 +2124,14 @@ class CPSATFullSolver:
         # Create router
         router = BeltRouter(
             self.grid_width, self.grid_height, self.num_floors,
-            use_belt_ports=True, max_belt_ports=4
+            use_belt_ports=True, max_belt_ports=4,
+            valid_cells=self.valid_cells
         )
 
-        # Mark machine positions as occupied
+        # Mark machine positions as occupied (rotation-aware)
         occupied = set()
         for bt, x, y, floor, rot in machines:
-            spec = BUILDING_SPECS.get(bt)
-            w = spec.width if spec else 1
-            h = spec.height if spec else 1
-            d = spec.depth if spec else 1
-
-            for dx in range(w):
-                for dy in range(h):
-                    for dz in range(d):
-                        occupied.add((x + dx, y + dy, floor + dz))
+            occupied.update(get_machine_occupied_cells(bt, x, y, floor, rot))
 
         router.set_occupied(occupied)
 
@@ -2289,18 +2351,10 @@ class CPSATFullSolver:
         Unlike A* which routes paths sequentially (where early routes can block later ones),
         global routing finds non-conflicting paths for all connections at once.
         """
-        # Build occupied set from machine positions
+        # Build occupied set from machine positions (rotation-aware)
         occupied = set()
         for bt, x, y, floor, rot in machines:
-            spec = BUILDING_SPECS.get(bt)
-            w = spec.width if spec else 1
-            h = spec.height if spec else 1
-            d = spec.depth if spec else 1
-
-            for dx in range(w):
-                for dy in range(h):
-                    for dz in range(d):
-                        occupied.add((x + dx, y + dy, floor + dz))
+            occupied.update(get_machine_occupied_cells(bt, x, y, floor, rot))
 
         # Build list of all connections
         connections = []  # List of (source_pos, dest_pos)
@@ -2444,7 +2498,8 @@ class CPSATFullSolver:
         # Use global router
         router = GlobalBeltRouter(
             self.grid_width, self.grid_height, self.num_floors,
-            occupied, time_limit=time_limit
+            occupied, time_limit=time_limit,
+            valid_cells=self.valid_cells
         )
 
         belts, success = router.route_all(connections, verbose=verbose)
@@ -2496,18 +2551,10 @@ class CPSATFullSolver:
 
         This scales much better than routing all connections simultaneously.
         """
-        # Build occupied set from machine positions
+        # Build occupied set from machine positions (rotation-aware)
         occupied = set()
         for bt, x, y, floor, rot in machines:
-            spec = BUILDING_SPECS.get(bt)
-            w = spec.width if spec else 1
-            h = spec.height if spec else 1
-            d = spec.depth if spec else 1
-
-            for dx in range(w):
-                for dy in range(h):
-                    for dz in range(d):
-                        occupied.add((x + dx, y + dy, floor + dz))
+            occupied.update(get_machine_occupied_cells(bt, x, y, floor, rot))
 
         # Get machine input/output positions (rotation-aware)
         machine_inputs = []
@@ -2664,7 +2711,8 @@ class CPSATFullSolver:
 
                 tree_router = GlobalBeltRouter(
                     self.grid_width, self.grid_height, self.num_floors,
-                    occupied, time_limit=current_timeout
+                    occupied, time_limit=current_timeout,
+                    valid_cells=self.valid_cells
                 )
 
                 tree_belts, tree_success = tree_router.route_all(tree_connections, verbose=verbose)
@@ -2770,7 +2818,8 @@ class CPSATFullSolver:
 
             router = BeltRouter(
                 self.grid_width, self.grid_height, self.num_floors,
-                use_belt_ports=True, max_belt_ports=4
+                use_belt_ports=True, max_belt_ports=4,
+                valid_cells=self.valid_cells
             )
             router.set_occupied(occupied.copy())
 

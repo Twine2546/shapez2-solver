@@ -72,7 +72,8 @@ class BeltRouter:
     def __init__(self, grid_width: int, grid_height: int, num_floors: int = 4,
                  use_belt_ports: bool = True, max_belt_ports: int = 4,
                  allow_shape_merging: bool = False,
-                 max_belt_throughput: float = None):
+                 max_belt_throughput: float = None,
+                 valid_cells: Optional[Set[Tuple[int, int]]] = None):
         """
         Initialize the belt router.
 
@@ -84,6 +85,7 @@ class BeltRouter:
             max_belt_ports: Max number of teleporter pairs
             allow_shape_merging: Allow routes with same shape to share belts
             max_belt_throughput: Max items/second per belt (default: 3.0 for tier 5)
+            valid_cells: For irregular foundations, set of valid (x, y) positions
         """
         # Use actual belt throughput from game data (180 ops/min = 3 items/sec)
         if max_belt_throughput is None:
@@ -106,6 +108,8 @@ class BeltRouter:
         # Belt capacity tracking - throughput (items/second) per cell
         self.belt_load: Dict[Tuple[int, int, int], float] = {}  # cell -> cumulative throughput
         self.max_belt_capacity = max_belt_throughput  # Max throughput (items/second) per belt
+        # For irregular foundations (L, T, Cross, etc.)
+        self.valid_cells = valid_cells
 
         # === Conflict tracking for ML analysis ===
         # Track which connection placed which belts (for conflict analysis)
@@ -142,6 +146,9 @@ class BeltRouter:
         if floor < 0 or floor >= self.num_floors:
             return False
         if (x, y, floor) in self.occupied:
+            return False
+        # For irregular foundations, check if (x, y) is in valid area
+        if self.valid_cells is not None and (x, y) not in self.valid_cells:
             return False
 
         # Check for existing belt at this position
