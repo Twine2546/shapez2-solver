@@ -110,6 +110,71 @@ def solve_baseline(problem: SyntheticProblem) -> BenchmarkResult:
     )
 
 
+def solve_with_reroute(problem: SyntheticProblem, use_smart_ports: bool = False) -> BenchmarkResult:
+    """
+    Solve using the reroute loop - when routing fails, identify blockers and retry.
+    """
+    start_time = time.time()
+
+    router = BeltRouter(
+        problem.grid_width,
+        problem.grid_height,
+        problem.num_floors,
+    )
+    router.set_occupied(problem.get_occupied())
+
+    # Build connections list
+    connections = []
+    for src, dst in problem.connections:
+        conn = Connection(
+            from_pos=src,
+            to_pos=dst,
+            from_direction=Rotation.EAST,
+            to_direction=Rotation.EAST,
+        )
+        connections.append(conn)
+
+    # Use the reroute loop
+    if use_smart_ports:
+        results, stats = router.route_all_with_retry(connections, max_retries=3, use_smart_ports=True)
+    else:
+        results, stats = router.route_with_reroute_loop(connections, max_retries=3)
+
+    solve_time = time.time() - start_time
+
+    # Count successes and belts
+    all_belts = []
+    failed_indices = []
+    total_nodes = 0
+
+    for i, result in enumerate(results):
+        total_nodes += getattr(result, 'nodes_explored', 0)
+        if result.success:
+            all_belts.extend(result.belts)
+        else:
+            failed_indices.append(i)
+
+    num_connections = len(problem.connections)
+    connections_routed = num_connections - len(failed_indices)
+
+    mode = 'reroute_smart' if use_smart_ports else 'reroute_loop'
+
+    return BenchmarkResult(
+        problem_id=problem.problem_id,
+        difficulty=problem.difficulty,
+        mode=mode,
+        success=len(failed_indices) == 0,
+        connections_routed=connections_routed,
+        connections_total=num_connections,
+        routing_progress=connections_routed / max(1, num_connections),
+        solve_time=solve_time,
+        total_nodes_explored=total_nodes,
+        num_belts=len(all_belts),
+        belts_per_connection=len(all_belts) / max(1, connections_routed),
+        nodes_per_connection=total_nodes / max(1, num_connections),
+    )
+
+
 def solve_ml_enhanced(
     problem: SyntheticProblem,
     connection_predictor: Optional[Any] = None,
@@ -287,6 +352,8 @@ def run_benchmark(
     # Run benchmark
     baseline_results = []
     ml_results = []
+    reroute_results = []
+    reroute_smart_results = []
 
     for i, problem in enumerate(all_problems):
         if verbose and (i + 1) % 10 == 0:
@@ -299,6 +366,14 @@ def run_benchmark(
         # Run ML-enhanced
         ml = solve_ml_enhanced(problem, connection_predictor, placement_predictor)
         ml_results.append(ml)
+
+        # Run reroute loop
+        reroute = solve_with_reroute(problem, use_smart_ports=False)
+        reroute_results.append(reroute)
+
+        # Run reroute with smart ports
+        reroute_smart = solve_with_reroute(problem, use_smart_ports=True)
+        reroute_smart_results.append(reroute_smart)
 
         # Memory cleanup
         gc.collect()
@@ -323,16 +398,22 @@ def run_benchmark(
     # Overall stats
     baseline_stats = calc_stats(baseline_results)
     ml_stats = calc_stats(ml_results)
+    reroute_stats = calc_stats(reroute_results)
+    reroute_smart_stats = calc_stats(reroute_smart_results)
 
     # Per-difficulty stats
     difficulty_stats = {}
     for diff in difficulties:
         base_diff = [r for r in baseline_results if r.difficulty == diff]
         ml_diff = [r for r in ml_results if r.difficulty == diff]
+        reroute_diff = [r for r in reroute_results if r.difficulty == diff]
+        reroute_smart_diff = [r for r in reroute_smart_results if r.difficulty == diff]
 
         difficulty_stats[diff] = {
             'baseline': calc_stats(base_diff),
             'ml_enhanced': calc_stats(ml_diff),
+            'reroute_loop': calc_stats(reroute_diff),
+            'reroute_smart': calc_stats(reroute_smart_diff),
         }
 
     # Calculate improvements
@@ -357,6 +438,25 @@ def run_benchmark(
             (base_nodes - ml_nodes) / max(1, base_nodes) * 100
         )
 
+    # Calculate reroute improvements vs baseline
+    reroute_improvements = {}
+    if baseline_stats and reroute_stats:
+        base_sr = baseline_stats['success_rate']
+        reroute_sr = reroute_stats['success_rate']
+        reroute_improvements['success_rate_delta'] = reroute_sr - base_sr
+        reroute_improvements['success_rate_pct_improvement'] = (
+            (reroute_sr - base_sr) / max(0.001, base_sr) * 100
+        )
+
+    reroute_smart_improvements = {}
+    if baseline_stats and reroute_smart_stats:
+        base_sr = baseline_stats['success_rate']
+        smart_sr = reroute_smart_stats['success_rate']
+        reroute_smart_improvements['success_rate_delta'] = smart_sr - base_sr
+        reroute_smart_improvements['success_rate_pct_improvement'] = (
+            (smart_sr - base_sr) / max(0.001, base_sr) * 100
+        )
+
     results = {
         'timestamp': datetime.now().isoformat(),
         'config': {
@@ -368,7 +468,11 @@ def run_benchmark(
         },
         'baseline': baseline_stats,
         'ml_enhanced': ml_stats,
+        'reroute_loop': reroute_stats,
+        'reroute_smart': reroute_smart_stats,
         'improvements': improvements,
+        'reroute_improvements': reroute_improvements,
+        'reroute_smart_improvements': reroute_smart_improvements,
         'by_difficulty': difficulty_stats,
     }
 
@@ -394,23 +498,35 @@ def print_results(results: Dict[str, Any]):
 
     baseline = results['baseline']
     ml = results['ml_enhanced']
+    reroute = results.get('reroute_loop', {})
+    reroute_smart = results.get('reroute_smart', {})
 
-    print(f"\n{'Metric':<30} {'Baseline':>15} {'ML-Enhanced':>15}")
-    print("-"*60)
-    print(f"{'Success Rate':<30} {baseline['success_rate']:>14.1%} {ml['success_rate']:>14.1%}")
-    print(f"{'Avg Routing Progress':<30} {baseline['avg_routing_progress']:>14.1%} {ml['avg_routing_progress']:>14.1%}")
-    print(f"{'Avg Solve Time (s)':<30} {baseline['avg_solve_time']:>15.4f} {ml['avg_solve_time']:>15.4f}")
-    print(f"{'Avg Nodes Explored':<30} {baseline['avg_nodes_explored']:>15.1f} {ml['avg_nodes_explored']:>15.1f}")
-    print(f"{'Avg Belts':<30} {baseline['avg_belts']:>15.1f} {ml['avg_belts']:>15.1f}")
+    print(f"\n{'Metric':<22} {'Baseline':>12} {'ML-Order':>12} {'Reroute':>12} {'Reroute+':>12}")
+    print("-"*70)
+
+    if reroute and reroute_smart:
+        print(f"{'Success Rate':<22} {baseline['success_rate']:>11.1%} {ml['success_rate']:>11.1%} {reroute['success_rate']:>11.1%} {reroute_smart['success_rate']:>11.1%}")
+        print(f"{'Routing Progress':<22} {baseline['avg_routing_progress']:>11.1%} {ml['avg_routing_progress']:>11.1%} {reroute['avg_routing_progress']:>11.1%} {reroute_smart['avg_routing_progress']:>11.1%}")
+        print(f"{'Solve Time (s)':<22} {baseline['avg_solve_time']:>12.4f} {ml['avg_solve_time']:>12.4f} {reroute['avg_solve_time']:>12.4f} {reroute_smart['avg_solve_time']:>12.4f}")
+        print(f"{'Nodes Explored':<22} {baseline['avg_nodes_explored']:>12.0f} {ml['avg_nodes_explored']:>12.0f} {reroute['avg_nodes_explored']:>12.0f} {reroute_smart['avg_nodes_explored']:>12.0f}")
+    else:
+        print(f"{'Success Rate':<22} {baseline['success_rate']:>11.1%} {ml['success_rate']:>11.1%}")
+        print(f"{'Routing Progress':<22} {baseline['avg_routing_progress']:>11.1%} {ml['avg_routing_progress']:>11.1%}")
 
     print("\n" + "-"*60)
-    print("IMPROVEMENTS (ML vs Baseline)")
+    print("IMPROVEMENTS vs BASELINE")
     print("-"*60)
 
     imp = results['improvements']
-    print(f"\n  Success Rate Change: {imp['success_rate_delta']:+.1%} ({imp['success_rate_pct_improvement']:+.1f}%)")
-    print(f"  Solve Time Reduction: {imp['time_reduction_pct']:+.1f}%")
-    print(f"  Nodes Reduction: {imp['nodes_reduction_pct']:+.1f}%")
+    print(f"\n  ML-Order:     {imp['success_rate_delta']:+.1%} ({imp['success_rate_pct_improvement']:+.1f}%)")
+
+    if 'reroute_improvements' in results and results['reroute_improvements']:
+        rimp = results['reroute_improvements']
+        print(f"  Reroute:      {rimp['success_rate_delta']:+.1%} ({rimp['success_rate_pct_improvement']:+.1f}%)")
+
+    if 'reroute_smart_improvements' in results and results['reroute_smart_improvements']:
+        simp = results['reroute_smart_improvements']
+        print(f"  Reroute+:     {simp['success_rate_delta']:+.1%} ({simp['success_rate_pct_improvement']:+.1f}%)")
 
     print("\n" + "-"*60)
     print("BY DIFFICULTY")
@@ -419,9 +535,14 @@ def print_results(results: Dict[str, Any]):
     for diff, stats in results['by_difficulty'].items():
         base = stats['baseline']
         ml = stats['ml_enhanced']
+        reroute = stats.get('reroute_loop', {})
+        reroute_smart = stats.get('reroute_smart', {})
+
         print(f"\n{diff.upper()}:")
-        print(f"  Success Rate: {base['success_rate']:.1%} -> {ml['success_rate']:.1%}")
-        print(f"  Avg Nodes: {base['avg_nodes_explored']:.0f} -> {ml['avg_nodes_explored']:.0f}")
+        if reroute and reroute_smart:
+            print(f"  Success: {base['success_rate']:.1%} -> ML:{ml['success_rate']:.1%} -> Reroute:{reroute['success_rate']:.1%} -> Reroute+:{reroute_smart['success_rate']:.1%}")
+        else:
+            print(f"  Success Rate: {base['success_rate']:.1%} -> {ml['success_rate']:.1%}")
 
     print("\n" + "="*60)
 
