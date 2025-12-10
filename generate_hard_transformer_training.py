@@ -364,9 +364,9 @@ def solve_and_log(
             # Transformer logging is enabled by default
             enable_transformer_logging=True,
             transformer_db_path=db_path,
-            # Also enable placement feedback
-            enable_placement_feedback=True,
-            placement_db_path=db_path.replace('.db', '_placement.db'),
+            # Disable placement feedback (model often broken/untrained)
+            enable_placement_feedback=False,
+            reject_bad_placements=False,
         )
 
         solve_time = time.time() - start_time
