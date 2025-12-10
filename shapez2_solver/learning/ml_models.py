@@ -2410,6 +2410,300 @@ class PlacementPredictor:
 
 
 # =============================================================================
+# Phase 4: Connection Quality Predictor
+# =============================================================================
+
+class ConnectionQualityPredictor:
+    """
+    Predicts whether a connection will route successfully and its difficulty.
+
+    Uses per-connection features to:
+    1. Predict success probability (will this connection route?)
+    2. Predict routing difficulty (easy/medium/hard)
+    3. Estimate nodes that will be explored (search cost)
+
+    Used for:
+    - Ordering connections (route easy ones first)
+    - Early rejection of impossible placements
+    - Guiding A* search priorities
+    """
+
+    CONNECTION_FEATURES = [
+        'manhattan_distance',
+        'normalized_distance',
+        'src_local_density',
+        'dst_local_density',
+        'path_corridor_density',
+        'crosses_center',
+        'floor_change',
+        'direction_complexity',
+    ]
+
+    def __init__(self):
+        if not HAS_SKLEARN:
+            raise ImportError("scikit-learn required for ConnectionQualityPredictor")
+
+        self.success_model = None
+        self.difficulty_model = None
+        self.nodes_model = None
+        self.scaler = StandardScaler()
+        self.is_trained = False
+        self.feature_importances = {}
+
+    def _extract_features(self, conn_data: Dict) -> np.ndarray:
+        """Extract feature vector from connection data."""
+        features = conn_data.get('features', {})
+        return np.array([
+            features.get('manhattan_distance', 0),
+            features.get('normalized_distance', 0),
+            features.get('src_local_density', 0),
+            features.get('dst_local_density', 0),
+            features.get('path_corridor_density', 0),
+            1.0 if features.get('crosses_center', False) else 0.0,
+            features.get('floor_change', 0),
+            features.get('direction_complexity', 0),
+        ], dtype=np.float32)
+
+    def load_training_data(self, db_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Load training data from database.
+
+        Returns:
+            X: Feature matrix
+            y_success: Success labels (0/1)
+            y_nodes: Nodes explored (for difficulty estimation)
+        """
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT connection_results FROM solver_results
+            WHERE connection_results != '' AND connection_results != '[]'
+        """)
+
+        X_list = []
+        y_success = []
+        y_nodes = []
+
+        for (results_json,) in cursor.fetchall():
+            try:
+                results = json.loads(results_json)
+                for conn_data in results:
+                    features = self._extract_features(conn_data)
+                    X_list.append(features)
+                    y_success.append(1 if conn_data.get('success', False) else 0)
+                    y_nodes.append(conn_data.get('nodes_explored', 0))
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        conn.close()
+
+        return (
+            np.array(X_list) if X_list else np.array([]).reshape(0, 8),
+            np.array(y_success),
+            np.array(y_nodes),
+        )
+
+    def train(self, db_path: str, test_size: float = 0.2) -> Dict[str, Any]:
+        """
+        Train the connection quality models.
+
+        Returns:
+            Dict with training metrics
+        """
+        print("Loading connection training data...")
+        X, y_success, y_nodes = self.load_training_data(db_path)
+
+        if len(X) == 0:
+            print("No connection training data available!")
+            return {}
+
+        print(f"Loaded {len(X)} connection examples")
+        print(f"  Success rate: {np.mean(y_success):.1%}")
+        print(f"  Avg nodes explored: {np.mean(y_nodes):.1f}")
+
+        # Split data
+        X_train, X_test, y_succ_train, y_succ_test, y_nodes_train, y_nodes_test = \
+            train_test_split(X, y_success, y_nodes, test_size=test_size, random_state=42)
+
+        # Scale features
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
+
+        metrics = {}
+
+        # Train success classifier
+        print("\nTraining connection success classifier...")
+        self.success_model = GradientBoostingClassifier(
+            n_estimators=100,
+            max_depth=5,
+            random_state=42,
+        )
+        self.success_model.fit(X_train_scaled, y_succ_train)
+
+        succ_pred = self.success_model.predict(X_test_scaled)
+        succ_acc = np.mean(succ_pred == y_succ_test)
+        print(f"  Success prediction accuracy: {succ_acc:.3f}")
+        metrics['success_accuracy'] = succ_acc
+
+        # Calculate precision/recall for failures (important for early rejection)
+        from sklearn.metrics import precision_recall_fscore_support
+        prec, rec, f1, _ = precision_recall_fscore_support(y_succ_test, succ_pred, average='binary', zero_division=0)
+        metrics['success_precision'] = prec
+        metrics['success_recall'] = rec
+        metrics['success_f1'] = f1
+        print(f"  Precision: {prec:.3f}, Recall: {rec:.3f}, F1: {f1:.3f}")
+
+        # Train difficulty classifier (based on nodes explored)
+        # Bucketize nodes into difficulty levels
+        node_thresholds = [10, 50, 200]  # easy < 10, medium < 50, hard < 200, extreme >= 200
+        y_diff_train = np.digitize(y_nodes_train, node_thresholds)
+        y_diff_test = np.digitize(y_nodes_test, node_thresholds)
+
+        print("\nTraining connection difficulty classifier...")
+        self.difficulty_model = GradientBoostingClassifier(
+            n_estimators=100,
+            max_depth=5,
+            random_state=42,
+        )
+        self.difficulty_model.fit(X_train_scaled, y_diff_train)
+
+        diff_pred = self.difficulty_model.predict(X_test_scaled)
+        diff_acc = np.mean(diff_pred == y_diff_test)
+        print(f"  Difficulty prediction accuracy: {diff_acc:.3f}")
+        metrics['difficulty_accuracy'] = diff_acc
+
+        # Feature importances
+        self.feature_importances = {
+            name: float(imp)
+            for name, imp in zip(self.CONNECTION_FEATURES, self.success_model.feature_importances_)
+        }
+
+        sorted_features = sorted(self.feature_importances.items(), key=lambda x: -x[1])
+        print("\nTop features for connection success:")
+        for name, imp in sorted_features[:5]:
+            print(f"  {name}: {imp:.3f}")
+
+        metrics['feature_importances'] = self.feature_importances
+
+        self.is_trained = True
+        return metrics
+
+    def predict(self, conn_data: Dict) -> Dict[str, Any]:
+        """
+        Predict connection quality.
+
+        Args:
+            conn_data: Connection data dict with 'features' key
+
+        Returns:
+            Dict with:
+                - success_prob: Probability of routing success
+                - difficulty: 'easy', 'medium', 'hard', 'extreme'
+                - priority: Suggested routing priority (higher = route first)
+        """
+        if not self.is_trained:
+            # Fallback: use manhattan distance as difficulty proxy
+            features = conn_data.get('features', {})
+            dist = features.get('manhattan_distance', 10)
+            return {
+                'success_prob': 0.8 if dist < 20 else 0.5,
+                'difficulty': 'easy' if dist < 10 else 'medium' if dist < 20 else 'hard',
+                'priority': 100 - dist,
+            }
+
+        X = self._extract_features(conn_data).reshape(1, -1)
+        X_scaled = self.scaler.transform(X)
+
+        # Success probability
+        success_prob = self.success_model.predict_proba(X_scaled)[0][1]
+
+        # Difficulty level
+        diff_labels = ['easy', 'medium', 'hard', 'extreme']
+        diff_idx = self.difficulty_model.predict(X_scaled)[0]
+        difficulty = diff_labels[min(diff_idx, 3)]
+
+        # Priority: higher for easier connections (route easy first)
+        priority = success_prob * 100 - diff_idx * 10
+
+        return {
+            'success_prob': float(success_prob),
+            'difficulty': difficulty,
+            'priority': float(priority),
+        }
+
+    def order_connections(
+        self,
+        connections: List[Dict],
+    ) -> List[Tuple[int, Dict]]:
+        """
+        Order connections by predicted difficulty (easy first).
+
+        Args:
+            connections: List of connection data dicts
+
+        Returns:
+            List of (original_index, prediction) sorted by priority
+        """
+        predictions = []
+        for i, conn in enumerate(connections):
+            pred = self.predict(conn)
+            predictions.append((i, pred))
+
+        # Sort by priority descending (route high priority first)
+        predictions.sort(key=lambda x: -x[1]['priority'])
+        return predictions
+
+    def filter_bad_connections(
+        self,
+        connections: List[Dict],
+        min_success_prob: float = 0.3,
+    ) -> List[int]:
+        """
+        Identify connections likely to fail.
+
+        Args:
+            connections: List of connection data dicts
+            min_success_prob: Minimum success probability threshold
+
+        Returns:
+            List of indices of connections likely to fail
+        """
+        bad_indices = []
+        for i, conn in enumerate(connections):
+            pred = self.predict(conn)
+            if pred['success_prob'] < min_success_prob:
+                bad_indices.append(i)
+        return bad_indices
+
+    def save(self, path: str):
+        """Save trained model to file."""
+        if not self.is_trained:
+            raise RuntimeError("Model not trained")
+
+        with open(path, 'wb') as f:
+            pickle.dump({
+                'success_model': self.success_model,
+                'difficulty_model': self.difficulty_model,
+                'scaler': self.scaler,
+                'feature_importances': self.feature_importances,
+            }, f)
+        print(f"Saved connection predictor to {path}")
+
+    def load(self, path: str):
+        """Load trained model from file."""
+        with open(path, 'rb') as f:
+            data = pickle.load(f)
+
+        self.success_model = data['success_model']
+        self.difficulty_model = data['difficulty_model']
+        self.scaler = data['scaler']
+        self.feature_importances = data.get('feature_importances', {})
+        self.is_trained = True
+        print(f"Loaded connection predictor from {path}")
+
+
+# =============================================================================
 # CLI Interface
 # =============================================================================
 
@@ -2429,6 +2723,10 @@ def main():
                        help="Train PyTorch policy network (Phase 2)")
     parser.add_argument("--train-placement", action="store_true",
                        help="Train placement quality predictor (Phase 3)")
+    parser.add_argument("--train-connection", action="store_true",
+                       help="Train connection quality predictor (Phase 4)")
+    parser.add_argument("--train-all", action="store_true",
+                       help="Train all available models")
     parser.add_argument("--output-dir", type=str, default="models",
                        help="Directory for saved models")
     parser.add_argument("--epochs", type=int, default=50,
@@ -2536,8 +2834,28 @@ def main():
         else:
             print("Training failed - no data available")
 
+    if args.train_connection or args.train_all:
+        print("\n" + "="*60)
+        print("Phase 4: Training Connection Quality Predictor")
+        print("  (Predicts connection routing success and difficulty)")
+        print("="*60)
+
+        predictor = ConnectionQualityPredictor()
+        metrics = predictor.train(args.db)
+
+        if metrics:
+            model_path = output_dir / "connection_predictor.pkl"
+            predictor.save(str(model_path))
+
+            print(f"\nTraining complete!")
+            print(f"  Success accuracy: {metrics.get('success_accuracy', 0):.3f}")
+            print(f"  Difficulty accuracy: {metrics.get('difficulty_accuracy', 0):.3f}")
+        else:
+            print("Training failed - no data available")
+
     if not any([args.train_classifier, args.train_direction,
-                 args.train_direction_3d, args.train_policy, args.train_placement]):
+                 args.train_direction_3d, args.train_policy, args.train_placement,
+                 args.train_connection, args.train_all]):
         parser.print_help()
 
 
