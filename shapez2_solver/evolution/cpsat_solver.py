@@ -2626,7 +2626,7 @@ def solve_with_cpsat(
     max_machines: int = 10,
     time_limit: float = 60.0,
     verbose: bool = False,
-    routing_mode: str = 'hybrid',  # 'astar', 'global', or 'hybrid'
+    routing_mode: str = 'astar',  # 'astar', 'global', or 'hybrid'
     nogood_placements: List = None,  # Previous failed placements to exclude
 ):
     """

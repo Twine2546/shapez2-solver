@@ -21,7 +21,6 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from shapez2_solver.evolution.foundation_config import FOUNDATION_SPECS, FoundationSpec, Side
-from shapez2_solver.evolution.cpsat_solver import GlobalBeltRouter
 from shapez2_solver.blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS, BUILDING_PORTS
 
 
@@ -1518,7 +1517,7 @@ def generate_realistic_data(
 
 def solve_problem(problem: SyntheticProblem, time_limit: float = 30.0) -> SolverResult:
     """
-    Run the CP-SAT solver on a synthetic problem with partial progress tracking.
+    Run the A* router on a synthetic problem with partial progress tracking.
 
     Args:
         problem: The problem to solve
@@ -1531,43 +1530,14 @@ def solve_problem(problem: SyntheticProblem, time_limit: float = 30.0) -> Solver
     num_connections = len(problem.connections)
 
     try:
-        # First try global routing (all at once)
-        router = GlobalBeltRouter(
-            grid_width=problem.grid_width,
-            grid_height=problem.grid_height,
-            num_floors=problem.num_floors,
-            occupied=problem.get_occupied(),
-            time_limit=time_limit,
-        )
-
-        belts, success = router.route_all(problem.connections, verbose=False)
-        solve_time = time.time() - start_time
-
-        if success:
-            return SolverResult(
-                problem_id=problem.problem_id,
-                success=True,
-                solve_time=solve_time,
-                num_belts=len(belts),
-                error_message="",
-                connections_attempted=num_connections,
-                connections_routed=num_connections,
-                routing_progress=1.0,
-                failed_connection_indices="[]",
-                partial_belt_positions=json.dumps([(x, y, z) for x, y, z, _, _ in belts]),
-                solver_iterations=0,  # Would need solver callback for this
-                best_objective=float(len(belts)),
-            )
-
-        # Global routing failed - try sequential A* to track partial progress
+        # Use A* routing directly (global routing disabled - always times out)
         partial_belts, partial_success, failed_indices = _solve_with_partial_tracking(
-            problem, time_limit - solve_time
+            problem, time_limit
         )
 
         connections_routed = num_connections - len(failed_indices)
         routing_progress = connections_routed / max(1, num_connections)
 
-        # If A* succeeded for all connections, count as success
         all_routed = len(failed_indices) == 0
 
         return SolverResult(
