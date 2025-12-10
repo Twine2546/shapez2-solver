@@ -588,7 +588,7 @@ class CPSATFullSolver:
         output_specs: List[Tuple[str, int, int, str]],
         max_machines: int = 10,
         time_limit_seconds: float = 60.0,
-        routing_mode: str = 'astar',  # 'astar', 'global', or 'hybrid'
+        routing_mode: str = 'astar',  # 'astar', 'global', 'hybrid', or 'reroute'
         use_global_routing: bool = False,  # Deprecated, use routing_mode
         enable_logging: bool = False,  # Log routing attempts for ML training
         log_db_path: str = "routing_data.db",  # Path to logging database
@@ -757,7 +757,7 @@ class CPSATFullSolver:
 
             # Try routing with this placement
             if verbose:
-                routing_names = {'astar': 'A*', 'global': 'global CP-SAT', 'hybrid': 'hybrid (divide & conquer)'}
+                routing_names = {'astar': 'A*', 'global': 'global CP-SAT', 'hybrid': 'hybrid (divide & conquer)', 'reroute': 'A* with reroute loop'}
                 print(f"Attempting routing ({routing_names.get(self.routing_mode, self.routing_mode)})...")
 
             routing_time = min(60.0, remaining_time * 0.5)  # 50% of remaining time
@@ -772,8 +772,11 @@ class CPSATFullSolver:
                 belts, routing_success = self._route_all_connections_hybrid(
                     machines, time_limit=routing_time, verbose=verbose
                 )
+            elif self.routing_mode == 'reroute':
+                # Use A* with reroute loop - retries failed connections with reordering
+                belts, routing_success = self._route_all_connections_reroute(machines, verbose)
             else:
-                # Use A* routing - faster but sequential
+                # Use A* routing - faster but sequential (default)
                 belts, routing_success = self._route_all_connections(machines, verbose)
 
             if verbose:
@@ -1789,6 +1792,245 @@ class CPSATFullSolver:
 
         return all_belts, all_success
 
+    def _route_all_connections_reroute(
+        self,
+        machines: List[Tuple[BuildingType, int, int, int, Rotation]],
+        verbose: bool = False
+    ) -> Tuple[List[Tuple[int, int, int, BuildingType, Rotation]], bool]:
+        """
+        Route all belt connections using A* with reroute loop.
+
+        Uses route_all_with_retry() which:
+        - Detects which connections block others
+        - Reorders and retries when routing fails
+        - Uses smart belt port decisions based on congestion
+        """
+        all_belts = []
+
+        # Create router
+        router = BeltRouter(
+            self.grid_width, self.grid_height, self.num_floors,
+            use_belt_ports=True, max_belt_ports=4
+        )
+
+        # Mark machine positions as occupied
+        occupied = set()
+        for bt, x, y, floor, rot in machines:
+            spec = BUILDING_SPECS.get(bt)
+            w = spec.width if spec else 1
+            h = spec.height if spec else 1
+            d = spec.depth if spec else 1
+
+            for dx in range(w):
+                for dy in range(h):
+                    for dz in range(d):
+                        occupied.add((x + dx, y + dy, floor + dz))
+
+        router.set_occupied(occupied)
+
+        # Get machine input/output positions
+        machine_inputs = []
+        machine_outputs = []
+        all_machine_outputs = []
+
+        for bt, mx, my, mfloor, rot in machines:
+            input_positions, output_positions = get_machine_port_positions(bt, mx, my, mfloor, rot)
+            machine_inputs.append(input_positions[0] if input_positions else (mx - 1, my, mfloor))
+            machine_outputs.append(output_positions[0] if output_positions else (mx + 1, my, mfloor))
+            all_machine_outputs.append(output_positions)
+
+        # Build all connections first
+        connections = []
+        connection_info = []  # For verbose output
+
+        num_machines = len(machines)
+        num_inputs = len(self.input_positions)
+        num_outputs_needed = len(self.output_positions)
+
+        if num_inputs == 0 or num_machines == 0:
+            return all_belts, True
+
+        outputs_per_input = num_outputs_needed / num_inputs if num_inputs > 0 else num_outputs_needed
+        machines_per_input = num_machines / num_inputs if num_inputs > 0 else num_machines
+
+        if verbose:
+            print(f"\n  Reroute+ routing:")
+            print(f"    Inputs: {num_inputs}, Machines: {num_machines}, Outputs: {num_outputs_needed}")
+
+        # Group outputs by side
+        outputs_by_side = {Side.NORTH: [], Side.SOUTH: [], Side.EAST: [], Side.WEST: []}
+        for out_idx, (_, _, _, out_side) in enumerate(self.output_positions):
+            outputs_by_side[out_side].append(out_idx)
+
+        # Build connections for each tree
+        for tree_idx in range(num_inputs):
+            machine_start = int(tree_idx * machines_per_input)
+            machine_end = int((tree_idx + 1) * machines_per_input)
+            tree_machines = list(range(machine_start, min(machine_end, num_machines)))
+
+            num_outputs_for_tree = int(outputs_per_input)
+            tree_outputs = self._assign_tree_outputs(
+                tree_idx, num_inputs, num_outputs_for_tree, outputs_by_side, False
+            )
+
+            if not tree_machines or not tree_outputs:
+                continue
+
+            # Connection: Input -> first machine
+            if tree_idx < len(self.input_positions):
+                inp_x, inp_y, inp_floor, inp_side = self.input_positions[tree_idx]
+
+                if inp_side == Side.WEST:
+                    start = (1, inp_y, inp_floor)
+                elif inp_side == Side.EAST:
+                    start = (self.grid_width - 2, inp_y, inp_floor)
+                elif inp_side == Side.NORTH:
+                    start = (inp_x, 1, inp_floor)
+                else:
+                    start = (inp_x, self.grid_height - 2, inp_floor)
+
+                root_machine = tree_machines[0]
+                goal = machine_inputs[root_machine]
+
+                conn = Connection(
+                    from_pos=start,
+                    to_pos=goal,
+                    from_direction=Rotation.EAST,
+                    to_direction=Rotation.EAST,
+                )
+                connections.append(conn)
+                connection_info.append(f"Input {tree_idx} -> Machine {root_machine}")
+
+            # Connections within tree
+            if len(tree_machines) == 1:
+                # Single machine -> outputs
+                machine_idx = tree_machines[0]
+                machine_outputs_list = all_machine_outputs[machine_idx]
+
+                matched_outputs = self._match_machine_to_foundation_outputs(
+                    machine_outputs_list, tree_outputs, verbose=False
+                )
+
+                for start, output_idx in matched_outputs:
+                    out_x, out_y, out_floor, out_side = self.output_positions[output_idx]
+
+                    if out_side == Side.EAST:
+                        goal = (self.grid_width - 2, out_y, out_floor)
+                    elif out_side == Side.WEST:
+                        goal = (1, out_y, out_floor)
+                    elif out_side == Side.SOUTH:
+                        goal = (out_x, self.grid_height - 2, out_floor)
+                    else:
+                        goal = (out_x, 1, out_floor)
+
+                    conn = Connection(
+                        from_pos=start,
+                        to_pos=goal,
+                        from_direction=Rotation.EAST,
+                        to_direction=Rotation.EAST,
+                    )
+                    connections.append(conn)
+                    connection_info.append(f"Machine {machine_idx} -> Output {output_idx}")
+
+            elif len(tree_machines) >= 2:
+                # Multiple machines: root -> children -> outputs
+                root_machine = tree_machines[0]
+                root_outputs = all_machine_outputs[root_machine]
+
+                for i, child_idx in enumerate(tree_machines[1:], start=1):
+                    if i - 1 >= len(root_outputs):
+                        break
+
+                    start = root_outputs[i - 1]
+                    goal = machine_inputs[child_idx]
+
+                    conn = Connection(
+                        from_pos=start,
+                        to_pos=goal,
+                        from_direction=Rotation.EAST,
+                        to_direction=Rotation.EAST,
+                    )
+                    connections.append(conn)
+                    connection_info.append(f"Machine {root_machine} -> Machine {child_idx}")
+
+                # Child machines -> outputs
+                all_child_outputs = []
+                for child_machine_idx in tree_machines[1:]:
+                    all_child_outputs.extend(all_machine_outputs[child_machine_idx])
+
+                matched_outputs = self._match_machine_to_foundation_outputs(
+                    all_child_outputs, tree_outputs, verbose=False
+                )
+
+                for child_output_pos, port_idx in matched_outputs:
+                    out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
+
+                    if out_side == Side.EAST:
+                        goal = (self.grid_width - 2, out_y, out_floor)
+                    elif out_side == Side.WEST:
+                        goal = (1, out_y, out_floor)
+                    elif out_side == Side.SOUTH:
+                        goal = (out_x, self.grid_height - 2, out_floor)
+                    else:
+                        goal = (out_x, 1, out_floor)
+
+                    conn = Connection(
+                        from_pos=child_output_pos,
+                        to_pos=goal,
+                        from_direction=Rotation.EAST,
+                        to_direction=Rotation.EAST,
+                    )
+                    connections.append(conn)
+                    connection_info.append(f"Machine output -> Output {port_idx}")
+
+        if verbose:
+            print(f"    Total connections to route: {len(connections)}")
+
+        # Route all connections with reroute loop
+        results = router.route_all_with_retry(connections, max_retries=3, use_smart_ports=True)
+
+        # Collect results
+        all_success = True
+        for i, result in enumerate(results):
+            if result.success:
+                all_belts.extend(result.belts)
+                if verbose:
+                    print(f"    {connection_info[i]}: OK ({len(result.belts)} belts)")
+            else:
+                all_success = False
+                if verbose:
+                    print(f"    {connection_info[i]}: FAILED")
+
+        # Add edge connection belts if all succeeded
+        if all_success:
+            if verbose:
+                print(f"\n  Adding edge connection belts...")
+
+            for tree_idx, (inp_x, inp_y, inp_floor, inp_side) in enumerate(self.input_positions):
+                if inp_side == Side.WEST:
+                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.EAST))
+                elif inp_side == Side.EAST:
+                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.WEST))
+                elif inp_side == Side.NORTH:
+                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.SOUTH))
+                else:
+                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.NORTH))
+
+            for out_x, out_y, out_floor, out_side in self.output_positions:
+                if out_side == Side.EAST:
+                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.EAST))
+                elif out_side == Side.WEST:
+                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.WEST))
+                elif out_side == Side.SOUTH:
+                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.SOUTH))
+                else:
+                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.NORTH))
+
+            if verbose:
+                print(f"    Added {len(self.input_positions)} input + {len(self.output_positions)} output edge belts")
+
+        return all_belts, all_success
+
     def _route_all_connections_global(
         self,
         machines: List[Tuple[BuildingType, int, int, int, Rotation]],
@@ -2633,7 +2875,7 @@ def solve_with_cpsat(
     Convenience function to solve using CP-SAT.
 
     Args:
-        routing_mode: 'astar' (sequential), 'global' (all paths at once), 'hybrid' (divide & conquer)
+        routing_mode: 'astar' (sequential), 'global' (all paths at once), 'hybrid' (divide & conquer), 'reroute' (A* with retry loop)
         nogood_placements: List of previously failed placements to exclude.
                           If provided, returns (solution, updated_nogoods) tuple.
 
