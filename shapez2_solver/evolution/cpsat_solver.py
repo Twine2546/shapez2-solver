@@ -1121,6 +1121,60 @@ class CPSATFullSolver:
                         count += 1
         return count
 
+    def _compute_ml_position_scores(self, num_machines: int) -> Optional[List[int]]:
+        """
+        Compute ML-based placement scores for each grid position.
+
+        Uses the learned placement quality model to score each (x, y, floor)
+        position. Higher scores = worse (more likely to cause routing failures).
+
+        Returns:
+            List of integer scores (0-100) for each flattened position,
+            or None if model not available.
+        """
+        if self.placement_feedback is None or not self.placement_feedback.model.is_trained:
+            return None
+
+        try:
+            # Import here to avoid circular imports
+            from ..learning.placement_feedback import extract_placement_features
+
+            scores = []
+            total_cells = self.grid_width * self.grid_height * self.num_floors
+
+            # Create a fake single-machine placement for each position to score
+            # This gives us a rough estimate of position quality
+            for floor in range(self.num_floors):
+                for y in range(self.grid_height):
+                    for x in range(self.grid_width):
+                        # Create mock machine at this position
+                        mock_machines = [(None, x, y, floor, None)]
+
+                        # Extract features
+                        features = extract_placement_features(
+                            machines=mock_machines,
+                            input_positions=self.input_positions,
+                            output_positions=self.output_positions,
+                            grid_width=self.grid_width,
+                            grid_height=self.grid_height,
+                            num_floors=self.num_floors,
+                        )
+
+                        # Get success probability (0-1, higher = better)
+                        prob = self.placement_feedback.model.predict_success_probability(features)
+
+                        # Convert to penalty score (0-100, higher = worse)
+                        # 0% probability -> 100 penalty
+                        # 100% probability -> 0 penalty
+                        penalty = int((1.0 - prob) * 100)
+                        scores.append(penalty)
+
+            return scores
+
+        except Exception as e:
+            print(f"Warning: ML position scoring failed: {e}")
+            return None
+
     def _solve_placement(
         self,
         machine_types: List[BuildingType],
@@ -1517,6 +1571,49 @@ class CPSATFullSolver:
 
         objective_terms = []
 
+        # === ML PLACEMENT SCORING ===
+        # Use learned model to penalize positions likely to cause routing failures
+        ml_placement_terms = []
+        if self.placement_feedback is not None and self.placement_feedback.model.is_trained:
+            ml_weight = 5  # Weight for ML placement penalty
+
+            # Pre-compute ML scores for each floor
+            # Score represents "badness" - higher = worse placement
+            ml_scores = self._compute_ml_position_scores(num_machines)
+
+            if ml_scores is not None:
+                for i in range(num_machines):
+                    # Create a flattened index from x, y, floor
+                    # index = x + y * grid_width + floor * (grid_width * grid_height)
+                    flat_index = model.NewIntVar(
+                        0, self.grid_width * self.grid_height * self.num_floors - 1,
+                        f'ml_idx_{i}'
+                    )
+
+                    # Compute flat index from position
+                    floor_offset = model.NewIntVar(
+                        0, self.grid_width * self.grid_height * self.num_floors,
+                        f'floor_offset_{i}'
+                    )
+                    model.Add(floor_offset == machine_floor[i] * self.grid_width * self.grid_height)
+
+                    y_offset = model.NewIntVar(
+                        0, self.grid_width * self.grid_height,
+                        f'y_offset_{i}'
+                    )
+                    model.Add(y_offset == machine_y[i] * self.grid_width)
+
+                    model.Add(flat_index == machine_x[i] + y_offset + floor_offset)
+
+                    # Look up ML score using Element constraint
+                    ml_score = model.NewIntVar(0, 100, f'ml_score_{i}')
+                    model.AddElement(flat_index, ml_scores, ml_score)
+
+                    ml_placement_terms.append(ml_score * ml_weight)
+
+                if verbose:
+                    print(f"  Added ML placement scoring for {num_machines} machines")
+
         # Output clearance (critical - prevents routing failures due to blocked paths)
         if output_clearance_penalty:
             clearance_weight = 10  # Highest priority
@@ -1537,6 +1634,10 @@ class CPSATFullSolver:
         # Some compactness (but less important than port-awareness)
         if distance_terms and compact_weight > 0:
             objective_terms.extend([d * compact_weight for d in distance_terms])
+
+        # ML placement scoring (learned from routing failures)
+        if ml_placement_terms:
+            objective_terms.extend(ml_placement_terms)
 
         if objective_terms:
             model.Minimize(sum(objective_terms))
