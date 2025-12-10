@@ -605,7 +605,7 @@ class CPSATFullSolver:
         enable_placement_feedback: bool = True,  # Log placement attempts for RL
         placement_db_path: str = "placement_feedback.db",
         placement_model_path: str = "models/placement_quality.pkl",
-        reject_bad_placements: bool = False,  # Reject placements predicted to fail
+        reject_bad_placements: bool = True,  # Use ML to reject placements predicted to fail
         placement_reject_threshold: float = 0.2,  # Reject if success prob < this
     ):
         self.foundation_type = foundation_type
@@ -787,8 +787,11 @@ class CPSATFullSolver:
                 routing_names = {'astar': 'A*', 'global': 'global CP-SAT', 'hybrid': 'hybrid (divide & conquer)', 'reroute': 'A* with reroute loop'}
                 print(f"Attempting routing ({routing_names.get(self.routing_mode, self.routing_mode)})...")
 
-            # Placement feedback: extract features and optionally reject
+            # ML Placement scoring: evaluate FULL placement (all machines together)
+            # This is the key ML integration - scores the complete placement as a unit
             placement_features = None
+            ml_score = 0.5  # Default score if ML not available
+
             if self.placement_feedback is not None:
                 placement_features = self.placement_feedback.extract_features(
                     machines=machines,
@@ -800,14 +803,25 @@ class CPSATFullSolver:
                     foundation_type=self.foundation_type,
                 )
 
-                # Check if we should reject this placement
+                # Get ML prediction for the FULL placement
+                ml_score = self.placement_feedback.model.predict_success_probability(placement_features)
+
+                if verbose:
+                    print(f"  ML full-placement score: {ml_score:.1%} predicted success")
+
+                # Check if we should reject this placement based on ML score
                 if self.reject_bad_placements:
-                    should_reject, prob = self.placement_feedback.should_reject(
+                    should_reject, _ = self.placement_feedback.should_reject(
                         placement_features, self.placement_reject_threshold
                     )
                     if should_reject:
                         if verbose:
-                            print(f"  Rejecting placement (predicted success: {prob:.1%})")
+                            print(f"  ML REJECTED: score {ml_score:.1%} < threshold {self.placement_reject_threshold:.1%}")
+
+                        # Add to nogoods so CP-SAT won't try similar placements
+                        placement_tuple = tuple((x, y, f) for _, x, y, f, _ in machines)
+                        nogood_placements.append(placement_tuple)
+
                         # Log as rejection (not a routing failure)
                         self.placement_feedback.log_result(
                             routing_success=False,
@@ -818,7 +832,6 @@ class CPSATFullSolver:
                             grid_height=self.grid_height,
                             num_floors=self.num_floors,
                         )
-                        iteration += 1
                         continue  # Try next placement
 
             routing_time = min(60.0, remaining_time * 0.5)  # 50% of remaining time
@@ -1120,60 +1133,6 @@ class CPSATFullSolver:
                     if part and not part.is_empty():
                         count += 1
         return count
-
-    def _compute_ml_position_scores(self, num_machines: int) -> Optional[List[int]]:
-        """
-        Compute ML-based placement scores for each grid position.
-
-        Uses the learned placement quality model to score each (x, y, floor)
-        position. Higher scores = worse (more likely to cause routing failures).
-
-        Returns:
-            List of integer scores (0-100) for each flattened position,
-            or None if model not available.
-        """
-        if self.placement_feedback is None or not self.placement_feedback.model.is_trained:
-            return None
-
-        try:
-            # Import here to avoid circular imports
-            from ..learning.placement_feedback import extract_placement_features
-
-            scores = []
-            total_cells = self.grid_width * self.grid_height * self.num_floors
-
-            # Create a fake single-machine placement for each position to score
-            # This gives us a rough estimate of position quality
-            for floor in range(self.num_floors):
-                for y in range(self.grid_height):
-                    for x in range(self.grid_width):
-                        # Create mock machine at this position
-                        mock_machines = [(None, x, y, floor, None)]
-
-                        # Extract features
-                        features = extract_placement_features(
-                            machines=mock_machines,
-                            input_positions=self.input_positions,
-                            output_positions=self.output_positions,
-                            grid_width=self.grid_width,
-                            grid_height=self.grid_height,
-                            num_floors=self.num_floors,
-                        )
-
-                        # Get success probability (0-1, higher = better)
-                        prob = self.placement_feedback.model.predict_success_probability(features)
-
-                        # Convert to penalty score (0-100, higher = worse)
-                        # 0% probability -> 100 penalty
-                        # 100% probability -> 0 penalty
-                        penalty = int((1.0 - prob) * 100)
-                        scores.append(penalty)
-
-            return scores
-
-        except Exception as e:
-            print(f"Warning: ML position scoring failed: {e}")
-            return None
 
     def _solve_placement(
         self,
@@ -1571,48 +1530,10 @@ class CPSATFullSolver:
 
         objective_terms = []
 
-        # === ML PLACEMENT SCORING ===
-        # Use learned model to penalize positions likely to cause routing failures
-        ml_placement_terms = []
-        if self.placement_feedback is not None and self.placement_feedback.model.is_trained:
-            ml_weight = 5  # Weight for ML placement penalty
-
-            # Pre-compute ML scores for each floor
-            # Score represents "badness" - higher = worse placement
-            ml_scores = self._compute_ml_position_scores(num_machines)
-
-            if ml_scores is not None:
-                for i in range(num_machines):
-                    # Create a flattened index from x, y, floor
-                    # index = x + y * grid_width + floor * (grid_width * grid_height)
-                    flat_index = model.NewIntVar(
-                        0, self.grid_width * self.grid_height * self.num_floors - 1,
-                        f'ml_idx_{i}'
-                    )
-
-                    # Compute flat index from position
-                    floor_offset = model.NewIntVar(
-                        0, self.grid_width * self.grid_height * self.num_floors,
-                        f'floor_offset_{i}'
-                    )
-                    model.Add(floor_offset == machine_floor[i] * self.grid_width * self.grid_height)
-
-                    y_offset = model.NewIntVar(
-                        0, self.grid_width * self.grid_height,
-                        f'y_offset_{i}'
-                    )
-                    model.Add(y_offset == machine_y[i] * self.grid_width)
-
-                    model.Add(flat_index == machine_x[i] + y_offset + floor_offset)
-
-                    # Look up ML score using Element constraint
-                    ml_score = model.NewIntVar(0, 100, f'ml_score_{i}')
-                    model.AddElement(flat_index, ml_scores, ml_score)
-
-                    ml_placement_terms.append(ml_score * ml_weight)
-
-                if verbose:
-                    print(f"  Added ML placement scoring for {num_machines} machines")
+        # NOTE: ML placement scoring now happens AFTER CP-SAT proposes a complete solution.
+        # The full placement (all machines together) is scored by the ML model and
+        # rejected if the predicted success probability is too low. This is more accurate
+        # than per-position scoring because it captures machine interactions.
 
         # Output clearance (critical - prevents routing failures due to blocked paths)
         if output_clearance_penalty:
@@ -1634,10 +1555,6 @@ class CPSATFullSolver:
         # Some compactness (but less important than port-awareness)
         if distance_terms and compact_weight > 0:
             objective_terms.extend([d * compact_weight for d in distance_terms])
-
-        # ML placement scoring (learned from routing failures)
-        if ml_placement_terms:
-            objective_terms.extend(ml_placement_terms)
 
         if objective_terms:
             model.Minimize(sum(objective_terms))
@@ -3056,7 +2973,7 @@ def solve_with_cpsat(
     # Placement feedback learning
     enable_placement_feedback: bool = True,
     placement_db_path: str = "placement_feedback.db",
-    reject_bad_placements: bool = False,
+    reject_bad_placements: bool = True,
 ):
     """
     Convenience function to solve using CP-SAT.
