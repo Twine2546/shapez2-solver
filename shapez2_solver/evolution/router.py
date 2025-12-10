@@ -917,6 +917,16 @@ class BeltRouter:
             return []
 
         belts = []
+        # Track positions that have belt port receivers (to avoid overwriting them)
+        receiver_positions = set()
+
+        # First pass: identify all belt port receiver positions
+        for i in range(len(path) - 1):
+            next_pos = path[i + 1]
+            move_type = next_pos[3]
+            if move_type == 'belt_port':
+                receiver_positions.add((next_pos[0], next_pos[1], next_pos[2]))
+
         for i in range(len(path) - 1):
             curr = path[i]
             next_pos = path[i + 1]
@@ -924,6 +934,10 @@ class BeltRouter:
 
             curr_pos = (curr[0], curr[1], curr[2])
             next_xyz = (next_pos[0], next_pos[1], next_pos[2])
+
+            # Skip if this position already has a belt port receiver
+            if curr_pos in receiver_positions:
+                continue
 
             dx = next_xyz[0] - curr_pos[0]
             dy = next_xyz[1] - curr_pos[1]
