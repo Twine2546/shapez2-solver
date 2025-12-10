@@ -648,6 +648,265 @@ class BeltRouter:
         # Sort by blocking score (highest first - these should be rerouted)
         return [s['connection_index'] for s in analysis['reroute_suggestions']]
 
+    def remove_connection_belts(self, connection_index: int) -> List[Tuple[int, int, int]]:
+        """
+        Remove all belts placed by a specific connection.
+
+        Args:
+            connection_index: Index of the connection to remove
+
+        Returns:
+            List of cells that were cleared
+        """
+        if connection_index not in self.connection_belts:
+            return []
+
+        cleared_cells = []
+        for cell in self.connection_belts[connection_index]:
+            # Remove from occupied
+            if cell in self.occupied:
+                self.occupied.discard(cell)
+            # Remove from belt positions
+            if cell in self.belt_positions:
+                del self.belt_positions[cell]
+            # Remove from belt owner
+            if cell in self.belt_owner:
+                del self.belt_owner[cell]
+            # Clear shape tracking
+            if cell in self.shape_at_cell:
+                del self.shape_at_cell[cell]
+            # Clear belt load
+            if cell in self.belt_load:
+                del self.belt_load[cell]
+
+            cleared_cells.append(cell)
+
+        # Clear connection tracking
+        del self.connection_belts[connection_index]
+        if connection_index in self.connection_paths:
+            del self.connection_paths[connection_index]
+
+        return cleared_cells
+
+    def route_with_reroute_loop(
+        self,
+        connections: List[Connection],
+        max_retries: int = 3,
+    ) -> Tuple[List[RouteResult], int]:
+        """
+        Route all connections with automatic rerouting on failure.
+
+        When routing fails, identifies blocking routes, removes them,
+        routes the failed connection first, then re-routes the removed ones.
+
+        Args:
+            connections: List of connections to route
+            max_retries: Maximum number of reroute attempts
+
+        Returns:
+            Tuple of (results, num_reroutes_performed)
+        """
+        num_connections = len(connections)
+        results: List[Optional[RouteResult]] = [None] * num_connections
+        reroute_count = 0
+
+        # Initial routing order
+        routing_order = list(range(num_connections))
+
+        # Capture initial machine occupancy BEFORE the loop
+        initial_occupied = self.occupied.copy()
+
+        for attempt in range(max_retries + 1):
+            # Reset belt-specific state
+            self.belt_positions.clear()
+            self.belt_port_pairs.clear()
+            self.belt_ports_used = 0
+            self.shape_at_cell.clear()
+            self.cells_reaching_dest.clear()
+            self.belt_load.clear()
+            self.belt_owner.clear()
+            self.connection_belts.clear()
+            self.connection_paths.clear()
+            self.failed_connections.clear()
+
+            # Restore initial occupied (machines only)
+            self.occupied = initial_occupied.copy()
+
+            # Route in current order
+            failed_indices = []
+            for i in routing_order:
+                conn = connections[i]
+                result = self.route_connection_indexed(conn, i)
+                results[i] = result
+                if not result.success:
+                    failed_indices.append(i)
+
+            # If all succeeded, we're done
+            if not failed_indices:
+                return [r for r in results if r is not None], reroute_count
+
+            # If this was the last attempt, return what we have
+            if attempt >= max_retries:
+                break
+
+            # Get conflict analysis to find what to reroute
+            analysis = self.get_conflict_analysis()
+
+            if not analysis['reroute_suggestions']:
+                # No suggestions, nothing we can do
+                break
+
+            # Find the connection(s) blocking the most failed routes
+            blockers_to_remove = set()
+            for suggestion in analysis['reroute_suggestions'][:2]:  # Top 2 blockers
+                blocker_idx = suggestion['connection_index']
+                if blocker_idx not in failed_indices:
+                    blockers_to_remove.add(blocker_idx)
+
+            if not blockers_to_remove:
+                # The blockers are themselves failed - can't help
+                break
+
+            # Build new routing order:
+            # 1. Failed connections first (they need space)
+            # 2. Then the blockers (reroute around the new paths)
+            # 3. Then everything else
+            new_order = []
+
+            # Failed connections first
+            for i in failed_indices:
+                new_order.append(i)
+
+            # Then blockers
+            for i in blockers_to_remove:
+                if i not in new_order:
+                    new_order.append(i)
+
+            # Then the rest
+            for i in routing_order:
+                if i not in new_order:
+                    new_order.append(i)
+
+            routing_order = new_order
+            reroute_count += 1
+
+        return [r for r in results if r is not None], reroute_count
+
+    def route_all_with_retry(
+        self,
+        connections: List[Connection],
+        max_retries: int = 3,
+        use_smart_ports: bool = True,
+    ) -> List[RouteResult]:
+        """
+        Route all connections with rerouting and smart belt ports.
+
+        Combines:
+        - Reroute loop (when fails, reorder and retry)
+        - Smart belt ports (use jumps to avoid congestion)
+
+        Args:
+            connections: List of connections to route
+            max_retries: Maximum reroute attempts
+            use_smart_ports: Use smart belt port routing
+
+        Returns:
+            List of RouteResults
+        """
+        num_connections = len(connections)
+        results: List[Optional[RouteResult]] = [None] * num_connections
+        reroute_count = 0
+
+        # Start with simple order
+        routing_order = list(range(num_connections))
+
+        # Capture initial machine occupancy BEFORE the loop
+        initial_occupied = self.occupied.copy()
+
+        for attempt in range(max_retries + 1):
+            # Clear routing state
+            self.belt_positions.clear()
+            self.belt_port_pairs.clear()
+            self.belt_ports_used = 0
+            self.shape_at_cell.clear()
+            self.cells_reaching_dest.clear()
+            self.belt_load.clear()
+            self.belt_owner.clear()
+            self.connection_belts.clear()
+            self.connection_paths.clear()
+            self.failed_connections.clear()
+            self.occupied = initial_occupied.copy()
+
+            # Route in current order
+            failed_indices = []
+            for i in routing_order:
+                conn = connections[i]
+
+                # Use smart routing if enabled
+                if use_smart_ports:
+                    result = self.route_connection_smart(conn)
+                else:
+                    result = self.route_connection(conn)
+
+                # Track ownership for conflict analysis
+                if result.success:
+                    self.connection_belts[i] = [(b[0], b[1], b[2]) for b in result.belts]
+                    self.connection_paths[i] = result.path
+                    for cell in self.connection_belts[i]:
+                        self.belt_owner[cell] = i
+                else:
+                    # Analyze what blocked this
+                    blocked_by = {}
+                    for cell in self.occupied:
+                        if cell in self.belt_owner:
+                            owner = self.belt_owner[cell]
+                            blocked_by[owner] = blocked_by.get(owner, 0) + 1
+
+                    self.failed_connections.append({
+                        'index': i,
+                        'src': conn.from_pos,
+                        'dst': conn.to_pos,
+                        'blocking_connections': blocked_by,
+                    })
+                    failed_indices.append(i)
+
+                results[i] = result
+
+            # All succeeded?
+            if not failed_indices:
+                return [r for r in results if r is not None]
+
+            # Last attempt?
+            if attempt >= max_retries:
+                break
+
+            # Find blockers
+            analysis = self.get_conflict_analysis()
+            if not analysis['reroute_suggestions']:
+                break
+
+            # Reorder: failed first, then top blockers, then rest
+            blockers = set()
+            for sug in analysis['reroute_suggestions'][:2]:
+                if sug['connection_index'] not in failed_indices:
+                    blockers.add(sug['connection_index'])
+
+            if not blockers:
+                break
+
+            new_order = list(failed_indices)
+            for b in blockers:
+                if b not in new_order:
+                    new_order.append(b)
+            for i in routing_order:
+                if i not in new_order:
+                    new_order.append(i)
+
+            routing_order = new_order
+            reroute_count += 1
+
+        return [r for r in results if r is not None]
+
     def path_to_belts(self, path: List[Tuple[int, int, int, str]]) -> List[Tuple[int, int, int, BuildingType, Rotation]]:
         """
         Convert a path to belt placements.
