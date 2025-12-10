@@ -40,6 +40,21 @@ except ImportError:
     HAS_PLACEMENT_FEEDBACK = False
     PlacementFeedbackLogger = None
 
+# Placement transformer learning (optional)
+try:
+    from ..learning.placement_transformer import (
+        PlacementTransformerModel,
+        PlacementSample,
+        CONN_INPUT_TO_MACHINE,
+        CONN_MACHINE_TO_MACHINE,
+        CONN_MACHINE_TO_OUTPUT,
+    )
+    HAS_PLACEMENT_TRANSFORMER = True
+except ImportError:
+    HAS_PLACEMENT_TRANSFORMER = False
+    PlacementTransformerModel = None
+    PlacementSample = None
+
 
 # Machine types available for solving
 SOLVER_MACHINES = [
@@ -607,6 +622,10 @@ class CPSATFullSolver:
         placement_model_path: str = "models/placement_quality.pkl",
         reject_bad_placements: bool = True,  # Use ML to reject placements predicted to fail
         placement_reject_threshold: float = 0.2,  # Reject if success prob < this
+        # Placement transformer learning
+        enable_transformer_logging: bool = True,  # Log to transformer database
+        transformer_db_path: str = "placement_transformer.db",
+        transformer_model_path: str = "models/placement_transformer.pt",
     ):
         self.foundation_type = foundation_type
         self.input_specs = input_specs
@@ -642,6 +661,16 @@ class CPSATFullSolver:
                 db_path=placement_db_path,
                 model_path=placement_model_path,
                 enable_online_learning=True,
+            )
+
+        # Placement transformer learning (rich data with connections)
+        self.enable_transformer_logging = enable_transformer_logging and HAS_PLACEMENT_TRANSFORMER
+        self.transformer_model = None
+
+        if self.enable_transformer_logging and PlacementTransformerModel is not None:
+            self.transformer_model = PlacementTransformerModel(
+                model_path=transformer_model_path,
+                db_path=transformer_db_path,
             )
 
         # Get foundation dimensions
@@ -933,6 +962,25 @@ class CPSATFullSolver:
                 except Exception as e:
                     if verbose:
                         print(f"Warning: Failed to log placement feedback: {e}")
+
+            # Log placement transformer data (rich data with connections)
+            if self.transformer_model is not None and machines:
+                try:
+                    transformer_sample = self._build_transformer_sample(
+                        machines=machines,
+                        routing_success=routing_success,
+                        num_belts=len(belts),
+                        solve_time=time.time() - start_time,
+                        failure_reason="" if routing_success else "ROUTING_FAILED",
+                    )
+                    self.transformer_model.log_sample(transformer_sample, trigger_training=True)
+                    if verbose:
+                        print(f"Logged transformer sample (success={routing_success})")
+                except Exception as e:
+                    if verbose:
+                        print(f"Warning: Failed to log transformer sample: {e}")
+                        import traceback
+                        traceback.print_exc()
 
             # Calculate fitness for this solution
             fitness = 0.0
@@ -2992,6 +3040,164 @@ class CPSATFullSolver:
 
         return connections
 
+    def _build_transformer_sample(
+        self,
+        machines: List[Tuple[BuildingType, int, int, int, Rotation]],
+        routing_success: bool,
+        num_belts: int = 0,
+        solve_time: float = 0.0,
+        failure_reason: str = "",
+    ) -> 'PlacementSample':
+        """
+        Build a PlacementSample for transformer logging with rich connection data.
+
+        This captures:
+        - Machine positions, types, rotations, and mirror state
+        - Input/output port positions with sides
+        - Connection graph (which ports connect to which machines)
+        """
+        # Build machine list: (type, x, y, floor, rotation, is_mirrored)
+        machine_data = []
+        for bt, x, y, floor, rot in machines:
+            # Check if this is a mirrored variant
+            is_mirrored = '_MIRRORED' in bt.name or bt.name.endswith('_MIRRORED')
+
+            # Get rotation as int (EAST=0, SOUTH=1, WEST=2, NORTH=3)
+            rot_val = {
+                Rotation.EAST: 0,
+                Rotation.SOUTH: 1,
+                Rotation.WEST: 2,
+                Rotation.NORTH: 3,
+            }.get(rot, 0)
+
+            machine_data.append((bt.name, x, y, floor, rot_val, is_mirrored))
+
+        # Build input ports: (x, y, floor, side)
+        # Side: NORTH=0, EAST=1, SOUTH=2, WEST=3
+        input_ports = []
+        for inp_x, inp_y, inp_floor, inp_side in self.input_positions:
+            side_val = {
+                Side.NORTH: 0,
+                Side.EAST: 1,
+                Side.SOUTH: 2,
+                Side.WEST: 3,
+            }.get(inp_side, 0)
+            input_ports.append((inp_x, inp_y, inp_floor, side_val))
+
+        # Build output ports: (x, y, floor, side)
+        output_ports = []
+        for out_x, out_y, out_floor, out_side in self.output_positions:
+            side_val = {
+                Side.NORTH: 0,
+                Side.EAST: 1,
+                Side.SOUTH: 2,
+                Side.WEST: 3,
+            }.get(out_side, 0)
+            output_ports.append((out_x, out_y, out_floor, side_val))
+
+        # Build connections: (conn_type, src_idx, dst_idx, src_pos, dst_pos)
+        connections = []
+
+        # Get machine input/output positions
+        machine_inputs = []
+        machine_outputs_list = []
+
+        for bt, mx, my, mfloor, rot in machines:
+            in_positions, out_positions = get_machine_port_positions(bt, mx, my, mfloor, rot)
+            machine_inputs.append(in_positions[0] if in_positions else (mx - 1, my, mfloor))
+            machine_outputs_list.append(out_positions)
+
+        # Input ports -> machines (CONN_INPUT_TO_MACHINE = 0)
+        num_inputs = len(self.input_positions)
+        num_machines = len(machines)
+
+        if num_machines > 0:
+            # Distribute inputs across machines
+            machines_per_input = max(1, num_machines // max(1, num_inputs))
+
+            for inp_idx, (inp_x, inp_y, inp_floor, inp_side) in enumerate(self.input_positions):
+                # Get start position (inside grid)
+                if inp_side == Side.WEST:
+                    start = (1, inp_y, inp_floor)
+                elif inp_side == Side.EAST:
+                    start = (self.grid_width - 2, inp_y, inp_floor)
+                elif inp_side == Side.NORTH:
+                    start = (inp_x, 1, inp_floor)
+                else:
+                    start = (inp_x, self.grid_height - 2, inp_floor)
+
+                # Connect to first machine in this input's tree
+                target_machine_idx = min(inp_idx * machines_per_input, num_machines - 1)
+                goal = machine_inputs[target_machine_idx]
+
+                connections.append((
+                    CONN_INPUT_TO_MACHINE,  # conn_type = 0
+                    inp_idx,                 # src_idx (input port index)
+                    target_machine_idx,      # dst_idx (machine index)
+                    start,                   # src_pos
+                    goal,                    # dst_pos
+                ))
+
+        # Machine -> machine connections (CONN_MACHINE_TO_MACHINE = 1)
+        # This is a simplified model - in reality the connection graph is more complex
+        if num_machines > 1:
+            # Connect first machine to others (tree structure)
+            root_outputs = machine_outputs_list[0] if machine_outputs_list else []
+            for i, child_idx in enumerate(range(1, num_machines)):
+                if i < len(root_outputs):
+                    start = root_outputs[i]
+                    goal = machine_inputs[child_idx]
+                    connections.append((
+                        CONN_MACHINE_TO_MACHINE,  # conn_type = 1
+                        0,                         # src_idx (root machine)
+                        child_idx,                 # dst_idx (child machine)
+                        start,                     # src_pos
+                        goal,                      # dst_pos
+                    ))
+
+        # Machine -> output ports (CONN_MACHINE_TO_OUTPUT = 2)
+        # Collect all machine outputs
+        all_machine_outputs = []
+        for m_idx, outputs in enumerate(machine_outputs_list):
+            for out_pos in outputs:
+                all_machine_outputs.append((m_idx, out_pos))
+
+        for out_idx, (out_x, out_y, out_floor, out_side) in enumerate(self.output_positions):
+            # Get goal position (inside grid)
+            if out_side == Side.EAST:
+                goal = (self.grid_width - 2, out_y, out_floor)
+            elif out_side == Side.WEST:
+                goal = (1, out_y, out_floor)
+            elif out_side == Side.SOUTH:
+                goal = (out_x, self.grid_height - 2, out_floor)
+            else:
+                goal = (out_x, 1, out_floor)
+
+            if out_idx < len(all_machine_outputs):
+                m_idx, start = all_machine_outputs[out_idx]
+                connections.append((
+                    CONN_MACHINE_TO_OUTPUT,  # conn_type = 2
+                    m_idx,                    # src_idx (machine index)
+                    out_idx,                  # dst_idx (output port index)
+                    start,                    # src_pos
+                    goal,                     # dst_pos
+                ))
+
+        return PlacementSample(
+            foundation_type=self.foundation_type,
+            grid_width=self.grid_width,
+            grid_height=self.grid_height,
+            num_floors=self.num_floors,
+            machines=machine_data,
+            input_ports=input_ports,
+            output_ports=output_ports,
+            connections=connections,
+            routing_success=routing_success,
+            solve_time=solve_time,
+            num_belts=num_belts,
+            failure_reason=failure_reason,
+        )
+
     def _extract_paths_from_belts(
         self,
         belts: List[Tuple[int, int, int, BuildingType, Rotation]]
@@ -3028,6 +3234,9 @@ def solve_with_cpsat(
     enable_placement_feedback: bool = True,
     placement_db_path: str = "placement_feedback.db",
     reject_bad_placements: bool = True,
+    # Placement transformer learning
+    enable_transformer_logging: bool = True,
+    transformer_db_path: str = "placement_transformer.db",
 ):
     """
     Convenience function to solve using CP-SAT.
@@ -3039,6 +3248,8 @@ def solve_with_cpsat(
         enable_placement_feedback: Log placement attempts for RL learning
         placement_db_path: Path to placement feedback database
         reject_bad_placements: Use ML to reject likely-failing placements
+        enable_transformer_logging: Log rich placement data for transformer training
+        transformer_db_path: Path to transformer database
 
     Returns:
         If nogood_placements is None: Candidate solution or None
@@ -3054,6 +3265,8 @@ def solve_with_cpsat(
         enable_placement_feedback=enable_placement_feedback,
         placement_db_path=placement_db_path,
         reject_bad_placements=reject_bad_placements,
+        enable_transformer_logging=enable_transformer_logging,
+        transformer_db_path=transformer_db_path,
     )
 
     solution = solver.solve(verbose=verbose, initial_nogoods=nogood_placements)
