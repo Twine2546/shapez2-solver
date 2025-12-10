@@ -2200,6 +2200,7 @@ class CPSATFullSolver:
                 all_success = False
                 if verbose:
                     print(f"    Tree {tree_idx} FAILED")
+                break  # No point continuing if one tree fails
 
         # Add edge connection belts
         if all_success:
