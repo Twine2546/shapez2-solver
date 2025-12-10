@@ -784,6 +784,7 @@ class RealisticProblemGenerator:
             'input_sides': [Side.SOUTH],
             'output_sides': [Side.NORTH],
             'machines_per_floor': 0,
+            'num_io_ports': 4,  # Ports per I/O block
             'difficulty': 'easy',
         },
         'single_processor': {
@@ -791,7 +792,8 @@ class RealisticProblemGenerator:
             'min_floors': 1,
             'input_sides': [Side.SOUTH],
             'output_sides': [Side.NORTH, Side.EAST],
-            'machines_per_floor': 1,
+            'machines_per_floor': 2,
+            'num_io_ports': 4,
             'difficulty': 'medium',
         },
         'multi_processor': {
@@ -799,7 +801,8 @@ class RealisticProblemGenerator:
             'min_floors': 1,
             'input_sides': [Side.SOUTH, Side.WEST],
             'output_sides': [Side.NORTH, Side.EAST],
-            'machines_per_floor': 2,
+            'machines_per_floor': 5,  # More machines = more blocking
+            'num_io_ports': 4,
             'difficulty': 'hard',
         },
         'cross_floor': {
@@ -807,7 +810,8 @@ class RealisticProblemGenerator:
             'min_floors': 2,
             'input_sides': [Side.SOUTH],
             'output_sides': [Side.NORTH, Side.EAST, Side.WEST],
-            'machines_per_floor': 1,
+            'machines_per_floor': 4,
+            'num_io_ports': 4,
             'difficulty': 'hard',
         },
         'full_factory': {
@@ -815,7 +819,26 @@ class RealisticProblemGenerator:
             'min_floors': 3,
             'input_sides': [Side.SOUTH],
             'output_sides': [Side.NORTH, Side.EAST, Side.WEST],
-            'machines_per_floor': 2,
+            'machines_per_floor': 6,  # Pack in more machines
+            'num_io_ports': 4,
+            'difficulty': 'extreme',
+        },
+        'crowded': {
+            'description': 'Densely packed machines with many crossing paths',
+            'min_floors': 1,
+            'input_sides': [Side.SOUTH, Side.WEST],
+            'output_sides': [Side.NORTH, Side.EAST],
+            'machines_per_floor': 8,  # Very crowded!
+            'num_io_ports': 6,  # More I/O = more paths to route
+            'difficulty': 'extreme',
+        },
+        'nightmare': {
+            'description': 'Maximum density - designed to fail often',
+            'min_floors': 2,
+            'input_sides': [Side.SOUTH, Side.WEST, Side.NORTH],
+            'output_sides': [Side.NORTH, Side.EAST, Side.SOUTH],
+            'machines_per_floor': 12,  # Packed tight
+            'num_io_ports': 8,  # Lots of paths
             'difficulty': 'extreme',
         },
     }
@@ -1085,7 +1108,8 @@ class RealisticProblemGenerator:
         if machines_per_floor == 0:
             return machines, occupied
 
-        margin = 3  # Stay away from edges
+        # Smaller margin = more crowded placement
+        margin = 2  # Reduced from 3 - stay closer to edges
 
         for floor in range(num_floors):
             for _ in range(machines_per_floor):
@@ -1379,23 +1403,46 @@ class RealisticProblemGenerator:
         scenarios: List[str] = None,
     ) -> List[SyntheticProblem]:
         """Generate a batch of realistic problems."""
+        # Smaller foundations = harder problems (more crowded)
+        small_foundations = ['1x1', '2x1', '1x2', '2x2']
+        medium_foundations = ['3x1', '1x3', '3x2', '2x3', 'L', 'T']
+        large_foundations = ['4x1', '1x4', '4x2', '2x4', '3x3', 'L4', 'S4', 'Cross']
+
         if foundation_types is None:
-            # Use ALL foundation types
             foundation_types = list(FOUNDATION_SPECS.keys())
         if scenarios is None:
             scenarios = list(self.SCENARIOS.keys())
 
         problems = []
         for _ in range(count):
-            foundation = random.choice(foundation_types)
             scenario = random.choice(scenarios)
+            scenario_config = self.SCENARIOS[scenario]
+
+            # For harder scenarios, prefer smaller foundations
+            difficulty = scenario_config['difficulty']
+            if difficulty == 'extreme':
+                # 60% small, 30% medium, 10% large
+                foundation_pool = small_foundations * 6 + medium_foundations * 3 + large_foundations
+            elif difficulty == 'hard':
+                # 40% small, 40% medium, 20% large
+                foundation_pool = small_foundations * 4 + medium_foundations * 4 + large_foundations * 2
+            else:
+                # Use all equally
+                foundation_pool = foundation_types
+
+            # Filter to only valid foundations
+            valid_pool = [f for f in foundation_pool if f in foundation_types]
+            if not valid_pool:
+                valid_pool = foundation_types
+
+            foundation = random.choice(valid_pool)
 
             # Filter scenarios by foundation capabilities
             spec = FOUNDATION_SPECS.get(foundation, FOUNDATION_SPECS['3x2'])
-            scenario_config = self.SCENARIOS[scenario]
 
             if scenario_config['min_floors'] > spec.num_floors:
                 scenario = 'simple_passthrough'
+                scenario_config = self.SCENARIOS[scenario]
 
             num_floors = random.randint(1, min(3, spec.num_floors))
 
