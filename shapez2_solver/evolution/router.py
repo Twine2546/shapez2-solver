@@ -107,6 +107,13 @@ class BeltRouter:
         self.belt_load: Dict[Tuple[int, int, int], float] = {}  # cell -> cumulative throughput
         self.max_belt_capacity = max_belt_throughput  # Max throughput (items/second) per belt
 
+        # === Conflict tracking for ML analysis ===
+        # Track which connection placed which belts (for conflict analysis)
+        self.belt_owner: Dict[Tuple[int, int, int], int] = {}  # cell -> connection_index
+        self.connection_belts: Dict[int, List[Tuple[int, int, int]]] = {}  # conn_idx -> list of cells
+        self.connection_paths: Dict[int, List[Tuple[int, int, int]]] = {}  # conn_idx -> path
+        self.failed_connections: List[Dict] = []  # List of failed connection info with blockers
+
     def set_occupied(self, positions: Set[Tuple[int, int, int]]) -> None:
         """Set which grid positions are occupied by buildings."""
         self.occupied = positions.copy()
@@ -486,6 +493,161 @@ class BeltRouter:
             blocked_positions=stats['blocked_positions']
         )
 
+    def route_connection_indexed(
+        self,
+        connection: Connection,
+        connection_index: int,
+    ) -> RouteResult:
+        """
+        Route a connection while tracking ownership for conflict analysis.
+
+        Args:
+            connection: The connection to route
+            connection_index: Index of this connection (for tracking)
+
+        Returns:
+            RouteResult with conflict analysis data
+        """
+        start = connection.from_pos
+        goal = connection.to_pos
+        shape_code = connection.shape_code
+        throughput = connection.throughput
+
+        path_with_types, stats = self.find_path_with_stats(
+            start, goal, shape_code=shape_code, throughput=throughput
+        )
+
+        if path_with_types is None:
+            # Analyze which connections are blocking this one
+            blocking_connections = self._analyze_blockers(
+                start, goal, stats['blocked_positions']
+            )
+
+            self.failed_connections.append({
+                'index': connection_index,
+                'src': start,
+                'dst': goal,
+                'blocked_positions': stats['blocked_positions'],
+                'blocking_connections': blocking_connections,
+                'nodes_explored': stats['nodes_explored'],
+            })
+
+            return RouteResult(
+                path=[], belts=[], success=False,
+                nodes_explored=stats['nodes_explored'],
+                nodes_in_open_set=stats['nodes_in_open_set'],
+                blocked_positions=stats['blocked_positions']
+            )
+
+        belts = self.path_to_belts(path_with_types)
+        simple_path = [(p[0], p[1], p[2]) for p in path_with_types]
+
+        # Track belt ownership
+        belt_cells = []
+        for x, y, floor, belt_type, rotation in belts:
+            cell = (x, y, floor)
+            belt_cells.append(cell)
+
+            if cell not in self.belt_positions:
+                self.add_occupied(x, y, floor)
+                # Track ownership (only for new belts, not merged)
+                self.belt_owner[cell] = connection_index
+
+            self.belt_positions[cell] = (belt_type, rotation)
+            if shape_code:
+                self.shape_at_cell[cell] = shape_code
+            self.belt_load[cell] = self.belt_load.get(cell, 0.0) + throughput
+
+        # Store connection info
+        self.connection_belts[connection_index] = belt_cells
+        self.connection_paths[connection_index] = simple_path
+
+        self.register_path_to_destination(simple_path, goal)
+
+        return RouteResult(
+            path=simple_path,
+            belts=belts,
+            success=True,
+            cost=len(simple_path),
+            nodes_explored=stats['nodes_explored'],
+            nodes_in_open_set=stats['nodes_in_open_set'],
+            blocked_positions=stats['blocked_positions']
+        )
+
+    def _analyze_blockers(
+        self,
+        src: Tuple[int, int, int],
+        dst: Tuple[int, int, int],
+        blocked_positions: List[Tuple[int, int, int]],
+    ) -> Dict[int, int]:
+        """
+        Analyze which connections are blocking a failed route.
+
+        Returns:
+            Dict mapping connection_index -> number of blocking cells from that connection
+        """
+        blocking_counts: Dict[int, int] = {}
+
+        for pos in blocked_positions:
+            if pos in self.belt_owner:
+                owner = self.belt_owner[pos]
+                blocking_counts[owner] = blocking_counts.get(owner, 0) + 1
+
+        return blocking_counts
+
+    def get_conflict_analysis(self) -> Dict:
+        """
+        Get analysis of routing conflicts for ML training.
+
+        Returns dict with:
+            - failed_connections: List of failed connections with blocking info
+            - blocking_scores: Score for each successful connection (how many others it blocks)
+            - reroute_suggestions: Which connections should be rerouted
+        """
+        # Calculate blocking scores for each successful connection
+        blocking_scores: Dict[int, int] = {}
+        for conn_idx in self.connection_belts:
+            blocking_scores[conn_idx] = 0
+
+        for failed in self.failed_connections:
+            for blocker_idx, count in failed['blocking_connections'].items():
+                blocking_scores[blocker_idx] = blocking_scores.get(blocker_idx, 0) + count
+
+        # Identify connections that should be reconsidered
+        reroute_suggestions = []
+        for conn_idx, score in sorted(blocking_scores.items(), key=lambda x: -x[1]):
+            if score > 0:
+                reroute_suggestions.append({
+                    'connection_index': conn_idx,
+                    'blocking_score': score,
+                    'num_belts': len(self.connection_belts.get(conn_idx, [])),
+                    'path_length': len(self.connection_paths.get(conn_idx, [])),
+                    'blocks_connections': [
+                        f['index'] for f in self.failed_connections
+                        if conn_idx in f['blocking_connections']
+                    ],
+                })
+
+        return {
+            'failed_connections': self.failed_connections,
+            'blocking_scores': blocking_scores,
+            'reroute_suggestions': reroute_suggestions,
+            'total_failed': len(self.failed_connections),
+            'total_routed': len(self.connection_belts),
+        }
+
+    def get_reroute_order(self) -> List[int]:
+        """
+        Get suggested order for re-routing to resolve conflicts.
+
+        Returns list of connection indices to reroute, starting with
+        the ones that block the most failed connections.
+        """
+        analysis = self.get_conflict_analysis()
+
+        # Sort by blocking score (highest first - these should be rerouted)
+        return [s['connection_index'] for s in analysis['reroute_suggestions']]
+
     def path_to_belts(self, path: List[Tuple[int, int, int, str]]) -> List[Tuple[int, int, int, BuildingType, Rotation]]:
         """
         Convert a path to belt placements.
@@ -636,6 +798,11 @@ class BeltRouter:
         self.shape_at_cell.clear()
         self.cells_reaching_dest.clear()
         self.belt_load.clear()
+        # Clear conflict tracking
+        self.belt_owner.clear()
+        self.connection_belts.clear()
+        self.connection_paths.clear()
+        self.failed_connections.clear()
         # Note: doesn't clear occupied - call set_occupied to reset
 
 

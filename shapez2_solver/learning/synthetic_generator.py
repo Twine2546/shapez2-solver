@@ -204,6 +204,9 @@ class SolverResult:
     total_nodes_explored: int = 0
     total_blocked_positions: int = 0
 
+    # Conflict analysis for rerouting suggestions
+    conflict_analysis: str = ""  # JSON dict with blocking_scores and reroute_suggestions
+
 
 class SyntheticProblemGenerator:
     """
@@ -520,6 +523,7 @@ class SyntheticDataStore:
                 placement_features TEXT DEFAULT '',
                 total_nodes_explored INTEGER DEFAULT 0,
                 total_blocked_positions INTEGER DEFAULT 0,
+                conflict_analysis TEXT DEFAULT '',
                 FOREIGN KEY (problem_id) REFERENCES synthetic_problems(problem_id)
             )
         ''')
@@ -576,8 +580,9 @@ class SyntheticDataStore:
             (problem_id, success, solve_time, num_belts, error_message, solved_at,
              connections_attempted, connections_routed, routing_progress,
              failed_connection_indices, partial_belt_positions, solver_iterations, best_objective,
-             connection_results, placement_features, total_nodes_explored, total_blocked_positions)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             connection_results, placement_features, total_nodes_explored, total_blocked_positions,
+             conflict_analysis)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             result.problem_id,
             1 if result.success else 0,
@@ -596,6 +601,7 @@ class SyntheticDataStore:
             result.placement_features,
             result.total_nodes_explored,
             result.total_blocked_positions,
+            result.conflict_analysis,
         ))
 
         conn.commit()
@@ -623,6 +629,7 @@ class SyntheticDataStore:
             ('placement_features', 'TEXT DEFAULT ""'),
             ('total_nodes_explored', 'INTEGER DEFAULT 0'),
             ('total_blocked_positions', 'INTEGER DEFAULT 0'),
+            ('conflict_analysis', 'TEXT DEFAULT ""'),
         ]
 
         for col_name, col_type in new_columns:
@@ -1651,7 +1658,7 @@ def solve_problem(problem: SyntheticProblem, time_limit: float = 30.0) -> Solver
     try:
         # Use enhanced routing with ML data capture
         (partial_belts, partial_success, failed_indices,
-         connection_results, total_nodes, total_blocked) = _solve_with_ml_data(
+         connection_results, total_nodes, total_blocked, conflict_analysis) = _solve_with_ml_data(
             problem, time_limit
         )
 
@@ -1678,6 +1685,7 @@ def solve_problem(problem: SyntheticProblem, time_limit: float = 30.0) -> Solver
             placement_features=json.dumps(placement_features),
             total_nodes_explored=total_nodes,
             total_blocked_positions=total_blocked,
+            conflict_analysis=json.dumps(conflict_analysis),
         )
 
     except Exception as e:
@@ -1698,6 +1706,7 @@ def solve_problem(problem: SyntheticProblem, time_limit: float = 30.0) -> Solver
             placement_features=json.dumps(placement_features),
             total_nodes_explored=0,
             total_blocked_positions=0,
+            conflict_analysis="{}",
         )
 
 
@@ -1746,13 +1755,13 @@ def _solve_with_partial_tracking(
 def _solve_with_ml_data(
     problem: SyntheticProblem,
     time_limit: float,
-) -> Tuple[List, bool, List[int], List[Dict], int, int]:
+) -> Tuple[List, bool, List[int], List[Dict], int, int, Dict]:
     """
-    Route connections while capturing rich ML training data.
+    Route connections while capturing rich ML training data including conflict analysis.
 
     Returns:
         (partial_belts, all_success, failed_indices, connection_results,
-         total_nodes_explored, total_blocked_positions)
+         total_nodes_explored, total_blocked_positions, conflict_analysis)
 
     connection_results is a list of dicts with per-connection data:
         - index: connection index
@@ -1763,7 +1772,11 @@ def _solve_with_ml_data(
         - belt_directions: belt types and rotations along path
         - nodes_explored: A* nodes expanded for this connection
         - blocked_positions: positions that blocked the search
-        - grid_state_before: occupied cells before this routing attempt
+        - blocking_connections: which earlier routes are blocking this one (if failed)
+
+    conflict_analysis contains:
+        - blocking_scores: how many connections each route blocks
+        - reroute_suggestions: which routes should be reconsidered
     """
     from ..evolution.router import BeltRouter, Connection
     from .features import extract_connection_features
@@ -1805,8 +1818,8 @@ def _solve_with_ml_data(
             to_direction=Rotation.EAST,
         )
 
-        # Route with statistics capture
-        result = router.route_connection_with_stats(conn)
+        # Route with conflict tracking
+        result = router.route_connection_indexed(conn, i)
 
         # Build connection result entry
         conn_result = {
@@ -1860,8 +1873,19 @@ def _solve_with_ml_data(
 
         connection_results.append(conn_result)
 
+    # Get conflict analysis - which successful routes are blocking failed ones
+    conflict_analysis = router.get_conflict_analysis()
+
+    # Add blocking info to connection results
+    for suggestion in conflict_analysis.get('reroute_suggestions', []):
+        conn_idx = suggestion['connection_index']
+        if conn_idx < len(connection_results):
+            connection_results[conn_idx]['blocking_score'] = suggestion['blocking_score']
+            connection_results[conn_idx]['blocks_connections'] = suggestion['blocks_connections']
+
     all_success = len(failed_indices) == 0
-    return all_belts, all_success, failed_indices, connection_results, total_nodes_explored, total_blocked_positions
+    return (all_belts, all_success, failed_indices, connection_results,
+            total_nodes_explored, total_blocked_positions, conflict_analysis)
 
 
 def generate_and_solve(
