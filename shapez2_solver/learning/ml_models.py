@@ -1728,6 +1728,688 @@ class MLGuidedRouter:
 
 
 # =============================================================================
+# Phase 3: Placement Quality Predictor
+# =============================================================================
+
+@dataclass
+class PlacementFeatures:
+    """
+    Features extracted from a machine placement configuration.
+
+    Used to predict whether a placement will lead to successful routing.
+    """
+    # Grid info
+    grid_width: int
+    grid_height: int
+    num_floors: int
+    grid_volume: int  # width * height * floors
+
+    # Machine placement features
+    num_machines: int
+    machine_density: float  # machines / grid_volume
+
+    # Spatial distribution
+    machine_spread_x: float  # std dev of x positions (normalized)
+    machine_spread_y: float  # std dev of y positions
+    machine_spread_z: float  # std dev of floor positions
+    machine_centroid_x: float  # center of mass (normalized)
+    machine_centroid_y: float
+    machine_centroid_z: float
+
+    # I/O relationship
+    num_inputs: int
+    num_outputs: int
+    num_connections: int
+    avg_io_distance: float  # average manhattan distance input→output
+    max_io_distance: float
+    min_io_distance: float
+
+    # Machine-to-I/O proximity
+    avg_machine_to_input_dist: float  # how close machines are to inputs
+    avg_machine_to_output_dist: float  # how close machines are to outputs
+    min_machine_to_input_dist: float
+    min_machine_to_output_dist: float
+
+    # Blocking potential
+    machines_between_io_pairs: float  # avg machines on direct path between I/O
+    output_clearance: float  # avg free cells around outputs
+    input_clearance: float  # avg free cells around inputs
+
+    # Floor distribution
+    machines_per_floor_std: float  # how evenly distributed across floors
+    floor_with_most_machines: int
+
+    # Clustering
+    machine_clustering_score: float  # 0=scattered, 1=tight cluster
+    num_isolated_machines: int  # machines with no neighbors
+
+    # Path crossing potential
+    estimated_path_crossings: float  # heuristic for path conflicts
+
+    # Foundation type (one-hot would be better, but use hash for simplicity)
+    foundation_hash: int  # hash of foundation type string
+
+    def to_vector(self) -> np.ndarray:
+        """Convert to feature vector for ML."""
+        return np.array([
+            self.grid_width,
+            self.grid_height,
+            self.num_floors,
+            self.grid_volume,
+            self.num_machines,
+            self.machine_density,
+            self.machine_spread_x,
+            self.machine_spread_y,
+            self.machine_spread_z,
+            self.machine_centroid_x,
+            self.machine_centroid_y,
+            self.machine_centroid_z,
+            self.num_inputs,
+            self.num_outputs,
+            self.num_connections,
+            self.avg_io_distance,
+            self.max_io_distance,
+            self.min_io_distance,
+            self.avg_machine_to_input_dist,
+            self.avg_machine_to_output_dist,
+            self.min_machine_to_input_dist,
+            self.min_machine_to_output_dist,
+            self.machines_between_io_pairs,
+            self.output_clearance,
+            self.input_clearance,
+            self.machines_per_floor_std,
+            self.floor_with_most_machines,
+            self.machine_clustering_score,
+            self.num_isolated_machines,
+            self.estimated_path_crossings,
+            self.foundation_hash % 1000,  # Keep bounded
+        ], dtype=np.float32)
+
+    @staticmethod
+    def feature_names() -> List[str]:
+        """Get feature names for interpretability."""
+        return [
+            'grid_width', 'grid_height', 'num_floors', 'grid_volume',
+            'num_machines', 'machine_density',
+            'spread_x', 'spread_y', 'spread_z',
+            'centroid_x', 'centroid_y', 'centroid_z',
+            'num_inputs', 'num_outputs', 'num_connections',
+            'avg_io_dist', 'max_io_dist', 'min_io_dist',
+            'avg_machine_to_input', 'avg_machine_to_output',
+            'min_machine_to_input', 'min_machine_to_output',
+            'machines_between_io', 'output_clearance', 'input_clearance',
+            'floor_std', 'busiest_floor',
+            'clustering_score', 'isolated_machines',
+            'path_crossings', 'foundation_hash',
+        ]
+
+
+def extract_placement_features(
+    machines: List[Dict],
+    input_positions: List[Tuple[int, int, int]],
+    output_positions: List[Tuple[int, int, int]],
+    connections: List[Dict],
+    grid_width: int,
+    grid_height: int,
+    num_floors: int,
+    foundation_type: str,
+) -> PlacementFeatures:
+    """
+    Extract placement features from a problem configuration.
+
+    Args:
+        machines: List of machine dicts with 'x', 'y', 'floor' keys
+        input_positions: List of (x, y, floor) input positions
+        output_positions: List of (x, y, floor) output positions
+        connections: List of connection dicts with 'src', 'dst' keys
+        grid_width, grid_height, num_floors: Grid dimensions
+        foundation_type: Foundation type string
+
+    Returns:
+        PlacementFeatures instance
+    """
+    grid_volume = grid_width * grid_height * num_floors
+    num_machines = len(machines)
+
+    # Get machine positions
+    machine_positions = []
+    for m in machines:
+        x = m.get('x', 0)
+        y = m.get('y', 0)
+        z = m.get('floor', 0)
+        machine_positions.append((x, y, z))
+
+    # Build occupied set
+    occupied = set(machine_positions)
+
+    # Machine density
+    machine_density = num_machines / max(1, grid_volume)
+
+    # Spatial distribution
+    if machine_positions:
+        xs = [p[0] for p in machine_positions]
+        ys = [p[1] for p in machine_positions]
+        zs = [p[2] for p in machine_positions]
+
+        spread_x = np.std(xs) / max(1, grid_width) if len(xs) > 1 else 0
+        spread_y = np.std(ys) / max(1, grid_height) if len(ys) > 1 else 0
+        spread_z = np.std(zs) / max(1, num_floors) if len(zs) > 1 else 0
+
+        centroid_x = np.mean(xs) / max(1, grid_width)
+        centroid_y = np.mean(ys) / max(1, grid_height)
+        centroid_z = np.mean(zs) / max(1, num_floors)
+    else:
+        spread_x = spread_y = spread_z = 0
+        centroid_x = centroid_y = centroid_z = 0.5
+
+    # I/O distances
+    io_distances = []
+    for inp in input_positions:
+        for out in output_positions:
+            dist = abs(inp[0] - out[0]) + abs(inp[1] - out[1]) + abs(inp[2] - out[2])
+            io_distances.append(dist)
+
+    avg_io_dist = np.mean(io_distances) if io_distances else 0
+    max_io_dist = max(io_distances) if io_distances else 0
+    min_io_dist = min(io_distances) if io_distances else 0
+
+    # Machine to I/O distances
+    machine_to_input = []
+    machine_to_output = []
+
+    for mx, my, mz in machine_positions:
+        for ix, iy, iz in input_positions:
+            machine_to_input.append(abs(mx - ix) + abs(my - iy) + abs(mz - iz))
+        for ox, oy, oz in output_positions:
+            machine_to_output.append(abs(mx - ox) + abs(my - oy) + abs(mz - oz))
+
+    avg_m_to_i = np.mean(machine_to_input) if machine_to_input else 0
+    avg_m_to_o = np.mean(machine_to_output) if machine_to_output else 0
+    min_m_to_i = min(machine_to_input) if machine_to_input else 0
+    min_m_to_o = min(machine_to_output) if machine_to_output else 0
+
+    # Blocking potential - machines on direct paths between I/O
+    machines_blocking = 0
+    for conn in connections:
+        src = conn.get('src', [0, 0, 0])
+        dst = conn.get('dst', [0, 0, 0])
+        if isinstance(src, dict):
+            src = [src.get('x', 0), src.get('y', 0), src.get('floor', 0)]
+        if isinstance(dst, dict):
+            dst = [dst.get('x', 0), dst.get('y', 0), dst.get('floor', 0)]
+
+        # Count machines in bounding box of this connection
+        min_x, max_x = min(src[0], dst[0]), max(src[0], dst[0])
+        min_y, max_y = min(src[1], dst[1]), max(src[1], dst[1])
+        min_z, max_z = min(src[2], dst[2]), max(src[2], dst[2])
+
+        for mx, my, mz in machine_positions:
+            if min_x <= mx <= max_x and min_y <= my <= max_y and min_z <= mz <= max_z:
+                machines_blocking += 1
+
+    avg_blocking = machines_blocking / max(1, len(connections))
+
+    # Clearance around I/O
+    def count_free_neighbors(pos, occupied):
+        x, y, z = pos
+        free = 0
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            if (x + dx, y + dy, z) not in occupied:
+                free += 1
+        return free
+
+    output_clearance = np.mean([count_free_neighbors(o, occupied) for o in output_positions]) / 4 if output_positions else 1
+    input_clearance = np.mean([count_free_neighbors(i, occupied) for i in input_positions]) / 4 if input_positions else 1
+
+    # Floor distribution
+    machines_per_floor = defaultdict(int)
+    for _, _, z in machine_positions:
+        machines_per_floor[z] += 1
+
+    floor_counts = list(machines_per_floor.values()) if machines_per_floor else [0]
+    floor_std = np.std(floor_counts) / max(1, num_machines) if len(floor_counts) > 1 else 0
+    busiest_floor = max(machines_per_floor.keys(), key=lambda f: machines_per_floor[f]) if machines_per_floor else 0
+
+    # Clustering score - average distance to nearest neighbor
+    if len(machine_positions) > 1:
+        nearest_dists = []
+        for i, (x1, y1, z1) in enumerate(machine_positions):
+            min_dist = float('inf')
+            for j, (x2, y2, z2) in enumerate(machine_positions):
+                if i != j:
+                    d = abs(x1 - x2) + abs(y1 - y2) + abs(z1 - z2)
+                    min_dist = min(min_dist, d)
+            nearest_dists.append(min_dist)
+
+        avg_nearest = np.mean(nearest_dists)
+        max_possible = grid_width + grid_height + num_floors
+        clustering_score = 1 - (avg_nearest / max_possible)
+
+        # Isolated machines (no neighbor within 3 cells)
+        isolated = sum(1 for d in nearest_dists if d > 3)
+    else:
+        clustering_score = 0
+        isolated = num_machines
+
+    # Path crossing potential - simple heuristic
+    # More connections + smaller area + machines in center = more crossings
+    area = grid_width * grid_height
+    center_machines = sum(1 for x, y, z in machine_positions
+                         if 0.25 < x/grid_width < 0.75 and 0.25 < y/grid_height < 0.75)
+    path_crossings = (len(connections) ** 1.5) * (1 + center_machines) / max(1, area)
+
+    return PlacementFeatures(
+        grid_width=grid_width,
+        grid_height=grid_height,
+        num_floors=num_floors,
+        grid_volume=grid_volume,
+        num_machines=num_machines,
+        machine_density=machine_density,
+        machine_spread_x=spread_x,
+        machine_spread_y=spread_y,
+        machine_spread_z=spread_z,
+        machine_centroid_x=centroid_x,
+        machine_centroid_y=centroid_y,
+        machine_centroid_z=centroid_z,
+        num_inputs=len(input_positions),
+        num_outputs=len(output_positions),
+        num_connections=len(connections),
+        avg_io_distance=avg_io_dist,
+        max_io_distance=max_io_dist,
+        min_io_distance=min_io_dist,
+        avg_machine_to_input_dist=avg_m_to_i,
+        avg_machine_to_output_dist=avg_m_to_o,
+        min_machine_to_input_dist=min_m_to_i,
+        min_machine_to_output_dist=min_m_to_o,
+        machines_between_io_pairs=avg_blocking,
+        output_clearance=output_clearance,
+        input_clearance=input_clearance,
+        machines_per_floor_std=floor_std,
+        floor_with_most_machines=busiest_floor,
+        machine_clustering_score=clustering_score,
+        num_isolated_machines=isolated,
+        estimated_path_crossings=path_crossings,
+        foundation_hash=hash(foundation_type),
+    )
+
+
+class PlacementPredictor:
+    """
+    Predicts whether a machine placement will lead to successful routing.
+
+    Learns from historical placement → routing outcome data to:
+    1. Predict routing success probability
+    2. Predict expected routing time
+    3. Identify problematic placement characteristics
+
+    This can be used to:
+    - Filter out bad placements before attempting routing
+    - Guide CP-SAT placement solver toward better configurations
+    - Rank multiple placement candidates
+    """
+
+    def __init__(self):
+        if not HAS_SKLEARN:
+            raise ImportError("scikit-learn required for PlacementPredictor")
+
+        self.success_model = None  # Predicts routing success
+        self.time_model = None  # Predicts solve time
+        self.progress_model = None  # Predicts routing progress (partial success)
+        self.scaler = StandardScaler()
+        self.is_trained = False
+        self.feature_importances = {}
+
+    def load_training_data(self, db_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Load training data from the synthetic database.
+
+        Returns:
+            X: Feature matrix
+            y_success: Success labels (0/1)
+            y_time: Solve times
+            y_progress: Routing progress (0-1)
+        """
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Check which columns exist
+        cursor.execute("PRAGMA table_info(solver_results)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        has_progress = 'routing_progress' in columns
+
+        if has_progress:
+            cursor.execute("""
+                SELECT p.problem_json, r.success, r.solve_time, r.routing_progress
+                FROM synthetic_problems p
+                JOIN solver_results r ON p.problem_id = r.problem_id
+            """)
+        else:
+            cursor.execute("""
+                SELECT p.problem_json, r.success, r.solve_time, r.success
+                FROM synthetic_problems p
+                JOIN solver_results r ON p.problem_id = r.problem_id
+            """)
+
+        X_list = []
+        y_success = []
+        y_time = []
+        y_progress = []
+
+        for row in cursor.fetchall():
+            problem = json.loads(row[0])
+
+            # Extract placement features
+            machines = problem.get('machines', [])
+
+            # Parse input/output positions
+            inputs = []
+            for p in problem.get('input_positions', []):
+                if isinstance(p, list):
+                    inputs.append(tuple(p) if len(p) >= 3 else (p[0], p[1], 0))
+                elif isinstance(p, dict):
+                    inputs.append((p.get('x', 0), p.get('y', 0), p.get('floor', 0)))
+                else:
+                    inputs.append(p)
+
+            outputs = []
+            for p in problem.get('output_positions', []):
+                if isinstance(p, list):
+                    outputs.append(tuple(p) if len(p) >= 3 else (p[0], p[1], 0))
+                elif isinstance(p, dict):
+                    outputs.append((p.get('x', 0), p.get('y', 0), p.get('floor', 0)))
+                else:
+                    outputs.append(p)
+
+            connections = problem.get('connections', [])
+
+            features = extract_placement_features(
+                machines=machines,
+                input_positions=inputs,
+                output_positions=outputs,
+                connections=connections,
+                grid_width=problem['grid_width'],
+                grid_height=problem['grid_height'],
+                num_floors=problem.get('num_floors', 1),
+                foundation_type=problem['foundation_type'],
+            )
+
+            X_list.append(features.to_vector())
+            y_success.append(1 if row[1] else 0)
+            y_time.append(row[2] if row[2] else 0)
+            y_progress.append(row[3] if row[3] else (1.0 if row[1] else 0.0))
+
+        conn.close()
+
+        return (
+            np.array(X_list),
+            np.array(y_success),
+            np.array(y_time),
+            np.array(y_progress),
+        )
+
+    def train(self, db_path: str, test_size: float = 0.2) -> Dict[str, Any]:
+        """
+        Train the placement predictor models.
+
+        Args:
+            db_path: Path to training database
+            test_size: Fraction for testing
+
+        Returns:
+            Dict with training metrics
+        """
+        print("Loading placement training data...")
+        X, y_success, y_time, y_progress = self.load_training_data(db_path)
+
+        if len(X) == 0:
+            print("No training data found!")
+            return {}
+
+        print(f"Loaded {len(X)} placement examples")
+        print(f"  Success rate: {100 * np.mean(y_success):.1f}%")
+        print(f"  Avg progress: {100 * np.mean(y_progress):.1f}%")
+
+        # Handle NaN/inf
+        X = np.nan_to_num(X, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        # Split data
+        X_train, X_test, y_succ_train, y_succ_test, y_time_train, y_time_test, y_prog_train, y_prog_test = \
+            train_test_split(X, y_success, y_time, y_progress, test_size=test_size, random_state=42)
+
+        # Scale features
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
+
+        metrics = {}
+
+        # Train success classifier
+        print("\nTraining placement success classifier...")
+        self.success_model = GradientBoostingClassifier(
+            n_estimators=100,
+            max_depth=6,
+            learning_rate=0.1,
+            random_state=42,
+        )
+        self.success_model.fit(X_train_scaled, y_succ_train)
+
+        succ_pred = self.success_model.predict(X_test_scaled)
+        succ_acc = np.mean(succ_pred == y_succ_test)
+        print(f"  Accuracy: {succ_acc:.3f}")
+        metrics['success_accuracy'] = succ_acc
+
+        # Train progress regressor (predicts how much of routing will succeed)
+        print("\nTraining routing progress predictor...")
+        from sklearn.ensemble import GradientBoostingRegressor
+        self.progress_model = GradientBoostingRegressor(
+            n_estimators=100,
+            max_depth=5,
+            learning_rate=0.1,
+            random_state=42,
+        )
+        self.progress_model.fit(X_train_scaled, y_prog_train)
+
+        prog_pred = self.progress_model.predict(X_test_scaled)
+        prog_mse = np.mean((prog_pred - y_prog_test) ** 2)
+        print(f"  MSE: {prog_mse:.4f}")
+        metrics['progress_mse'] = prog_mse
+
+        # Feature importance
+        feature_names = PlacementFeatures.feature_names()
+        importances = self.success_model.feature_importances_
+        sorted_idx = np.argsort(importances)[::-1]
+
+        print("\nTop placement features for routing success:")
+        for i in sorted_idx[:10]:
+            print(f"  {feature_names[i]}: {importances[i]:.3f}")
+
+        self.feature_importances = {
+            feature_names[i]: float(importances[i]) for i in sorted_idx
+        }
+        metrics['feature_importances'] = self.feature_importances
+
+        self.is_trained = True
+        return metrics
+
+    def predict(self, features: PlacementFeatures) -> Dict[str, float]:
+        """
+        Predict routing outcome for a placement.
+
+        Args:
+            features: Extracted placement features
+
+        Returns:
+            Dict with:
+                - success_prob: Probability of routing success (0-1)
+                - expected_progress: Expected fraction of connections routed
+                - quality_score: Overall placement quality (0-100)
+        """
+        if not self.is_trained:
+            # Heuristic fallback
+            return {
+                'success_prob': 0.5,
+                'expected_progress': 0.5,
+                'quality_score': 50.0,
+            }
+
+        X = features.to_vector().reshape(1, -1)
+        X = np.nan_to_num(X, nan=0.0, posinf=1e6, neginf=-1e6)
+        X_scaled = self.scaler.transform(X)
+
+        # Predict success probability
+        success_prob = self.success_model.predict_proba(X_scaled)[0][1]
+
+        # Predict expected progress
+        expected_progress = float(self.progress_model.predict(X_scaled)[0])
+        expected_progress = max(0.0, min(1.0, expected_progress))
+
+        # Quality score combines both
+        quality_score = (success_prob * 60 + expected_progress * 40)
+
+        return {
+            'success_prob': float(success_prob),
+            'expected_progress': expected_progress,
+            'quality_score': quality_score,
+        }
+
+    def predict_from_problem(self, problem_dict: Dict[str, Any]) -> Dict[str, float]:
+        """Convenience method to predict from a problem dictionary."""
+        machines = problem_dict.get('machines', [])
+
+        inputs = []
+        for p in problem_dict.get('input_positions', []):
+            if isinstance(p, list):
+                inputs.append(tuple(p) if len(p) >= 3 else (p[0], p[1], 0))
+            elif isinstance(p, dict):
+                inputs.append((p.get('x', 0), p.get('y', 0), p.get('floor', 0)))
+
+        outputs = []
+        for p in problem_dict.get('output_positions', []):
+            if isinstance(p, list):
+                outputs.append(tuple(p) if len(p) >= 3 else (p[0], p[1], 0))
+            elif isinstance(p, dict):
+                outputs.append((p.get('x', 0), p.get('y', 0), p.get('floor', 0)))
+
+        features = extract_placement_features(
+            machines=machines,
+            input_positions=inputs,
+            output_positions=outputs,
+            connections=problem_dict.get('connections', []),
+            grid_width=problem_dict['grid_width'],
+            grid_height=problem_dict['grid_height'],
+            num_floors=problem_dict.get('num_floors', 1),
+            foundation_type=problem_dict['foundation_type'],
+        )
+
+        return self.predict(features)
+
+    def rank_placements(
+        self,
+        placements: List[List[Tuple[int, int, int]]],  # List of machine position lists
+        input_positions: List[Tuple[int, int, int]],
+        output_positions: List[Tuple[int, int, int]],
+        connections: List[Dict],
+        grid_width: int,
+        grid_height: int,
+        num_floors: int,
+        foundation_type: str,
+    ) -> List[Tuple[int, float]]:
+        """
+        Rank multiple placement candidates by predicted routing success.
+
+        Args:
+            placements: List of placement candidates (each is list of (x,y,floor))
+            Other args: Problem context
+
+        Returns:
+            List of (placement_index, quality_score) sorted by score descending
+        """
+        scores = []
+
+        for i, placement in enumerate(placements):
+            machines = [{'x': x, 'y': y, 'floor': z} for x, y, z in placement]
+
+            features = extract_placement_features(
+                machines=machines,
+                input_positions=input_positions,
+                output_positions=output_positions,
+                connections=connections,
+                grid_width=grid_width,
+                grid_height=grid_height,
+                num_floors=num_floors,
+                foundation_type=foundation_type,
+            )
+
+            prediction = self.predict(features)
+            scores.append((i, prediction['quality_score']))
+
+        # Sort by score descending
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return scores
+
+    def get_placement_guidance(self, features: PlacementFeatures) -> Dict[str, str]:
+        """
+        Get human-readable guidance for improving a placement.
+
+        Returns suggestions based on feature values and importances.
+        """
+        suggestions = []
+
+        # Check problematic feature values
+        if features.machine_density > 0.1:
+            suggestions.append("Consider reducing machine density (too crowded)")
+
+        if features.output_clearance < 0.5:
+            suggestions.append("Outputs are blocked - keep area around outputs clear")
+
+        if features.input_clearance < 0.5:
+            suggestions.append("Inputs are blocked - keep area around inputs clear")
+
+        if features.machines_between_io_pairs > 2:
+            suggestions.append("Too many machines blocking direct I/O paths")
+
+        if features.machine_spread_x > 0.4 or features.machine_spread_y > 0.4:
+            suggestions.append("Machines too spread out - try clustering them")
+
+        if features.num_isolated_machines > features.num_machines * 0.3:
+            suggestions.append("Many isolated machines - group machines closer together")
+
+        if features.estimated_path_crossings > 1.0:
+            suggestions.append("High path crossing potential - stagger machine positions")
+
+        return {
+            'suggestions': suggestions,
+            'key_issues': suggestions[:3] if suggestions else ["Placement looks reasonable"],
+        }
+
+    def save(self, path: str):
+        """Save trained model to file."""
+        if not self.is_trained:
+            raise RuntimeError("Model not trained")
+
+        with open(path, 'wb') as f:
+            pickle.dump({
+                'success_model': self.success_model,
+                'progress_model': self.progress_model,
+                'scaler': self.scaler,
+                'feature_importances': self.feature_importances,
+            }, f)
+        print(f"Saved placement predictor to {path}")
+
+    def load(self, path: str):
+        """Load trained model from file."""
+        with open(path, 'rb') as f:
+            data = pickle.load(f)
+
+        self.success_model = data['success_model']
+        self.progress_model = data['progress_model']
+        self.scaler = data['scaler']
+        self.feature_importances = data.get('feature_importances', {})
+        self.is_trained = True
+        print(f"Loaded placement predictor from {path}")
+
+
+# =============================================================================
 # CLI Interface
 # =============================================================================
 
@@ -1745,6 +2427,8 @@ def main():
                        help="Train 3D direction predictor with jumps and floor changes")
     parser.add_argument("--train-policy", action="store_true",
                        help="Train PyTorch policy network (Phase 2)")
+    parser.add_argument("--train-placement", action="store_true",
+                       help="Train placement quality predictor (Phase 3)")
     parser.add_argument("--output-dir", type=str, default="models",
                        help="Directory for saved models")
     parser.add_argument("--epochs", type=int, default=50,
@@ -1833,8 +2517,27 @@ def main():
         else:
             print("No training data available")
 
+    if args.train_placement:
+        print("\n" + "="*60)
+        print("Phase 3: Training Placement Quality Predictor")
+        print("  (Predicts routing success from machine placement)")
+        print("="*60)
+
+        predictor = PlacementPredictor()
+        metrics = predictor.train(args.db)
+
+        if metrics:
+            model_path = output_dir / "placement_predictor.pkl"
+            predictor.save(str(model_path))
+
+            print(f"\nTraining complete!")
+            print(f"  Success accuracy: {metrics.get('success_accuracy', 0):.3f}")
+            print(f"  Progress MSE: {metrics.get('progress_mse', 0):.4f}")
+        else:
+            print("Training failed - no data available")
+
     if not any([args.train_classifier, args.train_direction,
-                 args.train_direction_3d, args.train_policy]):
+                 args.train_direction_3d, args.train_policy, args.train_placement]):
         parser.print_help()
 
 
