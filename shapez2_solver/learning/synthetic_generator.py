@@ -191,6 +191,19 @@ class SolverResult:
     solver_iterations: int = 0  # How many iterations/nodes explored
     best_objective: float = 0.0  # Best objective value found (even if not optimal)
 
+    # === Enhanced ML Training Data ===
+    # Per-connection data (for both success and failure)
+    connection_results: str = ""  # JSON list of per-connection results with features
+    # Format: [{"index": 0, "success": true, "features": {...}, "path": [...], "belt_directions": [...],
+    #          "nodes_explored": 10, "blocked_positions": [...]}]
+
+    # Placement features (extracted before routing)
+    placement_features: str = ""  # JSON dict of placement features for PlacementPredictor
+
+    # Aggregated A* search statistics
+    total_nodes_explored: int = 0
+    total_blocked_positions: int = 0
+
 
 class SyntheticProblemGenerator:
     """
@@ -502,6 +515,11 @@ class SyntheticDataStore:
                 partial_belt_positions TEXT DEFAULT '',
                 solver_iterations INTEGER DEFAULT 0,
                 best_objective REAL DEFAULT 0.0,
+                -- Enhanced ML training data
+                connection_results TEXT DEFAULT '',
+                placement_features TEXT DEFAULT '',
+                total_nodes_explored INTEGER DEFAULT 0,
+                total_blocked_positions INTEGER DEFAULT 0,
                 FOREIGN KEY (problem_id) REFERENCES synthetic_problems(problem_id)
             )
         ''')
@@ -549,7 +567,7 @@ class SyntheticDataStore:
         conn.close()
 
     def save_result(self, result: SolverResult):
-        """Save a solver result with partial progress tracking."""
+        """Save a solver result with partial progress tracking and ML training data."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -557,8 +575,9 @@ class SyntheticDataStore:
             INSERT OR REPLACE INTO solver_results
             (problem_id, success, solve_time, num_belts, error_message, solved_at,
              connections_attempted, connections_routed, routing_progress,
-             failed_connection_indices, partial_belt_positions, solver_iterations, best_objective)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             failed_connection_indices, partial_belt_positions, solver_iterations, best_objective,
+             connection_results, placement_features, total_nodes_explored, total_blocked_positions)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             result.problem_id,
             1 if result.success else 0,
@@ -573,6 +592,10 @@ class SyntheticDataStore:
             result.partial_belt_positions,
             result.solver_iterations,
             result.best_objective,
+            result.connection_results,
+            result.placement_features,
+            result.total_nodes_explored,
+            result.total_blocked_positions,
         ))
 
         conn.commit()
@@ -595,6 +618,11 @@ class SyntheticDataStore:
             ('partial_belt_positions', 'TEXT DEFAULT ""'),
             ('solver_iterations', 'INTEGER DEFAULT 0'),
             ('best_objective', 'REAL DEFAULT 0.0'),
+            # Enhanced ML training data columns
+            ('connection_results', 'TEXT DEFAULT ""'),
+            ('placement_features', 'TEXT DEFAULT ""'),
+            ('total_nodes_explored', 'INTEGER DEFAULT 0'),
+            ('total_blocked_positions', 'INTEGER DEFAULT 0'),
         ]
 
         for col_name, col_type in new_columns:
@@ -1515,23 +1543,115 @@ def generate_realistic_data(
     return successes, failures
 
 
+def _extract_placement_features(problem: SyntheticProblem) -> Dict[str, Any]:
+    """
+    Extract placement features from a problem for PlacementPredictor training.
+
+    Returns features about machine placement quality before routing is attempted.
+    """
+    occupied = problem.get_occupied()
+    grid_area = problem.grid_width * problem.grid_height
+    grid_volume = grid_area * problem.num_floors
+
+    features = {
+        'num_machines': len(problem.machines),
+        'num_connections': len(problem.connections),
+        'grid_width': problem.grid_width,
+        'grid_height': problem.grid_height,
+        'num_floors': problem.num_floors,
+        'machine_density': len(occupied) / max(1, grid_volume),
+    }
+
+    # Calculate machine spread and clustering
+    if problem.machines:
+        xs = [m.x for m in problem.machines]
+        ys = [m.y for m in problem.machines]
+
+        features['center_of_mass_x'] = sum(xs) / len(xs) / max(1, problem.grid_width - 1)
+        features['center_of_mass_y'] = sum(ys) / len(ys) / max(1, problem.grid_height - 1)
+
+        if len(problem.machines) > 1:
+            mean_x = sum(xs) / len(xs)
+            mean_y = sum(ys) / len(ys)
+            variance = sum((x - mean_x)**2 + (y - mean_y)**2 for x, y in zip(xs, ys)) / len(problem.machines)
+            features['machine_spread'] = (variance ** 0.5) / ((problem.grid_width**2 + problem.grid_height**2) ** 0.5)
+        else:
+            features['machine_spread'] = 0.0
+    else:
+        features['center_of_mass_x'] = 0.5
+        features['center_of_mass_y'] = 0.5
+        features['machine_spread'] = 0.0
+
+    # Calculate connection complexity
+    if problem.connections:
+        manhattan_dists = []
+        for src, dst in problem.connections:
+            dist = abs(src[0] - dst[0]) + abs(src[1] - dst[1]) + abs(src[2] - dst[2])
+            manhattan_dists.append(dist)
+
+        features['avg_connection_distance'] = sum(manhattan_dists) / len(manhattan_dists)
+        features['max_connection_distance'] = max(manhattan_dists)
+        features['min_connection_distance'] = min(manhattan_dists)
+        features['total_manhattan_distance'] = sum(manhattan_dists)
+    else:
+        features['avg_connection_distance'] = 0
+        features['max_connection_distance'] = 0
+        features['min_connection_distance'] = 0
+        features['total_manhattan_distance'] = 0
+
+    # Estimate path crossing potential
+    if len(problem.connections) > 1:
+        overlap_count = 0
+        for i, (src1, dst1) in enumerate(problem.connections):
+            box1 = (min(src1[0], dst1[0]), min(src1[1], dst1[1]),
+                    max(src1[0], dst1[0]), max(src1[1], dst1[1]))
+            for src2, dst2 in problem.connections[i+1:]:
+                box2 = (min(src2[0], dst2[0]), min(src2[1], dst2[1]),
+                        max(src2[0], dst2[0]), max(src2[1], dst2[1]))
+                # Check bounding box overlap
+                if not (box1[2] < box2[0] or box2[2] < box1[0] or
+                        box1[3] < box2[1] or box2[3] < box1[1]):
+                    overlap_count += 1
+        max_pairs = len(problem.connections) * (len(problem.connections) - 1) / 2
+        features['crossing_potential'] = overlap_count / max(1, max_pairs)
+    else:
+        features['crossing_potential'] = 0.0
+
+    # I/O spread
+    if problem.input_positions and problem.output_positions:
+        all_io = problem.input_positions + problem.output_positions
+        io_xs = [p[0] for p in all_io]
+        io_ys = [p[1] for p in all_io]
+        features['io_spread_x'] = (max(io_xs) - min(io_xs)) / max(1, problem.grid_width - 1) if len(io_xs) > 1 else 0
+        features['io_spread_y'] = (max(io_ys) - min(io_ys)) / max(1, problem.grid_height - 1) if len(io_ys) > 1 else 0
+    else:
+        features['io_spread_x'] = 0
+        features['io_spread_y'] = 0
+
+    return features
+
+
 def solve_problem(problem: SyntheticProblem, time_limit: float = 30.0) -> SolverResult:
     """
-    Run the A* router on a synthetic problem with partial progress tracking.
+    Run the A* router on a synthetic problem with rich ML training data capture.
 
     Args:
         problem: The problem to solve
         time_limit: Solver time limit in seconds
 
     Returns:
-        SolverResult with outcome and partial progress information
+        SolverResult with outcome, partial progress, and ML training data
     """
     start_time = time.time()
     num_connections = len(problem.connections)
 
+    # Extract placement features BEFORE routing
+    placement_features = _extract_placement_features(problem)
+
     try:
-        # Use A* routing directly (global routing disabled - always times out)
-        partial_belts, partial_success, failed_indices = _solve_with_partial_tracking(
+        # Use enhanced routing with ML data capture
+        (partial_belts, partial_success, failed_indices,
+         connection_results, total_nodes, total_blocked) = _solve_with_ml_data(
             problem, time_limit
         )
 
@@ -1551,8 +1671,13 @@ def solve_problem(problem: SyntheticProblem, time_limit: float = 30.0) -> Solver
             routing_progress=routing_progress,
             failed_connection_indices=json.dumps(failed_indices),
             partial_belt_positions=json.dumps([(x, y, z) for x, y, z, _, _ in partial_belts]),
-            solver_iterations=0,
+            solver_iterations=total_nodes,
             best_objective=float(len(partial_belts)),
+            # Enhanced ML data
+            connection_results=json.dumps(connection_results),
+            placement_features=json.dumps(placement_features),
+            total_nodes_explored=total_nodes,
+            total_blocked_positions=total_blocked,
         )
 
     except Exception as e:
@@ -1569,6 +1694,10 @@ def solve_problem(problem: SyntheticProblem, time_limit: float = 30.0) -> Solver
             partial_belt_positions="[]",
             solver_iterations=0,
             best_objective=0.0,
+            connection_results="[]",
+            placement_features=json.dumps(placement_features),
+            total_nodes_explored=0,
+            total_blocked_positions=0,
         )
 
 
@@ -1612,6 +1741,127 @@ def _solve_with_partial_tracking(
 
     all_success = len(failed_indices) == 0
     return all_belts, all_success, failed_indices
+
+
+def _solve_with_ml_data(
+    problem: SyntheticProblem,
+    time_limit: float,
+) -> Tuple[List, bool, List[int], List[Dict], int, int]:
+    """
+    Route connections while capturing rich ML training data.
+
+    Returns:
+        (partial_belts, all_success, failed_indices, connection_results,
+         total_nodes_explored, total_blocked_positions)
+
+    connection_results is a list of dicts with per-connection data:
+        - index: connection index
+        - success: whether routing succeeded
+        - src/dst: source and destination positions
+        - features: connection features (distance, congestion, etc.)
+        - path: the routed path (if successful)
+        - belt_directions: belt types and rotations along path
+        - nodes_explored: A* nodes expanded for this connection
+        - blocked_positions: positions that blocked the search
+        - grid_state_before: occupied cells before this routing attempt
+    """
+    from ..evolution.router import BeltRouter, Connection
+    from .features import extract_connection_features
+
+    router = BeltRouter(
+        problem.grid_width,
+        problem.grid_height,
+        problem.num_floors,
+    )
+    initial_occupied = problem.get_occupied()
+    router.set_occupied(initial_occupied)
+
+    all_belts = []
+    failed_indices = []
+    connection_results = []
+    total_nodes_explored = 0
+    total_blocked_positions = 0
+
+    # Track current occupied state (grows as we route)
+    current_occupied = initial_occupied.copy()
+
+    for i, (src, dst) in enumerate(problem.connections):
+        # Extract connection features BEFORE routing
+        conn_features = extract_connection_features(
+            connection=(src, dst),
+            grid_width=problem.grid_width,
+            grid_height=problem.grid_height,
+            occupied=current_occupied,
+            connection_index=i,
+            total_connections=len(problem.connections),
+            connections_routed=i - len(failed_indices),
+        )
+
+        # Create connection object
+        conn = Connection(
+            from_pos=src,
+            to_pos=dst,
+            from_direction=Rotation.EAST,
+            to_direction=Rotation.EAST,
+        )
+
+        # Route with statistics capture
+        result = router.route_connection_with_stats(conn)
+
+        # Build connection result entry
+        conn_result = {
+            'index': i,
+            'success': result.success,
+            'src': list(src),
+            'dst': list(dst),
+            'features': {
+                'manhattan_distance': conn_features.manhattan_distance,
+                'normalized_distance': conn_features.normalized_distance,
+                'src_local_density': conn_features.src_local_density,
+                'dst_local_density': conn_features.dst_local_density,
+                'path_corridor_density': conn_features.path_corridor_density,
+                'crosses_center': conn_features.crosses_center,
+                'floor_change': conn_features.floor_change,
+                'direction_complexity': conn_features.direction_complexity,
+            },
+            'nodes_explored': result.nodes_explored,
+            'blocked_positions': [list(p) for p in result.blocked_positions[:20]],  # Limit to 20
+        }
+
+        total_nodes_explored += result.nodes_explored
+        total_blocked_positions += len(result.blocked_positions)
+
+        if result.success:
+            all_belts.extend(result.belts)
+
+            # Store path and belt directions for successful routes
+            conn_result['path'] = [list(p) for p in result.path]
+            conn_result['belt_directions'] = [
+                {'pos': [b[0], b[1], b[2]], 'type': b[3].name, 'rotation': b[4].name}
+                for b in result.belts
+            ]
+            conn_result['path_length'] = len(result.path)
+
+            # Update occupied set with new belt positions
+            for b in result.belts:
+                current_occupied.add((b[0], b[1], b[2]))
+
+            # Update features with outcome
+            conn_features.routed_successfully = True
+            conn_features.actual_path_length = len(result.path)
+            if conn_features.manhattan_distance > 0:
+                conn_features.path_stretch = len(result.path) / conn_features.manhattan_distance
+        else:
+            failed_indices.append(i)
+            conn_result['path'] = []
+            conn_result['belt_directions'] = []
+            conn_result['failure_reason'] = 'no_path_found'
+            conn_features.routed_successfully = False
+
+        connection_results.append(conn_result)
+
+    all_success = len(failed_indices) == 0
+    return all_belts, all_success, failed_indices, connection_results, total_nodes_explored, total_blocked_positions
 
 
 def generate_and_solve(

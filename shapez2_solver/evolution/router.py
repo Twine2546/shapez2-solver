@@ -60,6 +60,10 @@ class RouteResult:
     belts: List[Tuple[int, int, int, BuildingType, Rotation]]  # (x, y, floor, type, rotation)
     success: bool
     cost: float = 0.0
+    # A* search statistics for ML training
+    nodes_explored: int = 0  # Number of nodes expanded during A* search
+    nodes_in_open_set: int = 0  # Size of open set when search ended
+    blocked_positions: List[Tuple[int, int, int]] = field(default_factory=list)  # Positions that blocked expansion
 
 
 class BeltRouter:
@@ -339,6 +343,148 @@ class BeltRouter:
                     heapq.heappush(open_set, (f_score[neighbor], neighbor))
 
         return None  # No path found
+
+    def find_path_with_stats(self, start: Tuple[int, int, int], goal: Tuple[int, int, int],
+                              allow_belt_ports: bool = True,
+                              shape_code: Optional[str] = None,
+                              throughput: float = 1.0) -> Tuple[Optional[List[Tuple[int, int, int, str]]], Dict]:
+        """
+        Find a path from start to goal using A*, returning search statistics for ML training.
+
+        Returns:
+            (path, stats) where stats contains:
+                - nodes_explored: Number of nodes expanded
+                - nodes_in_open_set: Final size of open set
+                - blocked_positions: List of positions that were invalid/blocked
+        """
+        stats = {
+            'nodes_explored': 0,
+            'nodes_in_open_set': 0,
+            'blocked_positions': [],
+        }
+
+        if start == goal:
+            return [(start[0], start[1], start[2], 'start')], stats
+
+        if not self.is_valid(goal[0], goal[1], goal[2], shape_code, throughput):
+            stats['blocked_positions'].append(goal)
+            return None, stats
+
+        # A* algorithm with statistics tracking
+        open_set = [(0, start)]
+        came_from: Dict[Tuple[int, int, int], Tuple[Tuple[int, int, int], str]] = {}
+        g_score: Dict[Tuple[int, int, int], float] = {start: 0}
+        f_score: Dict[Tuple[int, int, int], float] = {start: self.heuristic(start, goal)}
+        closed_set: Set[Tuple[int, int, int]] = set()
+
+        while open_set:
+            _, current = heapq.heappop(open_set)
+            stats['nodes_explored'] += 1
+
+            if current in closed_set:
+                continue
+            closed_set.add(current)
+
+            # Check if we reached the goal OR merged onto a path that reaches goal
+            reached_goal = (current == goal)
+            merged_to_goal = (
+                self.allow_shape_merging and
+                shape_code is not None and
+                current != start and
+                self.cell_reaches_destination(current, goal) and
+                self.can_merge_at(current[0], current[1], current[2], shape_code, throughput)
+            )
+
+            if reached_goal or merged_to_goal:
+                stats['nodes_in_open_set'] = len(open_set)
+                # Reconstruct path
+                path = []
+                pos = current
+                while pos in came_from:
+                    prev_pos, move_type = came_from[pos]
+                    if pos == current and merged_to_goal:
+                        path.append((pos[0], pos[1], pos[2], 'merge'))
+                    else:
+                        path.append((pos[0], pos[1], pos[2], move_type))
+                    pos = prev_pos
+                path.append((pos[0], pos[1], pos[2], 'start'))
+                return list(reversed(path)), stats
+
+            # Check if we should allow belt ports for this step
+            allow_port = allow_belt_ports and self.belt_ports_used < self.max_belt_ports
+
+            # Get neighbors and track blocked positions
+            for nx, ny, nf, _, move_type in self.get_neighbors(current[0], current[1], current[2],
+                                                                allow_port, shape_code, throughput):
+                neighbor = (nx, ny, nf)
+
+                if neighbor in closed_set:
+                    continue
+
+                # Belt ports have a cost penalty
+                move_cost = 3 if move_type == 'belt_port' else 1
+                tentative_g = g_score.get(current, float('inf')) + move_cost
+
+                if tentative_g < g_score.get(neighbor, float('inf')):
+                    came_from[neighbor] = (current, move_type)
+                    g_score[neighbor] = tentative_g
+                    f_score[neighbor] = tentative_g + self.heuristic(neighbor, goal)
+                    heapq.heappush(open_set, (f_score[neighbor], neighbor))
+
+            # Track blocked neighbors (positions we couldn't expand to)
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx, ny = current[0] + dx, current[1] + dy
+                nf = current[2]
+                if 0 <= nx < self.grid_width and 0 <= ny < self.grid_height:
+                    if not self.is_valid(nx, ny, nf, shape_code, throughput):
+                        blocked = (nx, ny, nf)
+                        if blocked not in stats['blocked_positions'] and len(stats['blocked_positions']) < 50:
+                            stats['blocked_positions'].append(blocked)
+
+        stats['nodes_in_open_set'] = len(open_set)
+        return None, stats  # No path found
+
+    def route_connection_with_stats(self, connection: Connection) -> RouteResult:
+        """Route a single connection, capturing A* search statistics for ML training."""
+        start = connection.from_pos
+        goal = connection.to_pos
+        shape_code = connection.shape_code
+        throughput = connection.throughput
+
+        path_with_types, stats = self.find_path_with_stats(start, goal, shape_code=shape_code, throughput=throughput)
+
+        if path_with_types is None:
+            return RouteResult(
+                path=[], belts=[], success=False,
+                nodes_explored=stats['nodes_explored'],
+                nodes_in_open_set=stats['nodes_in_open_set'],
+                blocked_positions=stats['blocked_positions']
+            )
+
+        belts = self.path_to_belts(path_with_types)
+        simple_path = [(p[0], p[1], p[2]) for p in path_with_types]
+
+        # Mark new belt positions as occupied
+        for x, y, floor, belt_type, rotation in belts:
+            cell = (x, y, floor)
+            if cell not in self.belt_positions:
+                self.add_occupied(x, y, floor)
+            self.belt_positions[cell] = (belt_type, rotation)
+            if shape_code:
+                self.shape_at_cell[cell] = shape_code
+            self.belt_load[cell] = self.belt_load.get(cell, 0.0) + throughput
+
+        self.register_path_to_destination(simple_path, goal)
+
+        return RouteResult(
+            path=simple_path,
+            belts=belts,
+            success=True,
+            cost=len(simple_path),
+            nodes_explored=stats['nodes_explored'],
+            nodes_in_open_set=stats['nodes_in_open_set'],
+            blocked_positions=stats['blocked_positions']
+        )
 
     def path_to_belts(self, path: List[Tuple[int, int, int, str]]) -> List[Tuple[int, int, int, BuildingType, Rotation]]:
         """
