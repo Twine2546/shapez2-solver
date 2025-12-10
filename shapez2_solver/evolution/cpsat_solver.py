@@ -1288,29 +1288,72 @@ class CPSATFullSolver:
             else:
                 machine_mirrored.append(None)  # No mirrored variant available
 
-        # No overlap constraints
+        # Create rotation-aware effective dimensions for each machine
+        # Rotation: 0=EAST, 1=SOUTH, 2=WEST, 3=NORTH
+        # For SOUTH(1) and NORTH(3), width and height are swapped
+        machine_eff_width = []
+        machine_eff_height = []
+
+        for i, bt in enumerate(machine_types):
+            spec = BUILDING_SPECS.get(bt)
+            w = spec.width if spec else 1
+            h = spec.height if spec else 1
+
+            if w == h:
+                # Square machine - no need for rotation logic
+                machine_eff_width.append(w)
+                machine_eff_height.append(h)
+            else:
+                # Non-square: effective dims depend on rotation
+                # rot_swapped = (rotation == 1 OR rotation == 3)
+                rot_swapped = model.NewBoolVar(f'rot_swapped_{i}')
+                rot_is_1 = model.NewBoolVar(f'rot_is_1_{i}')
+                rot_is_3 = model.NewBoolVar(f'rot_is_3_{i}')
+                model.Add(machine_rotation[i] == 1).OnlyEnforceIf(rot_is_1)
+                model.Add(machine_rotation[i] != 1).OnlyEnforceIf(rot_is_1.Not())
+                model.Add(machine_rotation[i] == 3).OnlyEnforceIf(rot_is_3)
+                model.Add(machine_rotation[i] != 3).OnlyEnforceIf(rot_is_3.Not())
+                model.AddBoolOr([rot_is_1, rot_is_3]).OnlyEnforceIf(rot_swapped)
+                model.AddBoolAnd([rot_is_1.Not(), rot_is_3.Not()]).OnlyEnforceIf(rot_swapped.Not())
+
+                # Effective width: w if not swapped, h if swapped
+                eff_w = model.NewIntVar(min(w, h), max(w, h), f'eff_w_{i}')
+                model.Add(eff_w == w).OnlyEnforceIf(rot_swapped.Not())
+                model.Add(eff_w == h).OnlyEnforceIf(rot_swapped)
+
+                # Effective height: h if not swapped, w if swapped
+                eff_h = model.NewIntVar(min(w, h), max(w, h), f'eff_h_{i}')
+                model.Add(eff_h == h).OnlyEnforceIf(rot_swapped.Not())
+                model.Add(eff_h == w).OnlyEnforceIf(rot_swapped)
+
+                machine_eff_width.append(eff_w)
+                machine_eff_height.append(eff_h)
+
+        # No overlap constraints (using rotation-aware dimensions)
         for i in range(num_machines):
             for j in range(i + 1, num_machines):
-                spec_i = BUILDING_SPECS.get(machine_types[i])
-                spec_j = BUILDING_SPECS.get(machine_types[j])
-                wi, hi = (spec_i.width, spec_i.height) if spec_i else (1, 1)
-                wj, hj = (spec_j.width, spec_j.height) if spec_j else (1, 1)
+                # Get effective dimensions (could be int or IntVar)
+                eff_wi = machine_eff_width[i]
+                eff_hi = machine_eff_height[i]
+                eff_wj = machine_eff_width[j]
+                eff_hj = machine_eff_height[j]
 
                 # Same floor -> no overlap
                 same_floor = model.NewBoolVar(f'same_floor_{i}_{j}')
                 model.Add(machine_floor[i] == machine_floor[j]).OnlyEnforceIf(same_floor)
                 model.Add(machine_floor[i] != machine_floor[j]).OnlyEnforceIf(same_floor.Not())
 
-                # No overlap conditions
+                # No overlap conditions (with rotation-aware dimensions)
                 no_x_overlap_left = model.NewBoolVar(f'no_x_left_{i}_{j}')
                 no_x_overlap_right = model.NewBoolVar(f'no_x_right_{i}_{j}')
                 no_y_overlap_top = model.NewBoolVar(f'no_y_top_{i}_{j}')
                 no_y_overlap_bottom = model.NewBoolVar(f'no_y_bottom_{i}_{j}')
 
-                model.Add(machine_x[i] + wi <= machine_x[j]).OnlyEnforceIf(no_x_overlap_left)
-                model.Add(machine_x[j] + wj <= machine_x[i]).OnlyEnforceIf(no_x_overlap_right)
-                model.Add(machine_y[i] + hi <= machine_y[j]).OnlyEnforceIf(no_y_overlap_top)
-                model.Add(machine_y[j] + hj <= machine_y[i]).OnlyEnforceIf(no_y_overlap_bottom)
+                # x[i] + width[i] <= x[j] means i is fully left of j
+                model.Add(machine_x[i] + eff_wi <= machine_x[j]).OnlyEnforceIf(no_x_overlap_left)
+                model.Add(machine_x[j] + eff_wj <= machine_x[i]).OnlyEnforceIf(no_x_overlap_right)
+                model.Add(machine_y[i] + eff_hi <= machine_y[j]).OnlyEnforceIf(no_y_overlap_top)
+                model.Add(machine_y[j] + eff_hj <= machine_y[i]).OnlyEnforceIf(no_y_overlap_bottom)
 
                 # If same floor, at least one separation must exist
                 model.AddBoolOr([
