@@ -807,7 +807,8 @@ class CPSATFullSolver:
                 ml_score = self.placement_feedback.model.predict_success_probability(placement_features)
 
                 if verbose:
-                    print(f"  ML full-placement score: {ml_score:.1%} predicted success")
+                    # Show ML score with explanation
+                    self._print_ml_score_explanation(placement_features, ml_score)
 
                 # Check if we should reject this placement based on ML score
                 if self.reject_bad_placements:
@@ -817,6 +818,7 @@ class CPSATFullSolver:
                     if should_reject:
                         if verbose:
                             print(f"  ML REJECTED: score {ml_score:.1%} < threshold {self.placement_reject_threshold:.1%}")
+                            print(f"  → Trying different placement...")
 
                         # Add to nogoods so CP-SAT won't try similar placements
                         placement_tuple = tuple((x, y, f) for _, x, y, f, _ in machines)
@@ -1133,6 +1135,58 @@ class CPSATFullSolver:
                     if part and not part.is_empty():
                         count += 1
         return count
+
+    def _print_ml_score_explanation(self, features, ml_score: float):
+        """Print ML score with human-readable explanation of key factors."""
+        print(f"\n  ╔══════════════════════════════════════════════════════════╗")
+        print(f"  ║  ML PLACEMENT SCORE: {ml_score:6.1%} predicted success          ║")
+        print(f"  ╠══════════════════════════════════════════════════════════╣")
+
+        # Interpret score
+        if ml_score >= 0.8:
+            verdict = "EXCELLENT - High confidence in routing success"
+        elif ml_score >= 0.6:
+            verdict = "GOOD - Reasonable chance of success"
+        elif ml_score >= 0.4:
+            verdict = "MARGINAL - May have routing difficulties"
+        elif ml_score >= 0.2:
+            verdict = "POOR - Likely to fail routing"
+        else:
+            verdict = "VERY POOR - Almost certain to fail"
+
+        print(f"  ║  Verdict: {verdict:<47} ║")
+        print(f"  ╠══════════════════════════════════════════════════════════╣")
+        print(f"  ║  Key Placement Metrics:                                  ║")
+
+        # Show key features with explanations
+        print(f"  ║    • Machines: {features.num_machines:<3} (density: {features.machine_density:.1%}){' '*17}║")
+        print(f"  ║    • Avg dist to inputs:  {features.avg_machine_to_input_dist:5.1f} tiles{' '*18}║")
+        print(f"  ║    • Avg dist to outputs: {features.avg_machine_to_output_dist:5.1f} tiles{' '*18}║")
+        print(f"  ║    • Machine spread: X={features.machine_spread_x:.1f}, Y={features.machine_spread_y:.1f}{' '*18}║")
+        print(f"  ║    • Est. path crossings: {features.estimated_path_crossings:.1%}{' '*24}║")
+
+        # Highlight potential issues
+        issues = []
+        if features.machine_density > 0.15:
+            issues.append("High density may cause congestion")
+        if features.estimated_path_crossings > 0.3:
+            issues.append("Many paths may cross/conflict")
+        if features.avg_machine_to_input_dist > 10:
+            issues.append("Machines far from inputs")
+        if features.avg_machine_to_output_dist > 10:
+            issues.append("Machines far from outputs")
+        if features.center_density > 0.7:
+            issues.append("Too clustered in center")
+        if features.edge_density > 0.7:
+            issues.append("Too many machines at edges")
+
+        if issues:
+            print(f"  ╠══════════════════════════════════════════════════════════╣")
+            print(f"  ║  Potential Issues:                                       ║")
+            for issue in issues[:3]:  # Show top 3 issues
+                print(f"  ║    ⚠ {issue:<51} ║")
+
+        print(f"  ╚══════════════════════════════════════════════════════════╝\n")
 
     def _solve_placement(
         self,
