@@ -384,6 +384,20 @@ def solve_and_log(
         return False, time.time() - start_time, 0
 
 
+def format_time(seconds: float) -> str:
+    """Format seconds as human-readable time."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    elif seconds < 3600:
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{mins}m {secs}s"
+    else:
+        hours = int(seconds // 3600)
+        mins = int((seconds % 3600) // 60)
+        return f"{hours}h {mins}m"
+
+
 def run_training_generation(
     count: int,
     db_path: str,
@@ -421,45 +435,108 @@ def run_training_generation(
 
     successes = 0
     failures = 0
+    total_solve_time = 0.0
+    generation_start = time.time()
+
+    # Track stats by difficulty and foundation
+    stats_by_difficulty: Dict[str, Dict[str, int]] = {}
+    stats_by_foundation: Dict[str, Dict[str, int]] = {}
 
     problems = generator.generate_batch(count, difficulty_weights)
 
     for i, problem in enumerate(problems):
+        # Initialize stats tracking
+        if problem.difficulty not in stats_by_difficulty:
+            stats_by_difficulty[problem.difficulty] = {'success': 0, 'fail': 0}
+        if problem.foundation_type not in stats_by_foundation:
+            stats_by_foundation[problem.foundation_type] = {'success': 0, 'fail': 0}
+
+        # Calculate progress info
+        progress_pct = (i / count) * 100
+        elapsed = time.time() - generation_start
+        avg_time = elapsed / (i + 1) if i > 0 else time_limit
+        eta = avg_time * (count - i - 1)
+        current_rate = (successes / (i + 1) * 100) if i > 0 else 0
+
         if verbose:
-            desc = HARD_CONFIGS.get(problem.difficulty, {}).get('description', problem.difficulty)
-            print(f"[{i+1}/{count}] {problem.problem_id}")
-            print(f"         Foundation: {problem.foundation_type}, "
-                  f"Inputs: {len(problem.input_specs)}, Outputs: {len(problem.output_specs)}")
-            print(f"         Type: {desc}")
-            print(f"         Solving...", end=" ", flush=True)
+            # Compact single-line progress
+            print(f"[{i+1:4d}/{count}] {progress_pct:5.1f}% | "
+                  f"Rate: {current_rate:5.1f}% | "
+                  f"ETA: {format_time(eta):>8s} | "
+                  f"{problem.foundation_type:6s} {problem.difficulty:18s} | ",
+                  end="", flush=True)
 
         success, solve_time, num_belts = solve_and_log(
             problem, time_limit, db_path, verbose=False
         )
+        total_solve_time += solve_time
 
         if success:
             successes += 1
+            stats_by_difficulty[problem.difficulty]['success'] += 1
+            stats_by_foundation[problem.foundation_type]['success'] += 1
             if verbose:
-                print(f"OK ({solve_time:.1f}s, {num_belts} buildings)")
+                print(f"OK  {solve_time:5.1f}s {num_belts:3d} buildings")
         else:
             failures += 1
+            stats_by_difficulty[problem.difficulty]['fail'] += 1
+            stats_by_foundation[problem.foundation_type]['fail'] += 1
             if verbose:
-                print(f"FAIL ({solve_time:.1f}s)")
+                print(f"FAIL {solve_time:5.1f}s")
+
+        # Print periodic summary every 100 problems
+        if verbose and (i + 1) % 100 == 0 and i + 1 < count:
+            print()
+            print(f"  --- Progress Update ({i+1}/{count}) ---")
+            print(f"  Success: {successes}/{i+1} ({successes/(i+1)*100:.1f}%)")
+            print(f"  Elapsed: {format_time(elapsed)} | ETA: {format_time(eta)}")
+            print(f"  Avg solve time: {total_solve_time/(i+1):.1f}s")
+            print(f"  By difficulty:")
+            for diff, stats in sorted(stats_by_difficulty.items()):
+                total = stats['success'] + stats['fail']
+                rate = stats['success'] / total * 100 if total > 0 else 0
+                print(f"    {diff:18s}: {stats['success']:3d}/{total:3d} ({rate:5.1f}%)")
+            print()
 
         # Clean up memory
         gc.collect()
 
+    total_elapsed = time.time() - generation_start
+
     if verbose:
         print()
         print("=" * 70)
-        print("RESULTS")
+        print("FINAL RESULTS")
         print("=" * 70)
-        print(f"Successes: {successes}")
-        print(f"Failures: {failures}")
-        print(f"Success rate: {100 * successes / max(1, count):.1f}%")
+        print(f"Total problems:  {count}")
+        print(f"Successes:       {successes} ({successes/count*100:.1f}%)")
+        print(f"Failures:        {failures} ({failures/count*100:.1f}%)")
+        print(f"Total time:      {format_time(total_elapsed)}")
+        print(f"Avg solve time:  {total_solve_time/count:.1f}s")
         print()
-        print("Training data has been logged to the transformer database.")
-        print("Both successful and failed attempts are valuable for training!")
+        print("BY DIFFICULTY:")
+        print("-" * 50)
+        for diff in sorted(stats_by_difficulty.keys()):
+            stats = stats_by_difficulty[diff]
+            total = stats['success'] + stats['fail']
+            rate = stats['success'] / total * 100 if total > 0 else 0
+            bar_len = int(rate / 5)  # 20 char max bar
+            bar = '#' * bar_len + '-' * (20 - bar_len)
+            print(f"  {diff:18s}: {stats['success']:4d}/{total:4d} [{bar}] {rate:5.1f}%")
+        print()
+        print("BY FOUNDATION:")
+        print("-" * 50)
+        for found in sorted(stats_by_foundation.keys()):
+            stats = stats_by_foundation[found]
+            total = stats['success'] + stats['fail']
+            rate = stats['success'] / total * 100 if total > 0 else 0
+            bar_len = int(rate / 5)
+            bar = '#' * bar_len + '-' * (20 - bar_len)
+            print(f"  {found:8s}: {stats['success']:4d}/{total:4d} [{bar}] {rate:5.1f}%")
+        print()
+        print("=" * 70)
+        print("Training data logged to:", db_path)
+        print("Both successes AND failures are valuable for training!")
         print("=" * 70)
 
     return successes, failures
