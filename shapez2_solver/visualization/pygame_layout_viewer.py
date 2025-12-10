@@ -294,6 +294,35 @@ class PygameLayoutViewer:
         cell = self.cell_size
         ox, oy = self.view_offset_x, self.view_offset_y
 
+        # Build set of valid grid positions for irregular foundations
+        valid_cells = None
+        if self.config.spec.present_cells is not None:
+            valid_cells = set()
+            for ux, uy in self.config.spec.present_cells:
+                # Each 1x1 unit is 14x14 tiles, with 6-tile gaps between
+                # First unit starts at (0,0), next at (20,0), etc.
+                start_x = ux * 20 if ux > 0 else 0
+                start_y = uy * 20 if uy > 0 else 0
+                unit_w = 14 + (6 if ux > 0 else 0)  # Include connection strip
+                unit_h = 14 + (6 if uy > 0 else 0)
+
+                for dx in range(14):
+                    for dy in range(14):
+                        valid_cells.add((start_x + dx, start_y + dy))
+
+                # Add connection strips between adjacent cells
+                cells_set = set(self.config.spec.present_cells)
+                # Horizontal connection (to the right)
+                if (ux + 1, uy) in cells_set:
+                    for dy in range(14):
+                        for dx in range(6):
+                            valid_cells.add((start_x + 14 + dx, start_y + dy))
+                # Vertical connection (downward)
+                if (ux, uy + 1) in cells_set:
+                    for dx in range(14):
+                        for dy in range(6):
+                            valid_cells.add((start_x + dx, start_y + 14 + dy))
+
         # Draw grid cells
         for x in range(grid_w):
             for y in range(grid_h):
@@ -302,6 +331,12 @@ class PygameLayoutViewer:
 
                 # Check if visible
                 if x1 + cell < 0 or x1 > self.screen_width or y1 + cell < 0 or y1 > self.screen_height - 100:
+                    continue
+
+                # Check if this cell is part of the foundation
+                if valid_cells is not None and (x, y) not in valid_cells:
+                    # Draw invalid cells darker (outside foundation)
+                    pygame.draw.rect(self.screen, (25, 25, 30), (x1, y1, cell, cell))
                     continue
 
                 pygame.draw.rect(self.screen, (50, 50, 60), (x1, y1, cell, cell))
