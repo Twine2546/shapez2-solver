@@ -2704,6 +2704,582 @@ class ConnectionQualityPredictor:
 
 
 # =============================================================================
+# Phase 5: Blocking Predictor
+# =============================================================================
+
+class BlockingPredictor:
+    """
+    Predicts whether routing a connection will block other connections.
+
+    Trained on conflict_analysis data to learn which connection features
+    correlate with blocking other routes.
+
+    Usage:
+        predictor = BlockingPredictor()
+        predictor.train("synthetic_training.db")
+
+        # Predict blocking probability for a connection
+        blocking_prob = predictor.predict(connection_features)
+
+        # Use in routing to prefer paths less likely to block
+    """
+
+    FEATURE_NAMES = [
+        'manhattan_distance',
+        'normalized_distance',
+        'src_local_density',
+        'dst_local_density',
+        'path_corridor_density',
+        'crosses_center',
+        'floor_change',
+        'direction_complexity',
+        'connection_index',
+        'total_connections',
+        'connections_before',  # How many routed before this one
+        'path_length',  # Actual path length (for training)
+        'num_belts',  # Number of belts placed
+    ]
+
+    def __init__(self):
+        self.model = None
+        self.scaler = None
+        self.is_trained = False
+        self.feature_importances = {}
+
+    def _extract_features(self, conn_data: Dict) -> np.ndarray:
+        """Extract features from connection data."""
+        features = conn_data.get('features', {})
+
+        return np.array([
+            features.get('manhattan_distance', 0),
+            features.get('normalized_distance', 0),
+            features.get('src_local_density', 0),
+            features.get('dst_local_density', 0),
+            features.get('path_corridor_density', 0),
+            1 if features.get('crosses_center', False) else 0,
+            1 if features.get('floor_change', False) else 0,
+            features.get('direction_complexity', 0),
+            conn_data.get('index', 0),
+            conn_data.get('total_connections', 1),
+            conn_data.get('connections_before', 0),
+            conn_data.get('path_length', 0),
+            conn_data.get('num_belts', 0),
+        ], dtype=np.float32)
+
+    def train(self, db_path: str) -> Optional[Dict]:
+        """
+        Train blocking predictor from conflict analysis data.
+
+        Args:
+            db_path: Path to SQLite database
+
+        Returns:
+            Training metrics or None if failed
+        """
+        if not HAS_SKLEARN:
+            print("ERROR: scikit-learn required for training")
+            return None
+
+        print("Loading blocking training data...")
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT r.connection_results, r.conflict_analysis
+            FROM solver_results r
+            WHERE r.conflict_analysis != '' AND r.conflict_analysis != '{}'
+        """)
+
+        X_list = []
+        y_list = []
+
+        for row in cursor.fetchall():
+            try:
+                connection_results = json.loads(row[0]) if row[0] else []
+                conflict_analysis = json.loads(row[1]) if row[1] else {}
+
+                if not connection_results or not conflict_analysis:
+                    continue
+
+                # Get blocking scores for each connection
+                blocking_scores = conflict_analysis.get('blocking_scores', {})
+
+                for conn_result in connection_results:
+                    if not conn_result.get('success', False):
+                        continue  # Only train on successful routes
+
+                    conn_idx = conn_result.get('index', 0)
+                    blocking_score = blocking_scores.get(str(conn_idx), 0)
+
+                    # Extract features
+                    features = self._extract_features({
+                        'features': conn_result.get('features', {}),
+                        'index': conn_idx,
+                        'total_connections': len(connection_results),
+                        'connections_before': conn_idx,
+                        'path_length': conn_result.get('path_length', 0),
+                        'num_belts': len(conn_result.get('belt_directions', [])),
+                    })
+
+                    X_list.append(features)
+                    # Binary label: does this route block others?
+                    y_list.append(1 if blocking_score > 0 else 0)
+
+            except (json.JSONDecodeError, KeyError) as e:
+                continue
+
+        conn.close()
+
+        if len(X_list) < 50:
+            print(f"Not enough blocking data: {len(X_list)} examples")
+            return None
+
+        X = np.array(X_list)
+        y = np.array(y_list)
+
+        print(f"Loaded {len(X)} connection examples")
+        print(f"  Blocking rate: {np.mean(y)*100:.1f}%")
+
+        # Train/test split
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+
+        # Scale features
+        self.scaler = StandardScaler()
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
+
+        # Train classifier
+        print("\nTraining blocking predictor...")
+        self.model = GradientBoostingClassifier(
+            n_estimators=100,
+            max_depth=5,
+            random_state=42,
+        )
+        self.model.fit(X_train_scaled, y_train)
+
+        # Evaluate
+        y_pred = self.model.predict(X_test_scaled)
+        accuracy = np.mean(y_pred == y_test)
+
+        # Get probabilities for AUC
+        y_prob = self.model.predict_proba(X_test_scaled)[:, 1]
+
+        print(f"  Blocking prediction accuracy: {accuracy:.3f}")
+
+        # Feature importance
+        self.feature_importances = dict(zip(
+            self.FEATURE_NAMES[:len(self.model.feature_importances_)],
+            self.model.feature_importances_
+        ))
+
+        print("\nTop features for blocking prediction:")
+        for name, imp in sorted(self.feature_importances.items(), key=lambda x: -x[1])[:5]:
+            print(f"  {name}: {imp:.3f}")
+
+        self.is_trained = True
+
+        return {
+            'accuracy': accuracy,
+            'blocking_rate': float(np.mean(y)),
+            'num_examples': len(X),
+        }
+
+    def predict(self, conn_data: Dict) -> float:
+        """
+        Predict probability that routing this connection will block others.
+
+        Args:
+            conn_data: Connection data with features
+
+        Returns:
+            Probability (0-1) that this route will block others
+        """
+        if not self.is_trained:
+            # Fallback: longer paths more likely to block
+            features = conn_data.get('features', {})
+            dist = features.get('manhattan_distance', 10)
+            density = features.get('path_corridor_density', 0.5)
+            return min(1.0, dist / 50 + density)
+
+        X = self._extract_features(conn_data).reshape(1, -1)
+        X_scaled = self.scaler.transform(X)
+
+        return float(self.model.predict_proba(X_scaled)[0][1])
+
+    def save(self, path: str):
+        """Save trained model."""
+        if not self.is_trained:
+            raise RuntimeError("Model not trained")
+
+        with open(path, 'wb') as f:
+            pickle.dump({
+                'model': self.model,
+                'scaler': self.scaler,
+                'feature_importances': self.feature_importances,
+            }, f)
+        print(f"Saved blocking predictor to {path}")
+
+    def load(self, path: str):
+        """Load trained model."""
+        with open(path, 'rb') as f:
+            data = pickle.load(f)
+
+        self.model = data['model']
+        self.scaler = data['scaler']
+        self.feature_importances = data.get('feature_importances', {})
+        self.is_trained = True
+
+
+# =============================================================================
+# Phase 6: Path Corridor Predictor
+# =============================================================================
+
+class PathCorridorPredictor:
+    """
+    Predicts "safety" of grid cells for routing.
+
+    Learns which areas of the grid tend to cause routing conflicts
+    based on blocked_positions data from failed routes.
+
+    Usage:
+        predictor = PathCorridorPredictor()
+        predictor.train("synthetic_training.db")
+
+        # Get danger score for a cell (use to bias A* heuristic)
+        danger = predictor.predict_cell_danger(x, y, floor, grid_w, grid_h, occupied)
+    """
+
+    CELL_FEATURE_NAMES = [
+        'norm_x',  # Normalized x position (0-1)
+        'norm_y',  # Normalized y position
+        'floor',
+        'distance_to_center',
+        'distance_to_edge',
+        'local_density_3x3',
+        'local_density_5x5',
+        'is_edge',
+        'is_corner',
+        'quadrant',  # Which quadrant (0-3)
+    ]
+
+    def __init__(self):
+        self.model = None
+        self.scaler = None
+        self.is_trained = False
+        self.feature_importances = {}
+        # Grid-level statistics learned during training
+        self.danger_by_region = {}  # (quadrant, floor) -> danger score
+
+    def _extract_cell_features(
+        self,
+        x: int, y: int, floor: int,
+        grid_w: int, grid_h: int,
+        occupied: Set[Tuple[int, int, int]],
+    ) -> np.ndarray:
+        """Extract features for a single cell."""
+        # Normalized position
+        norm_x = x / max(1, grid_w - 1)
+        norm_y = y / max(1, grid_h - 1)
+
+        # Distance to center
+        center_x, center_y = grid_w / 2, grid_h / 2
+        dist_center = ((x - center_x)**2 + (y - center_y)**2) ** 0.5
+        dist_center_norm = dist_center / ((center_x**2 + center_y**2) ** 0.5 + 0.001)
+
+        # Distance to nearest edge
+        dist_edge = min(x, y, grid_w - 1 - x, grid_h - 1 - y)
+        dist_edge_norm = dist_edge / (min(grid_w, grid_h) / 2 + 0.001)
+
+        # Local density (3x3 window)
+        count_3x3 = 0
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                if (x + dx, y + dy, floor) in occupied:
+                    count_3x3 += 1
+        density_3x3 = count_3x3 / 9
+
+        # Local density (5x5 window)
+        count_5x5 = 0
+        for dx in range(-2, 3):
+            for dy in range(-2, 3):
+                if (x + dx, y + dy, floor) in occupied:
+                    count_5x5 += 1
+        density_5x5 = count_5x5 / 25
+
+        # Edge/corner flags
+        is_edge = (x == 0 or x == grid_w - 1 or y == 0 or y == grid_h - 1)
+        is_corner = (x in [0, grid_w - 1]) and (y in [0, grid_h - 1])
+
+        # Quadrant (0=NW, 1=NE, 2=SW, 3=SE)
+        quadrant = (1 if x >= grid_w / 2 else 0) + (2 if y >= grid_h / 2 else 0)
+
+        return np.array([
+            norm_x, norm_y, floor,
+            dist_center_norm, dist_edge_norm,
+            density_3x3, density_5x5,
+            1 if is_edge else 0,
+            1 if is_corner else 0,
+            quadrant,
+        ], dtype=np.float32)
+
+    def train(self, db_path: str) -> Optional[Dict]:
+        """
+        Train path corridor predictor from blocked positions data.
+
+        Args:
+            db_path: Path to SQLite database
+
+        Returns:
+            Training metrics or None if failed
+        """
+        if not HAS_SKLEARN:
+            print("ERROR: scikit-learn required for training")
+            return None
+
+        print("Loading path corridor training data...")
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT p.problem_json, r.connection_results
+            FROM synthetic_problems p
+            JOIN solver_results r ON p.problem_id = r.problem_id
+            WHERE r.connection_results != '' AND r.connection_results != '[]'
+        """)
+
+        X_list = []
+        y_list = []
+
+        # Also track region-level statistics
+        region_blocks = defaultdict(int)
+        region_total = defaultdict(int)
+
+        for row in cursor.fetchall():
+            try:
+                problem = json.loads(row[0])
+                connection_results = json.loads(row[1]) if row[1] else []
+
+                grid_w = problem['grid_width']
+                grid_h = problem['grid_height']
+
+                # Build occupied set from machines
+                occupied = set()
+                for m in problem.get('machines', []):
+                    occupied.add((m['x'], m['y'], m.get('floor', 0)))
+
+                for conn_result in connection_results:
+                    blocked_positions = conn_result.get('blocked_positions', [])
+                    path = conn_result.get('path', [])
+
+                    # Blocked positions are "dangerous" (label=1)
+                    for pos in blocked_positions:
+                        if isinstance(pos, list) and len(pos) >= 3:
+                            x, y, floor = pos[0], pos[1], pos[2]
+                            features = self._extract_cell_features(
+                                x, y, floor, grid_w, grid_h, occupied
+                            )
+                            X_list.append(features)
+                            y_list.append(1)  # Dangerous
+
+                            # Track region stats
+                            quadrant = (1 if x >= grid_w/2 else 0) + (2 if y >= grid_h/2 else 0)
+                            region_blocks[(quadrant, floor)] += 1
+                            region_total[(quadrant, floor)] += 1
+
+                    # Path positions (successful routes) are "safe" (label=0)
+                    for pos in path[:10]:  # Limit to avoid imbalance
+                        if isinstance(pos, list) and len(pos) >= 3:
+                            x, y, floor = pos[0], pos[1], pos[2]
+                            features = self._extract_cell_features(
+                                x, y, floor, grid_w, grid_h, occupied
+                            )
+                            X_list.append(features)
+                            y_list.append(0)  # Safe
+
+                            quadrant = (1 if x >= grid_w/2 else 0) + (2 if y >= grid_h/2 else 0)
+                            region_total[(quadrant, floor)] += 1
+
+            except (json.JSONDecodeError, KeyError) as e:
+                continue
+
+        conn.close()
+
+        if len(X_list) < 100:
+            print(f"Not enough corridor data: {len(X_list)} examples")
+            return None
+
+        X = np.array(X_list)
+        y = np.array(y_list)
+
+        print(f"Loaded {len(X)} cell examples")
+        print(f"  Danger rate: {np.mean(y)*100:.1f}%")
+
+        # Calculate region danger scores
+        for region in region_total:
+            if region_total[region] > 0:
+                self.danger_by_region[region] = region_blocks[region] / region_total[region]
+
+        # Train/test split
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+
+        # Scale features
+        self.scaler = StandardScaler()
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
+
+        # Train classifier
+        print("\nTraining corridor danger predictor...")
+        self.model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=10,
+            random_state=42,
+            n_jobs=-1,
+        )
+        self.model.fit(X_train_scaled, y_train)
+
+        # Evaluate
+        y_pred = self.model.predict(X_test_scaled)
+        accuracy = np.mean(y_pred == y_test)
+
+        print(f"  Corridor danger accuracy: {accuracy:.3f}")
+
+        # Feature importance
+        self.feature_importances = dict(zip(
+            self.CELL_FEATURE_NAMES,
+            self.model.feature_importances_
+        ))
+
+        print("\nTop features for danger prediction:")
+        for name, imp in sorted(self.feature_importances.items(), key=lambda x: -x[1])[:5]:
+            print(f"  {name}: {imp:.3f}")
+
+        print("\nDanger by region:")
+        for region, danger in sorted(self.danger_by_region.items(), key=lambda x: -x[1])[:4]:
+            print(f"  Quadrant {region[0]}, Floor {region[1]}: {danger*100:.1f}%")
+
+        self.is_trained = True
+
+        return {
+            'accuracy': accuracy,
+            'danger_rate': float(np.mean(y)),
+            'num_examples': len(X),
+        }
+
+    def predict_cell_danger(
+        self,
+        x: int, y: int, floor: int,
+        grid_w: int, grid_h: int,
+        occupied: Set[Tuple[int, int, int]],
+    ) -> float:
+        """
+        Predict danger score for a cell (0=safe, 1=dangerous).
+
+        Higher scores mean routing through this cell is more likely
+        to cause problems for other routes.
+
+        Args:
+            x, y, floor: Cell position
+            grid_w, grid_h: Grid dimensions
+            occupied: Set of occupied cells
+
+        Returns:
+            Danger probability (0-1)
+        """
+        if not self.is_trained:
+            # Fallback: center is more dangerous
+            center_x, center_y = grid_w / 2, grid_h / 2
+            dist_center = ((x - center_x)**2 + (y - center_y)**2) ** 0.5
+            max_dist = ((grid_w/2)**2 + (grid_h/2)**2) ** 0.5
+            return 0.3 * (1 - dist_center / (max_dist + 0.001))
+
+        features = self._extract_cell_features(x, y, floor, grid_w, grid_h, occupied)
+        X_scaled = self.scaler.transform(features.reshape(1, -1))
+
+        return float(self.model.predict_proba(X_scaled)[0][1])
+
+    def get_danger_map(
+        self,
+        grid_w: int, grid_h: int, floor: int,
+        occupied: Set[Tuple[int, int, int]],
+    ) -> np.ndarray:
+        """
+        Generate a full danger map for a floor.
+
+        Args:
+            grid_w, grid_h: Grid dimensions
+            floor: Floor number
+            occupied: Set of occupied cells
+
+        Returns:
+            2D array of danger scores (grid_h x grid_w)
+        """
+        danger_map = np.zeros((grid_h, grid_w), dtype=np.float32)
+
+        for y in range(grid_h):
+            for x in range(grid_w):
+                danger_map[y, x] = self.predict_cell_danger(
+                    x, y, floor, grid_w, grid_h, occupied
+                )
+
+        return danger_map
+
+    def get_heuristic_bonus(
+        self,
+        x: int, y: int, floor: int,
+        grid_w: int, grid_h: int,
+        occupied: Set[Tuple[int, int, int]],
+    ) -> float:
+        """
+        Get A* heuristic bonus/penalty for a cell.
+
+        Returns a value to ADD to the heuristic cost.
+        Higher = discourage routing through this cell.
+
+        Args:
+            x, y, floor: Cell position
+            grid_w, grid_h: Grid dimensions
+            occupied: Set of occupied cells
+
+        Returns:
+            Heuristic adjustment (0 to ~2)
+        """
+        danger = self.predict_cell_danger(x, y, floor, grid_w, grid_h, occupied)
+        # Scale danger to reasonable heuristic penalty
+        return danger * 2.0
+
+    def save(self, path: str):
+        """Save trained model."""
+        if not self.is_trained:
+            raise RuntimeError("Model not trained")
+
+        with open(path, 'wb') as f:
+            pickle.dump({
+                'model': self.model,
+                'scaler': self.scaler,
+                'feature_importances': self.feature_importances,
+                'danger_by_region': self.danger_by_region,
+            }, f)
+        print(f"Saved corridor predictor to {path}")
+
+    def load(self, path: str):
+        """Load trained model."""
+        with open(path, 'rb') as f:
+            data = pickle.load(f)
+
+        self.model = data['model']
+        self.scaler = data['scaler']
+        self.feature_importances = data.get('feature_importances', {})
+        self.danger_by_region = data.get('danger_by_region', {})
+        self.is_trained = True
+
+
+# =============================================================================
 # CLI Interface
 # =============================================================================
 
@@ -2725,6 +3301,10 @@ def main():
                        help="Train placement quality predictor (Phase 3)")
     parser.add_argument("--train-connection", action="store_true",
                        help="Train connection quality predictor (Phase 4)")
+    parser.add_argument("--train-blocking", action="store_true",
+                       help="Train blocking predictor (Phase 5)")
+    parser.add_argument("--train-corridor", action="store_true",
+                       help="Train path corridor predictor (Phase 6)")
     parser.add_argument("--train-all", action="store_true",
                        help="Train all available models")
     parser.add_argument("--output-dir", type=str, default="models",
@@ -2853,9 +3433,48 @@ def main():
         else:
             print("Training failed - no data available")
 
+    if args.train_blocking or args.train_all:
+        print("\n" + "="*60)
+        print("Phase 5: Training Blocking Predictor")
+        print("  (Predicts if a route will block other connections)")
+        print("="*60)
+
+        predictor = BlockingPredictor()
+        metrics = predictor.train(args.db)
+
+        if metrics:
+            model_path = output_dir / "blocking_predictor.pkl"
+            predictor.save(str(model_path))
+
+            print(f"\nTraining complete!")
+            print(f"  Accuracy: {metrics.get('accuracy', 0):.3f}")
+            print(f"  Blocking rate: {metrics.get('blocking_rate', 0)*100:.1f}%")
+        else:
+            print("Training failed - no data available")
+
+    if args.train_corridor or args.train_all:
+        print("\n" + "="*60)
+        print("Phase 6: Training Path Corridor Predictor")
+        print("  (Predicts dangerous areas to avoid in routing)")
+        print("="*60)
+
+        predictor = PathCorridorPredictor()
+        metrics = predictor.train(args.db)
+
+        if metrics:
+            model_path = output_dir / "corridor_predictor.pkl"
+            predictor.save(str(model_path))
+
+            print(f"\nTraining complete!")
+            print(f"  Accuracy: {metrics.get('accuracy', 0):.3f}")
+            print(f"  Danger rate: {metrics.get('danger_rate', 0)*100:.1f}%")
+        else:
+            print("Training failed - no data available")
+
     if not any([args.train_classifier, args.train_direction,
                  args.train_direction_3d, args.train_policy, args.train_placement,
-                 args.train_connection, args.train_all]):
+                 args.train_connection, args.train_blocking, args.train_corridor,
+                 args.train_all]):
         parser.print_help()
 
 

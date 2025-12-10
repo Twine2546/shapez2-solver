@@ -735,6 +735,45 @@ class BeltRouter:
 
         return belts
 
+    def route_connection_smart(self, connection: Connection) -> RouteResult:
+        """
+        Route a connection using smart belt port decisions.
+
+        Uses find_path_with_retry which first tries without belt ports,
+        then with smart congestion-aware belt ports if needed.
+        """
+        start = connection.from_pos
+        goal = connection.to_pos
+        shape_code = connection.shape_code
+        throughput = connection.throughput
+
+        path_with_types = self.find_path_with_retry(start, goal, shape_code, throughput)
+
+        if path_with_types is None:
+            return RouteResult(path=[], belts=[], success=False)
+
+        belts = self.path_to_belts(path_with_types)
+        simple_path = [(p[0], p[1], p[2]) for p in path_with_types]
+
+        # Mark belt positions as occupied
+        for x, y, floor, belt_type, rotation in belts:
+            cell = (x, y, floor)
+            if cell not in self.belt_positions:
+                self.add_occupied(x, y, floor)
+            self.belt_positions[cell] = (belt_type, rotation)
+            if shape_code:
+                self.shape_at_cell[cell] = shape_code
+            self.belt_load[cell] = self.belt_load.get(cell, 0.0) + throughput
+
+        self.register_path_to_destination(simple_path, goal)
+
+        return RouteResult(
+            path=simple_path,
+            belts=belts,
+            success=True,
+            cost=len(simple_path)
+        )
+
     def route_connection(self, connection: Connection) -> RouteResult:
         """Route a single connection."""
         start = connection.from_pos
@@ -804,6 +843,214 @@ class BeltRouter:
         self.connection_paths.clear()
         self.failed_connections.clear()
         # Note: doesn't clear occupied - call set_occupied to reset
+
+    # =========================================================================
+    # Smart Belt Port Methods
+    # =========================================================================
+
+    def get_corridor_congestion(
+        self,
+        start: Tuple[int, int, int],
+        end: Tuple[int, int, int],
+        width: int = 3,
+    ) -> float:
+        """
+        Calculate congestion level in the corridor between two points.
+
+        Args:
+            start: Start position
+            end: End position
+            width: Corridor width to check (cells on each side)
+
+        Returns:
+            Congestion ratio (0 = empty, 1 = fully blocked)
+        """
+        x1, y1, f1 = start
+        x2, y2, f2 = end
+
+        # Only check same floor
+        if f1 != f2:
+            return 0.5  # Unknown for floor changes
+
+        # Get bounding box with width
+        min_x = min(x1, x2) - width
+        max_x = max(x1, x2) + width
+        min_y = min(y1, y2) - width
+        max_y = max(y1, y2) + width
+
+        total_cells = 0
+        blocked_cells = 0
+
+        for x in range(max(0, min_x), min(self.grid_width, max_x + 1)):
+            for y in range(max(0, min_y), min(self.grid_height, max_y + 1)):
+                total_cells += 1
+                if (x, y, f1) in self.occupied:
+                    blocked_cells += 1
+
+        return blocked_cells / max(1, total_cells)
+
+    def get_smart_belt_port_cost(
+        self,
+        current: Tuple[int, int, int],
+        jump_target: Tuple[int, int, int],
+        goal: Tuple[int, int, int],
+    ) -> float:
+        """
+        Calculate smart cost for a belt port jump based on congestion.
+
+        Lower cost when:
+        - Jumping over congested areas
+        - Jump is toward the goal
+        - Direct path is blocked
+
+        Args:
+            current: Current position
+            jump_target: Where the belt port lands
+            goal: Final destination
+
+        Returns:
+            Cost for this belt port jump (1.5 to 3.0)
+        """
+        # Base cost
+        base_cost = 2.5
+
+        # Check congestion in the jump corridor
+        congestion = self.get_corridor_congestion(current, jump_target, width=1)
+
+        # Reduce cost based on congestion (jumping over blocked areas is good)
+        congestion_bonus = congestion * 1.5  # Up to 1.5 reduction
+
+        # Check if jump is toward goal
+        curr_dist_to_goal = self.heuristic(current, goal)
+        target_dist_to_goal = self.heuristic(jump_target, goal)
+
+        if target_dist_to_goal < curr_dist_to_goal:
+            # Jumping toward goal - bonus
+            direction_bonus = 0.3
+        else:
+            # Jumping away from goal - penalty
+            direction_bonus = -0.5
+
+        # Check if immediate neighbors are blocked (encourages jumping when stuck)
+        blocked_neighbors = 0
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx, ny = current[0] + dx, current[1] + dy
+            if not self.is_valid(nx, ny, current[2]):
+                blocked_neighbors += 1
+
+        stuck_bonus = blocked_neighbors * 0.2  # Up to 0.8 reduction if surrounded
+
+        # Calculate final cost (minimum 1.5 to still prefer direct paths when available)
+        final_cost = max(1.5, base_cost - congestion_bonus - direction_bonus - stuck_bonus)
+
+        return final_cost
+
+    def find_path_with_smart_ports(
+        self,
+        start: Tuple[int, int, int],
+        goal: Tuple[int, int, int],
+        shape_code: Optional[str] = None,
+        throughput: float = 1.0,
+    ) -> Optional[List[Tuple[int, int, int, str]]]:
+        """
+        Find path with intelligent belt port usage.
+
+        Uses dynamic cost for belt ports based on congestion, making jumps
+        more attractive when the direct path is blocked.
+
+        Args:
+            start: Start position
+            goal: Goal position
+            shape_code: Shape for merge checking
+            throughput: Required throughput
+
+        Returns:
+            Path with move types, or None if no path found
+        """
+        if start == goal:
+            return [(start[0], start[1], start[2], 'start')]
+
+        if not self.is_valid(goal[0], goal[1], goal[2], shape_code, throughput):
+            return None
+
+        # A* with smart belt port costs
+        open_set = [(0, start)]
+        came_from: Dict[Tuple[int, int, int], Tuple[Tuple[int, int, int], str]] = {}
+        g_score: Dict[Tuple[int, int, int], float] = {start: 0}
+        f_score: Dict[Tuple[int, int, int], float] = {start: self.heuristic(start, goal)}
+
+        while open_set:
+            _, current = heapq.heappop(open_set)
+
+            if current == goal:
+                # Reconstruct path
+                path = []
+                pos = current
+                while pos in came_from:
+                    prev_pos, move_type = came_from[pos]
+                    path.append((pos[0], pos[1], pos[2], move_type))
+                    pos = prev_pos
+                path.append((pos[0], pos[1], pos[2], 'start'))
+                return list(reversed(path))
+
+            # Always consider belt ports when available
+            allow_port = self.use_belt_ports and self.belt_ports_used < self.max_belt_ports
+
+            for nx, ny, nf, _, move_type in self.get_neighbors(
+                current[0], current[1], current[2],
+                allow_port, shape_code, throughput
+            ):
+                neighbor = (nx, ny, nf)
+
+                # Smart cost calculation
+                if move_type == 'belt_port':
+                    move_cost = self.get_smart_belt_port_cost(current, neighbor, goal)
+                else:
+                    move_cost = 1.0
+
+                tentative_g = g_score.get(current, float('inf')) + move_cost
+
+                if tentative_g < g_score.get(neighbor, float('inf')):
+                    came_from[neighbor] = (current, move_type)
+                    g_score[neighbor] = tentative_g
+                    f_score[neighbor] = tentative_g + self.heuristic(neighbor, goal)
+                    heapq.heappush(open_set, (f_score[neighbor], neighbor))
+
+        return None
+
+    def find_path_with_retry(
+        self,
+        start: Tuple[int, int, int],
+        goal: Tuple[int, int, int],
+        shape_code: Optional[str] = None,
+        throughput: float = 1.0,
+    ) -> Optional[List[Tuple[int, int, int, str]]]:
+        """
+        Find path with automatic retry using belt ports if direct path fails.
+
+        First tries without belt ports (cheaper), then with smart belt ports
+        if the direct path fails.
+
+        Args:
+            start: Start position
+            goal: Goal position
+            shape_code: Shape for merge checking
+            throughput: Required throughput
+
+        Returns:
+            Path with move types, or None if no path found
+        """
+        # First try without belt ports (usually faster and cheaper)
+        path = self.find_path(start, goal, allow_belt_ports=False,
+                             shape_code=shape_code, throughput=throughput)
+        if path:
+            return path
+
+        # If that failed and we have belt ports available, try with smart ports
+        if self.use_belt_ports and self.belt_ports_used < self.max_belt_ports:
+            return self.find_path_with_smart_ports(start, goal, shape_code, throughput)
+
+        return None
 
 
 def route_candidate_connections(
