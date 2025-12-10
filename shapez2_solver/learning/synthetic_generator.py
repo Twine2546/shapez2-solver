@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import List, Dict, Tuple, Set, Optional, Any
 from pathlib import Path
 import sys
+import gc
 
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -1504,6 +1505,10 @@ def generate_realistic_data(
                 msg = result.error_message[:30] if result.error_message else "Failed"
                 print(f"FAIL {progress}: {msg}")
 
+        # Clean up memory after each problem
+        del result
+        gc.collect()
+
     if verbose:
         print(f"\nResults: {successes} successes, {failures} failures")
         print(f"Success rate: {100*successes/max(1,count):.1f}%")
@@ -1694,6 +1699,10 @@ def generate_and_solve(
                 msg = result.error_message[:30] if result.error_message else "Failed"
                 print(f"FAIL: {msg}")
 
+        # Clean up memory after each problem
+        del result
+        gc.collect()
+
     if verbose:
         print(f"\nResults: {successes} successes, {failures} failures")
         print(f"Success rate: {100*successes/count:.1f}%")
@@ -1781,6 +1790,10 @@ def main():
             else:
                 progress = f"{result.routing_progress*100:.0f}%" if result.routing_progress > 0 else ""
                 print(f"FAIL {progress}: {result.error_message[:30]}")
+
+            # Clean up memory
+            del result, problem
+            gc.collect()
         return
 
     # Realistic problem generation
