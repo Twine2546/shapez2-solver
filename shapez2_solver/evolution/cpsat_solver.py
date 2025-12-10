@@ -32,6 +32,14 @@ except ImportError:
     RoutingLogger = None
     DifficultyPredictor = None
 
+# Placement feedback learning (optional)
+try:
+    from ..learning.placement_feedback import PlacementFeedbackLogger
+    HAS_PLACEMENT_FEEDBACK = True
+except ImportError:
+    HAS_PLACEMENT_FEEDBACK = False
+    PlacementFeedbackLogger = None
+
 
 # Machine types available for solving
 SOLVER_MACHINES = [
@@ -593,6 +601,12 @@ class CPSATFullSolver:
         enable_logging: bool = False,  # Log routing attempts for ML training
         log_db_path: str = "routing_data.db",  # Path to logging database
         difficulty_model_path: Optional[str] = None,  # Path to trained difficulty model
+        # Placement feedback learning
+        enable_placement_feedback: bool = True,  # Log placement attempts for RL
+        placement_db_path: str = "placement_feedback.db",
+        placement_model_path: str = "models/placement_quality.pkl",
+        reject_bad_placements: bool = False,  # Reject placements predicted to fail
+        placement_reject_threshold: float = 0.2,  # Reject if success prob < this
     ):
         self.foundation_type = foundation_type
         self.input_specs = input_specs
@@ -616,6 +630,19 @@ class CPSATFullSolver:
 
         if difficulty_model_path and HAS_LEARNING and DifficultyPredictor is not None:
             self.difficulty_predictor = DifficultyPredictor(difficulty_model_path)
+
+        # Placement feedback learning (RL for machine placement)
+        self.enable_placement_feedback = enable_placement_feedback and HAS_PLACEMENT_FEEDBACK
+        self.placement_feedback = None
+        self.reject_bad_placements = reject_bad_placements
+        self.placement_reject_threshold = placement_reject_threshold
+
+        if self.enable_placement_feedback and PlacementFeedbackLogger is not None:
+            self.placement_feedback = PlacementFeedbackLogger(
+                db_path=placement_db_path,
+                model_path=placement_model_path,
+                enable_online_learning=True,
+            )
 
         # Get foundation dimensions
         self.spec = FOUNDATION_SPECS.get(foundation_type)
@@ -760,6 +787,40 @@ class CPSATFullSolver:
                 routing_names = {'astar': 'A*', 'global': 'global CP-SAT', 'hybrid': 'hybrid (divide & conquer)', 'reroute': 'A* with reroute loop'}
                 print(f"Attempting routing ({routing_names.get(self.routing_mode, self.routing_mode)})...")
 
+            # Placement feedback: extract features and optionally reject
+            placement_features = None
+            if self.placement_feedback is not None:
+                placement_features = self.placement_feedback.extract_features(
+                    machines=machines,
+                    input_positions=self.input_positions,
+                    output_positions=self.output_positions,
+                    grid_width=self.grid_width,
+                    grid_height=self.grid_height,
+                    num_floors=self.num_floors,
+                    foundation_type=self.foundation_type,
+                )
+
+                # Check if we should reject this placement
+                if self.reject_bad_placements:
+                    should_reject, prob = self.placement_feedback.should_reject(
+                        placement_features, self.placement_reject_threshold
+                    )
+                    if should_reject:
+                        if verbose:
+                            print(f"  Rejecting placement (predicted success: {prob:.1%})")
+                        # Log as rejection (not a routing failure)
+                        self.placement_feedback.log_result(
+                            routing_success=False,
+                            failure_reason="ML_REJECTED",
+                            input_positions=self.input_positions,
+                            output_positions=self.output_positions,
+                            grid_width=self.grid_width,
+                            grid_height=self.grid_height,
+                            num_floors=self.num_floors,
+                        )
+                        iteration += 1
+                        continue  # Try next placement
+
             routing_time = min(60.0, remaining_time * 0.5)  # 50% of remaining time
 
             if self.routing_mode == 'global':
@@ -836,6 +897,27 @@ class CPSATFullSolver:
                 except Exception as e:
                     if verbose:
                         print(f"Warning: Failed to log routing attempt: {e}")
+
+            # Log placement feedback for RL learning
+            if self.placement_feedback is not None and placement_features is not None:
+                try:
+                    self.placement_feedback.log_result(
+                        routing_success=routing_success,
+                        routing_progress=1.0 if routing_success else 0.0,
+                        num_belts=len(belts),
+                        solve_time=time.time() - start_time,
+                        failure_reason="" if routing_success else "ROUTING_FAILED",
+                        input_positions=self.input_positions,
+                        output_positions=self.output_positions,
+                        grid_width=self.grid_width,
+                        grid_height=self.grid_height,
+                        num_floors=self.num_floors,
+                    )
+                    if verbose:
+                        print(f"Logged placement feedback (success={routing_success})")
+                except Exception as e:
+                    if verbose:
+                        print(f"Warning: Failed to log placement feedback: {e}")
 
             # Calculate fitness for this solution
             fitness = 0.0
@@ -2868,8 +2950,12 @@ def solve_with_cpsat(
     max_machines: int = 10,
     time_limit: float = 60.0,
     verbose: bool = False,
-    routing_mode: str = 'astar',  # 'astar', 'global', or 'hybrid'
+    routing_mode: str = 'astar',  # 'astar', 'global', 'hybrid', or 'reroute'
     nogood_placements: List = None,  # Previous failed placements to exclude
+    # Placement feedback learning
+    enable_placement_feedback: bool = True,
+    placement_db_path: str = "placement_feedback.db",
+    reject_bad_placements: bool = False,
 ):
     """
     Convenience function to solve using CP-SAT.
@@ -2878,6 +2964,9 @@ def solve_with_cpsat(
         routing_mode: 'astar' (sequential), 'global' (all paths at once), 'hybrid' (divide & conquer), 'reroute' (A* with retry loop)
         nogood_placements: List of previously failed placements to exclude.
                           If provided, returns (solution, updated_nogoods) tuple.
+        enable_placement_feedback: Log placement attempts for RL learning
+        placement_db_path: Path to placement feedback database
+        reject_bad_placements: Use ML to reject likely-failing placements
 
     Returns:
         If nogood_placements is None: Candidate solution or None
@@ -2890,6 +2979,9 @@ def solve_with_cpsat(
         max_machines=max_machines,
         time_limit_seconds=time_limit,
         routing_mode=routing_mode,
+        enable_placement_feedback=enable_placement_feedback,
+        placement_db_path=placement_db_path,
+        reject_bad_placements=reject_bad_placements,
     )
 
     solution = solver.solve(verbose=verbose, initial_nogoods=nogood_placements)
