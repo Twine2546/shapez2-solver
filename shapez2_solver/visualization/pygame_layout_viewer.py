@@ -335,12 +335,14 @@ class PygameLayoutViewer:
 
                 # Check if this cell is part of the foundation
                 if valid_cells is not None and (x, y) not in valid_cells:
-                    # Draw invalid cells darker (outside foundation)
-                    pygame.draw.rect(self.screen, (25, 25, 30), (x1, y1, cell, cell))
+                    # Draw invalid cells with red tint (outside foundation)
+                    pygame.draw.rect(self.screen, (40, 20, 20), (x1, y1, cell, cell))
+                    pygame.draw.rect(self.screen, (60, 30, 30), (x1, y1, cell, cell), 1)
                     continue
 
-                pygame.draw.rect(self.screen, (50, 50, 60), (x1, y1, cell, cell))
-                pygame.draw.rect(self.screen, (60, 60, 70), (x1, y1, cell, cell), 1)
+                # Valid cells - brighter green tint
+                pygame.draw.rect(self.screen, (40, 55, 50), (x1, y1, cell, cell))
+                pygame.draw.rect(self.screen, (50, 70, 60), (x1, y1, cell, cell), 1)
 
         # Draw 1x1 unit boundaries
         for ux in range(self.config.spec.units_x + 1):
