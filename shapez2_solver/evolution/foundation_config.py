@@ -5,7 +5,7 @@ Defines how foundations are laid out with ports on each side, position, and floo
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Set, Tuple, Any
 import copy
 
 
