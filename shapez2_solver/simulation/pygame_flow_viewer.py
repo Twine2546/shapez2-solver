@@ -944,9 +944,17 @@ class FlowViewer:
         """Draw the placement grid."""
         offset_y = self.toolbar_height
 
+        # Get valid cells for irregular foundations (to skip invalid cells)
+        foundation_spec = FOUNDATION_SPECS[self.current_foundation_name]
+        valid_cells = foundation_spec.get_valid_grid_cells()
+
         # Draw cells
         for y in range(self.grid_height):
             for x in range(self.grid_width):
+                # Skip invalid cells (they're drawn by draw_foundation_features)
+                if valid_cells is not None and (x, y) not in valid_cells:
+                    continue
+
                 rect = pygame.Rect(
                     x * self.cell_size,
                     offset_y + y * self.cell_size,
