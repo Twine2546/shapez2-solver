@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from typing import Dict, List, Optional, Tuple
 from shapez2_solver.simulation.flow_simulator import FlowSimulator, MACHINE_THROUGHPUT, BELT_THROUGHPUT
-from shapez2_solver.blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS
+from shapez2_solver.blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS, BUILDING_PORTS
 
 
 # Colors
@@ -75,36 +75,40 @@ SHAPE_COLORS = {
 class FlowViewer:
     def __init__(self, width: int = 14, height: int = 14, num_floors: int = 4):
         pygame.init()
-        
+
         self.grid_width = width
         self.grid_height = height
         self.num_floors = num_floors
-        
+
         self.cell_size = 40
-        self.sidebar_width = 300
+        self.sidebar_width = 320
         self.toolbar_height = 60
-        
+
         self.screen_width = self.grid_width * self.cell_size + self.sidebar_width
         self.screen_height = self.grid_height * self.cell_size + self.toolbar_height + 200  # Extra for info
-        
+
         self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
         pygame.display.set_caption("Flow Simulator - Interactive")
-        
+
         self.font = pygame.font.SysFont("monospace", 14)
         self.font_large = pygame.font.SysFont("monospace", 18, bold=True)
         self.font_small = pygame.font.SysFont("monospace", 11)
-        
+
         # State
         self.current_floor = 0
         self.selected_building = BuildingType.BELT_FORWARD
         self.current_rotation = Rotation.EAST
         self.mode = "place"  # "place", "input", "output", "delete"
         self.input_shape = "CuCuCuCu"
-        
+
+        # Mouse state for preview and hover
+        self.mouse_pos = (0, 0)
+        self.hovered_palette_idx = -1
+
         # Simulator
         self.sim = FlowSimulator(width, height, num_floors)
         self.last_report = None
-        
+
         # Building palette - expanded with all useful building types
         self.building_palette = [
             BuildingType.BELT_FORWARD,
@@ -127,9 +131,15 @@ class FlowViewer:
             BuildingType.PAINTER,
         ]
 
+        # Palette scroll offset (for when list is too long)
+        self.palette_scroll = 0
+        self.palette_visible_count = 12  # Number of items visible at once
+
         # Toggle for showing shapes on belts
         self.show_shapes = True
-        
+        # Toggle for showing port labels
+        self.show_ports = True
+
         self.clock = pygame.time.Clock()
     
     def run(self):
@@ -143,21 +153,47 @@ class FlowViewer:
                     self.handle_click(event.pos, event.button)
                 elif event.type == pygame.KEYDOWN:
                     self.handle_key(event.key)
-            
+                elif event.type == pygame.MOUSEMOTION:
+                    self.mouse_pos = event.pos
+                    self.update_hover()
+                elif event.type == pygame.MOUSEWHEEL:
+                    # Scroll building palette
+                    if event.y > 0:
+                        self.palette_scroll = max(0, self.palette_scroll - 1)
+                    else:
+                        max_scroll = max(0, len(self.building_palette) - self.palette_visible_count)
+                        self.palette_scroll = min(max_scroll, self.palette_scroll + 1)
+
             self.draw()
             pygame.display.flip()
             self.clock.tick(30)
-        
+
         pygame.quit()
+
+    def update_hover(self):
+        """Update hover state based on mouse position."""
+        x, y = self.mouse_pos
+        sidebar_x = self.grid_width * self.cell_size
+
+        self.hovered_palette_idx = -1
+
+        if x > sidebar_x:
+            rel_x = x - sidebar_x
+            rel_y = y - self.toolbar_height - 70  # Account for title and floor buttons
+
+            if 0 <= rel_x < self.sidebar_width - 20:
+                idx = rel_y // 25 + self.palette_scroll
+                if 0 <= idx < len(self.building_palette):
+                    self.hovered_palette_idx = idx
     
     def handle_click(self, pos: Tuple[int, int], button: int):
         """Handle mouse click."""
         x, y = pos
-        
+
         # Check if click is on grid
         grid_x = x // self.cell_size
         grid_y = (y - self.toolbar_height) // self.cell_size
-        
+
         if 0 <= grid_x < self.grid_width and 0 <= grid_y < self.grid_height:
             if button == 1:  # Left click
                 if self.mode == "place":
@@ -179,27 +215,41 @@ class FlowViewer:
                         del self.sim.machines[pos_key]
                     if pos_key in self.sim.buildings:
                         del self.sim.buildings[pos_key]
-                
+                    # Also remove any inputs/outputs at this position
+                    self.sim.inputs = [i for i in self.sim.inputs if i['position'] != pos_key]
+                    self.sim.outputs = [o for o in self.sim.outputs if o['position'] != pos_key]
+
                 # Auto-simulate after changes
                 self.last_report = self.sim.simulate()
-            
+
             elif button == 3:  # Right click - rotate
                 rotations = [Rotation.EAST, Rotation.SOUTH, Rotation.WEST, Rotation.NORTH]
                 idx = rotations.index(self.current_rotation)
                 self.current_rotation = rotations[(idx + 1) % 4]
-        
+
         # Check sidebar clicks
         sidebar_x = self.grid_width * self.cell_size
         if x > sidebar_x:
+            rel_x = x - sidebar_x
             rel_y = y - self.toolbar_height
-            
-            # Building palette
-            for i, bt in enumerate(self.building_palette):
-                btn_y = 100 + i * 30
-                if btn_y <= rel_y < btn_y + 25:
-                    self.selected_building = bt
+
+            # Floor buttons (at top of sidebar)
+            if 10 <= rel_y <= 50:
+                btn_width = 40
+                for f in range(self.num_floors):
+                    btn_x = 10 + f * (btn_width + 5)
+                    if btn_x <= rel_x <= btn_x + btn_width:
+                        self.current_floor = f
+                        self.last_report = self.sim.simulate()
+                        return
+
+            # Building palette (starts at y offset 70)
+            palette_y = rel_y - 70
+            if palette_y >= 0 and button == 1:
+                idx = palette_y // 25 + self.palette_scroll
+                if 0 <= idx < len(self.building_palette):
+                    self.selected_building = self.building_palette[idx]
                     self.mode = "place"
-                    break
     
     def handle_key(self, key: int):
         """Handle keyboard input."""
@@ -236,6 +286,9 @@ class FlowViewer:
         elif key == pygame.K_v:
             # Toggle shape visualization
             self.show_shapes = not self.show_shapes
+        elif key == pygame.K_p:
+            # Toggle port labels
+            self.show_ports = not self.show_ports
         elif key == pygame.K_PAGEUP:
             # Scroll building palette up
             current_idx = self.building_palette.index(self.selected_building)
@@ -248,18 +301,94 @@ class FlowViewer:
     def draw(self):
         """Draw everything."""
         self.screen.fill(DARK_GRAY)
-        
+
         # Draw toolbar
         self.draw_toolbar()
-        
+
         # Draw grid
         self.draw_grid()
-        
+
+        # Draw placement preview
+        self.draw_preview()
+
+        # Draw machine port labels
+        if self.show_ports:
+            self.draw_port_labels()
+
         # Draw sidebar
         self.draw_sidebar()
-        
+
         # Draw info panel
         self.draw_info_panel()
+
+    def draw_preview(self):
+        """Draw a ghost preview of the building at cursor position."""
+        if self.mode != "place":
+            return
+
+        x, y = self.mouse_pos
+        grid_x = x // self.cell_size
+        grid_y = (y - self.toolbar_height) // self.cell_size
+
+        if not (0 <= grid_x < self.grid_width and 0 <= grid_y < self.grid_height):
+            return
+
+        offset_y = self.toolbar_height
+        rect = pygame.Rect(
+            grid_x * self.cell_size,
+            offset_y + grid_y * self.cell_size,
+            self.cell_size - 1,
+            self.cell_size - 1
+        )
+
+        # Draw semi-transparent preview
+        preview_color = BUILDING_COLORS.get(self.selected_building, GRAY)
+        # Create a surface for alpha blending
+        preview_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+        preview_surface.fill((*preview_color, 128))  # 50% transparent
+        self.screen.blit(preview_surface, rect.topleft)
+
+        # Draw building symbol on top
+        self.draw_building_symbol(rect, self.selected_building, self.current_rotation)
+
+        # Draw outline
+        pygame.draw.rect(self.screen, WHITE, rect, 2)
+
+    def draw_port_labels(self):
+        """Draw input/output port labels for machines."""
+        offset_y = self.toolbar_height
+
+        for origin, machine in self.sim.machines.items():
+            if origin[2] != self.current_floor:
+                continue
+
+            # Draw input ports
+            for port in machine.input_ports:
+                px, py, pz = port['position']
+                if pz != self.current_floor:
+                    continue
+                # Check if port position is on grid
+                if 0 <= px < self.grid_width and 0 <= py < self.grid_height:
+                    cx = px * self.cell_size + self.cell_size // 2
+                    cy = offset_y + py * self.cell_size + self.cell_size // 2
+                    # Draw small "IN" label
+                    pygame.draw.circle(self.screen, CYAN, (cx, cy), 8)
+                    text = self.font_small.render("I", True, BLACK)
+                    self.screen.blit(text, (cx - 3, cy - 5))
+
+            # Draw output ports
+            for port in machine.output_ports:
+                px, py, pz = port['position']
+                if pz != self.current_floor:
+                    continue
+                if 0 <= px < self.grid_width and 0 <= py < self.grid_height:
+                    cx = px * self.cell_size + self.cell_size // 2
+                    cy = offset_y + py * self.cell_size + self.cell_size // 2
+                    # Draw small "OUT" label
+                    color = RED if port.get('backed_up') else ORANGE
+                    pygame.draw.circle(self.screen, color, (cx, cy), 8)
+                    text = self.font_small.render("O", True, BLACK)
+                    self.screen.blit(text, (cx - 3, cy - 5))
     
     def draw_toolbar(self):
         """Draw top toolbar."""
@@ -522,45 +651,86 @@ class FlowViewer:
         """Draw building palette and info."""
         x = self.grid_width * self.cell_size + 10
         y = self.toolbar_height + 10
-        
-        # Title
+
+        # Floor buttons
+        floor_label = self.font.render("Floor:", True, WHITE)
+        self.screen.blit(floor_label, (x, y))
+
+        btn_width = 40
+        btn_y = y + 20
+        for f in range(self.num_floors):
+            btn_x = x + f * (btn_width + 5)
+            color = GREEN if f == self.current_floor else LIGHT_GRAY
+            pygame.draw.rect(self.screen, color, (btn_x, btn_y, btn_width, 25))
+            pygame.draw.rect(self.screen, WHITE, (btn_x, btn_y, btn_width, 25), 1)
+            text = self.font.render(str(f), True, BLACK)
+            self.screen.blit(text, (btn_x + 15, btn_y + 5))
+
+        y += 60
+
+        # Building palette title
         title = self.font_large.render("Buildings", True, WHITE)
         self.screen.blit(title, (x, y))
-        y += 30
-        
-        # Building list
-        for i, bt in enumerate(self.building_palette):
-            color = GREEN if bt == self.selected_building else LIGHT_GRAY
-            pygame.draw.rect(self.screen, color, (x, y + i * 30, self.sidebar_width - 20, 25))
-            
+        y += 25
+
+        # Building list with scroll
+        visible_start = self.palette_scroll
+        visible_end = min(visible_start + self.palette_visible_count, len(self.building_palette))
+
+        # Scroll indicator
+        if self.palette_scroll > 0:
+            text = self.font_small.render("▲ scroll up", True, LIGHT_GRAY)
+            self.screen.blit(text, (x, y - 12))
+
+        for display_idx, palette_idx in enumerate(range(visible_start, visible_end)):
+            bt = self.building_palette[palette_idx]
+
+            # Determine color based on selection and hover
+            if bt == self.selected_building:
+                color = GREEN
+            elif palette_idx == self.hovered_palette_idx:
+                color = (180, 180, 180)  # Highlight on hover
+            else:
+                color = LIGHT_GRAY
+
+            btn_rect = pygame.Rect(x, y + display_idx * 25, self.sidebar_width - 30, 22)
+            pygame.draw.rect(self.screen, color, btn_rect)
+
+            # Border for selected
+            if bt == self.selected_building:
+                pygame.draw.rect(self.screen, WHITE, btn_rect, 2)
+
             name = bt.name.replace("_", " ").title()
             if bt in MACHINE_THROUGHPUT:
-                name += f" ({MACHINE_THROUGHPUT[bt]:.0f}/min)"
-            
-            text = self.font.render(name[:25], True, BLACK)
-            self.screen.blit(text, (x + 5, y + i * 30 + 5))
-        
+                name += f" ({MACHINE_THROUGHPUT[bt]:.0f}/m)"
+
+            text = self.font_small.render(name[:28], True, BLACK)
+            self.screen.blit(text, (x + 3, y + display_idx * 25 + 4))
+
+        # Scroll indicator
+        if visible_end < len(self.building_palette):
+            text = self.font_small.render("▼ scroll down", True, LIGHT_GRAY)
+            self.screen.blit(text, (x, y + self.palette_visible_count * 25 + 2))
+
         # Controls help
-        y += len(self.building_palette) * 30 + 20
+        y += self.palette_visible_count * 25 + 25
         controls = [
             "─── CONTROLS ───",
-            "Left Click: Place",
-            "Right Click: Rotate",
+            "LClick: Place/Select",
+            "RClick: Rotate",
             "1-4: Mode select",
             "R: Rotate",
-            "S: Cycle input shape",
-            "V: Toggle shape view",
-            "↑↓: Change floor",
-            "PgUp/Dn: Scroll bldgs",
+            "S: Cycle shape",
+            "V: Shapes " + ("ON" if self.show_shapes else "OFF"),
+            "P: Ports " + ("ON" if self.show_ports else "OFF"),
+            "Scroll: Building list",
             "Space: Simulate",
             "C: Clear all",
-            "",
-            f"Shapes: {'ON' if self.show_shapes else 'OFF'}",
         ]
         for line in controls:
             text = self.font_small.render(line, True, LIGHT_GRAY)
             self.screen.blit(text, (x, y))
-            y += 15
+            y += 14
     
     def draw_info_panel(self):
         """Draw simulation results."""
