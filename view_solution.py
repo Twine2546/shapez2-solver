@@ -133,12 +133,28 @@ def main():
                         help="Floor to display (for ASCII mode)")
     args = parser.parse_args()
 
+    # Check port limits
+    spec = FOUNDATION_SPECS[args.foundation]
+    from shapez2_solver.evolution.foundation_config import Side
+    max_west = spec.ports_per_side[Side.WEST]
+    max_east = spec.ports_per_side[Side.EAST]
+
+    if args.inputs > max_west:
+        print(f"Warning: {args.foundation} only has {max_west} WEST ports, reducing inputs from {args.inputs}")
+        args.inputs = max_west
+    if args.outputs > max_east:
+        print(f"Warning: {args.foundation} only has {max_east} EAST ports, reducing outputs from {args.outputs}")
+        args.outputs = max_east
+
     print(f"Solving {args.foundation} with {args.inputs} inputs, {args.outputs} outputs...")
+    print(f"  Grid: {spec.grid_width}x{spec.grid_height}, {spec.num_floors} floors")
+    if spec.present_cells:
+        print(f"  Shape: {spec.present_cells} (irregular)")
     print()
 
     # Generate input/output specs
-    input_specs = [('W', i % 10, i // 10, 'CuCuCuCu') for i in range(args.inputs)]
-    output_specs = [('E', i % 10, i // 10, 'Cu------') for i in range(args.outputs)]
+    input_specs = [('W', i % 4, i // 4, 'CuCuCuCu') for i in range(args.inputs)]
+    output_specs = [('E', i % 4, i // 4, 'Cu------') for i in range(args.outputs)]
 
     result = solve_with_cpsat(
         foundation_type=args.foundation,
