@@ -86,6 +86,7 @@ class BeltRouter:
             allow_shape_merging: Allow routes with same shape to share belts
             max_belt_throughput: Max items/second per belt (default: 3.0 for tier 5)
             valid_cells: For irregular foundations, set of valid (x, y) positions
+            debug: Enable debug logging
         """
         # Use actual belt throughput from game data (180 ops/min = 3 items/sec)
         if max_belt_throughput is None:
@@ -97,6 +98,7 @@ class BeltRouter:
         self.max_belt_ports = max_belt_ports
         self.belt_ports_used = 0
         self.allow_shape_merging = allow_shape_merging
+        self.debug = False  # Set via set_debug()
         self.occupied: Set[Tuple[int, int, int]] = set()
         self.belt_positions: Dict[Tuple[int, int, int], Tuple[BuildingType, Rotation]] = {}
         self.belt_port_pairs: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = []  # (sender, receiver)
@@ -118,9 +120,20 @@ class BeltRouter:
         self.connection_paths: Dict[int, List[Tuple[int, int, int]]] = {}  # conn_idx -> path
         self.failed_connections: List[Dict] = []  # List of failed connection info with blockers
 
+    def set_debug(self, enabled: bool) -> None:
+        """Enable or disable debug logging."""
+        self.debug = enabled
+
+    def _debug(self, msg: str) -> None:
+        """Print debug message if debug mode is enabled."""
+        if self.debug:
+            print(f"      [A*] {msg}")
+
     def set_occupied(self, positions: Set[Tuple[int, int, int]]) -> None:
         """Set which grid positions are occupied by buildings."""
         self.occupied = positions.copy()
+        if self.debug:
+            print(f"      [A*] Occupied cells: {len(self.occupied)}")
 
     def add_occupied(self, x: int, y: int, floor: int) -> None:
         """Mark a position as occupied."""
@@ -294,21 +307,39 @@ class BeltRouter:
 
         Returns list of (x, y, floor, move_type) where move_type indicates how to reach that position.
         """
+        if self.debug:
+            self._debug(f"find_path: {start} -> {goal}")
+
         if start == goal:
+            if self.debug:
+                self._debug(f"  start == goal, trivial path")
             return [(start[0], start[1], start[2], 'start')]
 
         if not self.is_valid(goal[0], goal[1], goal[2], shape_code, throughput):
-            # Goal is occupied (and can't merge), try adjacent cells
+            if self.debug:
+                self._debug(f"  FAIL: goal {goal} is blocked/invalid")
+                if goal in self.occupied:
+                    self._debug(f"    (goal is in occupied set)")
+            return None
+
+        # Check if start is valid (not inside a machine)
+        if not self.is_valid(start[0], start[1], start[2], shape_code, throughput):
+            if self.debug:
+                self._debug(f"  FAIL: start {start} is blocked/invalid")
+                if start in self.occupied:
+                    self._debug(f"    (start is in occupied set)")
             return None
 
         # A* algorithm
         open_set = [(0, start)]
+        nodes_explored = 0
         came_from: Dict[Tuple[int, int, int], Tuple[Tuple[int, int, int], str]] = {}
         g_score: Dict[Tuple[int, int, int], float] = {start: 0}
         f_score: Dict[Tuple[int, int, int], float] = {start: self.heuristic(start, goal)}
 
         while open_set:
             _, current = heapq.heappop(open_set)
+            nodes_explored += 1
 
             # Check if we reached the goal OR merged onto a path that reaches goal
             reached_goal = (current == goal)
@@ -333,10 +364,17 @@ class BeltRouter:
                         path.append((pos[0], pos[1], pos[2], move_type))
                     pos = prev_pos
                 path.append((pos[0], pos[1], pos[2], 'start'))
-                return list(reversed(path))
+                result = list(reversed(path))
+                if self.debug:
+                    method = "merged" if merged_to_goal else "direct"
+                    self._debug(f"  SUCCESS ({method}): {len(result)} steps, {nodes_explored} nodes explored")
+                    self._debug(f"  Path: {' -> '.join(f'({p[0]},{p[1]})' for p in result)}")
+                return result
 
             # Check if we should allow belt ports for this step
-            allow_port = allow_belt_ports and self.belt_ports_used < self.max_belt_ports
+            # Don't allow belt_port if we arrived here via belt_port (can't place sender on receiver)
+            arrived_via_belt_port = current in came_from and came_from[current][1] == 'belt_port'
+            allow_port = allow_belt_ports and self.belt_ports_used < self.max_belt_ports and not arrived_via_belt_port
 
             for nx, ny, nf, _, move_type in self.get_neighbors(current[0], current[1], current[2],
                                                                 allow_port, shape_code, throughput):
@@ -356,6 +394,8 @@ class BeltRouter:
                     f_score[neighbor] = tentative_g + self.heuristic(neighbor, goal)
                     heapq.heappush(open_set, (f_score[neighbor], neighbor))
 
+        if self.debug:
+            self._debug(f"  FAIL: no path found after {nodes_explored} nodes")
         return None  # No path found
 
     def find_path_with_stats(self, start: Tuple[int, int, int], goal: Tuple[int, int, int],

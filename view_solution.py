@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from shapez2_solver.evolution.cpsat_solver import solve_with_cpsat
 from shapez2_solver.evolution.foundation_config import FOUNDATION_SPECS, FoundationConfig
-from shapez2_solver.blueprint.building_types import BuildingType, Rotation
+from shapez2_solver.blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS
 
 
 class MockEvolution:
@@ -71,19 +71,41 @@ def render_ascii(candidate, spec, floor: int = 0, valid_cells=None):
                 if (x, y) not in valid_cells:
                     grid[y][x] = ' '
 
-    # Place buildings
+    # Place buildings with full footprint
     for b in candidate.buildings:
         if b.floor != floor:
             continue
 
         x, y = b.x, b.y
-        if 0 <= x < grid_w and 0 <= y < grid_h:
-            sym = ASCII_SYMBOLS.get(b.building_type)
-            if isinstance(sym, dict):
-                sym = sym.get(b.rotation, '?')
-            elif sym is None:
-                sym = '?'
-            grid[y][x] = sym
+
+        # Get building dimensions
+        spec_b = BUILDING_SPECS.get(b.building_type)
+        if spec_b:
+            base_w, base_h = spec_b.width, spec_b.height
+            # Swap dimensions for SOUTH/NORTH rotations
+            if b.rotation in (Rotation.SOUTH, Rotation.NORTH):
+                w, h = base_h, base_w
+            else:
+                w, h = base_w, base_h
+        else:
+            w, h = 1, 1
+
+        # Get symbol
+        sym = ASCII_SYMBOLS.get(b.building_type)
+        if isinstance(sym, dict):
+            sym = sym.get(b.rotation, '?')
+        elif sym is None:
+            sym = '?'
+
+        # Fill all cells the building occupies
+        for dy in range(h):
+            for dx in range(w):
+                px, py = x + dx, y + dy
+                if 0 <= px < grid_w and 0 <= py < grid_h:
+                    if dx == 0 and dy == 0:
+                        grid[py][px] = sym  # Origin gets the symbol
+                    else:
+                        grid[py][px] = '#'  # Other cells get '#'
 
     # Build output string
     lines = []
@@ -131,6 +153,8 @@ def main():
                         help="Show ASCII rendering instead of pygame")
     parser.add_argument("--floor", type=int, default=0,
                         help="Floor to display (for ASCII mode)")
+    parser.add_argument("--debug", "-d", action="store_true",
+                        help="Enable debug logging for system design and routing")
     args = parser.parse_args()
 
     # Check port limits
@@ -164,6 +188,7 @@ def main():
         verbose=True,
         enable_placement_feedback=False,  # Skip broken model
         enable_transformer_logging=False,  # Don't log this test
+        debug_routing=args.debug,  # Enable detailed routing debug output
     )
 
     if result:
@@ -185,16 +210,25 @@ def main():
 
             # Legend
             print("\nLegend:")
-            print("  → ← ↓ ↑  Belt (direction)")
+            print("  → ← ↓ ↑  Belt forward (direction of flow)")
             print("  L R      Belt turn left/right")
-            print("  ⬆ ⬇      Lift up/down")
-            print("  C c      Cutter / mirrored")
-            print("  S B b    Stacker / bent / bent mirrored")
+            print("  ⬆ ⬇      Lift up/down (between floors)")
+            print("  C c      Cutter (1x2) / mirrored")
+            print("  H        Half-cutter (1x1)")
+            print("  S        Stacker (1x1, 2 floors tall)")
+            print("  B b      Stacker bent / bent mirrored")
             print("  ↻ ↺ ⟲    Rotator CW/CCW/180")
-            print("  X U      Swapper / Unstacker")
-            print("  ⊳ ⊲      Belt port sender/receiver")
+            print("  X        Swapper (2x2)")
+            print("  U        Unstacker (1x1, 2 floors)")
+            print("  ⊳ ⊲      Belt port sender/receiver (teleport)")
+            print("  Y M      Splitter / Merger")
+            print("  #        Extended cell of multi-tile building")
             print("  .        Empty valid cell")
             print("  (space)  Invalid (outside foundation)")
+            print("\nCoordinates:")
+            print("  X = 0 is WEST edge (inputs)")
+            print(f"  X = {spec.grid_width-1} is EAST edge (outputs)")
+            print("  Y increases downward")
         else:
             # Pygame viewer
             print("Opening viewer...")

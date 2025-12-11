@@ -266,6 +266,16 @@ class GlobalBeltRouter:
         self.max_belt_throughput = max_belt_throughput if max_belt_throughput else BELT_THROUGHPUT_TIER5
         # For irregular foundations, only allow routing through valid cells
         self.valid_cells = valid_cells
+        self.debug = False
+
+    def set_debug(self, enabled: bool) -> None:
+        """Enable or disable debug logging."""
+        self.debug = enabled
+
+    def _debug(self, msg: str) -> None:
+        """Print debug message if debug mode is enabled."""
+        if self.debug:
+            print(f"      [GlobalRouter] {msg}")
 
     def _is_valid_cell(self, x: int, y: int, z: int) -> bool:
         """Check if cell is within bounds, not occupied, and in valid foundation area."""
@@ -675,6 +685,9 @@ class CPSATFullSolver:
         else:
             self.routing_mode = routing_mode
 
+        # Debug routing flag (set externally via solver.debug_routing = True)
+        self.debug_routing = False
+
         # Learning module integration
         self.enable_logging = enable_logging and HAS_LEARNING
         self.routing_logger = None
@@ -792,9 +805,9 @@ class CPSATFullSolver:
         if verbose:
             print("\nPhase 1: System Design")
 
-        machine_types = self._determine_machines()
+        machine_types = self._determine_machines(verbose=verbose)
 
-        if verbose:
+        if verbose and not verbose:  # Redundant now - logging is in _determine_machines
             print(f"Machines needed: {[m.name for m in machine_types]}")
 
         # Step 2: Iteratively solve placement + routing with feedback
@@ -1100,56 +1113,70 @@ class CPSATFullSolver:
 
         return best_solution
 
-    def _determine_machines(self) -> List[BuildingType]:
+    def _determine_machines(self, verbose: bool = False) -> List[BuildingType]:
         """
         Determine which machines are needed based on input/output shapes.
 
-        For throughput optimization:
-        - Use splitters (180 items/min) for pure splitting (no shape change)
-        - Use cutters (45 items/min) only when shape transformation is needed
-
-        This is a heuristic approach - a full CP-SAT encoding would model
-        the shape transformations as constraints.
+        Throughput reference (items/min):
+        - Belt: 180 (full speed)
+        - Splitter: 180 (1 in → 2 out, full speed)
+        - Merger: 180 (2 in → 1 out, full speed)
+        - Cutter: 45 max (need 4 per belt for saturation)
+        - Rotator: 90 max (need 2 per belt)
+        - Stacker: 30 max (need 6 per belt)
+        - Unstacker: 30 max (need 6 per belt)
         """
         import math
 
+        BELT_THROUGHPUT = 180  # items/min
+        CUTTER_THROUGHPUT = 45
+        SPLITTER_THROUGHPUT = 180
+
         machines = []
 
-        # Analyze transformation requirements
         num_outputs = len(self.output_shapes)
         num_inputs = len(self.input_shapes)
 
+        if verbose:
+            print(f"\n  ┌─ SYSTEM DESIGN ─────────────────────────────────────")
+            print(f"  │ Inputs: {num_inputs}")
+            for i, inp in enumerate(self.input_shapes):
+                print(f"  │   [{i}] {inp.to_code()} ({self._count_parts(inp)} parts)")
+            print(f"  │ Outputs: {num_outputs}")
+            for i, out in enumerate(self.output_shapes):
+                print(f"  │   [{i}] {out.to_code()} ({self._count_parts(out)} parts)")
+
         # Check if shape transformation is needed
         needs_shape_transformation = False
+        transformation_type = "none"
+
         if num_inputs > 0 and num_outputs > 0:
-            # For simplicity, check if any input differs from any output
             for inp in self.input_shapes:
                 for out in self.output_shapes:
                     if inp.to_code() != out.to_code():
                         inp_parts = self._count_parts(inp)
                         out_parts = self._count_parts(out)
-                        if inp_parts != out_parts:
+                        if out_parts < inp_parts:
                             needs_shape_transformation = True
+                            transformation_type = "cutting"
+                            break
+                        elif out_parts > inp_parts:
+                            needs_shape_transformation = True
+                            transformation_type = "stacking"
                             break
                 if needs_shape_transformation:
                     break
 
-        # Analyze if we need splitting based on shape transformation
-        # Even if num_outputs == num_inputs, we might need splitting if:
-        # - Each input produces multiple different transformed outputs
-        # - E.g., 1 full shape → 4 corners (needs 1→4 splitting per input)
+        if verbose:
+            print(f"  │ Shape transformation: {transformation_type}")
 
-        # Check if this is a "split each input into multiple outputs" scenario
-        splitting_needed = False
-        if needs_shape_transformation and num_inputs > 0 and num_outputs > 0:
-            # Count how many unique output shapes exist
-            unique_outputs = len(set(out.to_code() for out in self.output_shapes))
+        # Calculate outputs per input
+        outputs_per_input = num_outputs / num_inputs if num_inputs > 0 else 1
+        splitting_needed = outputs_per_input > 1
 
-            # If we have multiple unique outputs per input on average, we need splitting
-            if unique_outputs >= num_inputs:
-                # Assume each input should produce all unique outputs for maximum throughput
-                outputs_per_input = unique_outputs
-                splitting_needed = True
+        if verbose:
+            print(f"  │ Outputs per input: {outputs_per_input:.1f}")
+            print(f"  │ Splitting needed: {splitting_needed}")
 
         # Standard case: more outputs than inputs
         if not splitting_needed and num_outputs > num_inputs and num_inputs > 0:
@@ -1160,28 +1187,29 @@ class CPSATFullSolver:
         if splitting_needed and num_inputs > 0:
             if needs_shape_transformation:
                 # Need cutters for shape transformation
-                # For maximum throughput, create independent trees for each input
-                # Each tree: 1 input -> K outputs requires (2^depth - 1) cutters
-                # Total: num_inputs × cutters_per_tree
+                # Each cutter: 1 input → 2 outputs at 45 items/min max
+                # For binary tree: depth = ceil(log2(outputs_per_input))
+                # Cutters per tree = 2^depth - 1
 
-                # Calculate cutters needed per input tree
-                depth = int(math.ceil(math.log2(outputs_per_input)))  # Tree depth for one input
-                cutters_per_tree = (2 ** depth) - 1  # Cutters in one tree
-
-                # Create independent trees for each input (maximizes throughput)
+                depth = int(math.ceil(math.log2(max(2, outputs_per_input))))
+                cutters_per_tree = (2 ** depth) - 1
                 total_cutters = num_inputs * cutters_per_tree
+
+                if verbose:
+                    print(f"  │ Cutter tree: depth={depth}, cutters/tree={cutters_per_tree}")
+                    print(f"  │ Total cutters for splitting: {total_cutters}")
 
                 for _ in range(total_cutters):
                     machines.append(BuildingType.CUTTER)
             else:
-                # Just splitting, no transformation - use splitters for better throughput
-                # Splitters: 180 items/min (full belt speed) vs Cutters: 45 items/min
-                # Create independent splitter trees for each input
-
-                depth = int(math.ceil(math.log2(outputs_per_input)))
+                # Just splitting, no transformation - use splitters (180/min vs 45/min)
+                depth = int(math.ceil(math.log2(max(2, outputs_per_input))))
                 splitters_per_tree = (2 ** depth) - 1
-
                 total_splitters = num_inputs * splitters_per_tree
+
+                if verbose:
+                    print(f"  │ Splitter tree: depth={depth}, splitters/tree={splitters_per_tree}")
+                    print(f"  │ Total splitters: {total_splitters}")
 
                 for _ in range(total_splitters):
                     machines.append(BuildingType.SPLITTER)
@@ -1193,16 +1221,63 @@ class CPSATFullSolver:
                 out_parts = self._count_parts(out)
 
                 if out_parts < inp_parts:
-                    # Need to cut away parts
                     if BuildingType.CUTTER not in machines:
+                        if verbose:
+                            print(f"  │ Adding cutter for shape transformation")
                         machines.append(BuildingType.CUTTER)
                 elif out_parts > inp_parts:
-                    # Need to stack
-                    machines.append(BuildingType.STACKER_BENT)  # Use bent for better throughput (45 vs 30)
+                    if verbose:
+                        print(f"  │ Adding stacker for shape combination")
+                    machines.append(BuildingType.STACKER_BENT)
+
+        # Ensure at least one machine per input (each input needs its own processing)
+        # A cutter/splitter has 1 input, so we need at least num_inputs machines
+        machines_added = 0
+        while len(machines) < num_inputs:
+            if needs_shape_transformation:
+                machines.append(BuildingType.CUTTER)
+            else:
+                machines.append(BuildingType.SPLITTER)
+            machines_added += 1
+
+        if verbose and machines_added > 0:
+            print(f"  │ Added {machines_added} extra machines (1 per input minimum)")
 
         # Default: at least one machine for basic operations
         if not machines:
+            if verbose:
+                print(f"  │ Default: adding 1 cutter")
             machines.append(BuildingType.CUTTER)
+
+        # Calculate expected throughput
+        if verbose:
+            machine_counts = {}
+            for m in machines:
+                machine_counts[m.name] = machine_counts.get(m.name, 0) + 1
+
+            print(f"  │")
+            print(f"  │ Final machine list ({len(machines)} total):")
+            for name, count in sorted(machine_counts.items()):
+                spec = BUILDING_SPECS.get(BuildingType[name])
+                rate = spec.max_rate if spec else "?"
+                print(f"  │   {name}: {count} (each @ {rate}/min)")
+
+            # Throughput analysis
+            total_input_capacity = num_inputs * BELT_THROUGHPUT
+            if BuildingType.CUTTER in machines:
+                cutter_count = machine_counts.get('CUTTER', 0)
+                cutter_capacity = cutter_count * CUTTER_THROUGHPUT
+                saturation = min(100, cutter_capacity / total_input_capacity * 100) if total_input_capacity > 0 else 0
+                print(f"  │")
+                print(f"  │ Throughput analysis:")
+                print(f"  │   Input capacity: {total_input_capacity}/min ({num_inputs} belts)")
+                print(f"  │   Cutter capacity: {cutter_capacity}/min ({cutter_count} cutters)")
+                print(f"  │   Saturation: {saturation:.0f}%")
+                if saturation < 100:
+                    needed = math.ceil(total_input_capacity / CUTTER_THROUGHPUT)
+                    print(f"  │   NOTE: Need {needed} cutters for full saturation")
+
+            print(f"  └───────────────────────────────────────────────────────")
 
         return machines
 
@@ -1397,6 +1472,83 @@ class CPSATFullSolver:
                     no_y_overlap_top,
                     no_y_overlap_bottom,
                 ])
+
+        # Port accessibility constraints: ensure each machine's ports aren't blocked by other machine bodies
+        # (Note: output port -> input port chaining IS valid, but port inside body cell is NOT)
+        for i, bt_i in enumerate(machine_types):
+            ports_i = BUILDING_PORTS.get(bt_i, {'inputs': [(-1, 0, 0)], 'outputs': [(1, 0, 0)]})
+            all_ports_i = ports_i.get('inputs', []) + ports_i.get('outputs', [])
+
+            for j, bt_j in enumerate(machine_types):
+                if i == j:
+                    continue
+
+                spec_j = BUILDING_SPECS.get(bt_j)
+                w_j = spec_j.width if spec_j else 1
+                h_j = spec_j.height if spec_j else 1
+
+                # For each port of machine i, ensure it's not inside machine j's body
+                for port_idx, (rel_x, rel_y, rel_z) in enumerate(all_ports_i):
+                    # Port position depends on rotation - for simplicity, handle EAST rotation (rot=0)
+                    # For EAST: port is at (x + rel_x, y + rel_y)
+                    # Create constraint: if both on same floor with rot=0, port must be outside j's body
+
+                    # Same floor check
+                    same_floor_port = model.NewBoolVar(f'same_floor_port_{i}_{j}_{port_idx}')
+                    model.Add(machine_floor[i] + rel_z == machine_floor[j]).OnlyEnforceIf(same_floor_port)
+                    model.Add(machine_floor[i] + rel_z != machine_floor[j]).OnlyEnforceIf(same_floor_port.Not())
+
+                    # For rotation-aware port positions, we need to handle 4 cases
+                    # Rotation 0 (EAST): port at (x + rel_x, y + rel_y)
+                    # Rotation 1 (SOUTH): port at (x - rel_y, y + rel_x)
+                    # Rotation 2 (WEST): port at (x - rel_x, y - rel_y)
+                    # Rotation 3 (NORTH): port at (x + rel_y, y - rel_x)
+
+                    for rot_val in range(4):
+                        if rot_val == 0:  # EAST
+                            port_dx, port_dy = rel_x, rel_y
+                        elif rot_val == 1:  # SOUTH
+                            port_dx, port_dy = -rel_y, rel_x
+                        elif rot_val == 2:  # WEST
+                            port_dx, port_dy = -rel_x, -rel_y
+                        else:  # NORTH
+                            port_dx, port_dy = rel_y, -rel_x
+
+                        rot_match = model.NewBoolVar(f'rot_match_{i}_{j}_{port_idx}_{rot_val}')
+                        model.Add(machine_rotation[i] == rot_val).OnlyEnforceIf(rot_match)
+                        model.Add(machine_rotation[i] != rot_val).OnlyEnforceIf(rot_match.Not())
+
+                        # Port position: (xi + port_dx, yi + port_dy)
+                        # Must be outside j's body: [xj, xj+wj) x [yj, yj+hj)
+                        # Condition: port_x < xj OR port_x >= xj+wj OR port_y < yj OR port_y >= yj+hj
+
+                        # Get j's effective dimensions based on j's rotation
+                        eff_wj = machine_eff_width[j]
+                        eff_hj = machine_eff_height[j]
+
+                        port_left_of_j = model.NewBoolVar(f'port_left_{i}_{j}_{port_idx}_{rot_val}')
+                        port_right_of_j = model.NewBoolVar(f'port_right_{i}_{j}_{port_idx}_{rot_val}')
+                        port_above_j = model.NewBoolVar(f'port_above_{i}_{j}_{port_idx}_{rot_val}')
+                        port_below_j = model.NewBoolVar(f'port_below_{i}_{j}_{port_idx}_{rot_val}')
+
+                        # xi + port_dx < xj  =>  xi + port_dx + 1 <= xj
+                        model.Add(machine_x[i] + port_dx + 1 <= machine_x[j]).OnlyEnforceIf(port_left_of_j)
+                        # xi + port_dx >= xj + wj  =>  xi + port_dx >= xj + wj
+                        model.Add(machine_x[i] + port_dx >= machine_x[j] + eff_wj).OnlyEnforceIf(port_right_of_j)
+                        # yi + port_dy < yj
+                        model.Add(machine_y[i] + port_dy + 1 <= machine_y[j]).OnlyEnforceIf(port_above_j)
+                        # yi + port_dy >= yj + hj
+                        model.Add(machine_y[i] + port_dy >= machine_y[j] + eff_hj).OnlyEnforceIf(port_below_j)
+
+                        # If same floor AND this rotation, at least one separation must exist
+                        model.AddBoolOr([
+                            same_floor_port.Not(),
+                            rot_match.Not(),
+                            port_left_of_j,
+                            port_right_of_j,
+                            port_above_j,
+                            port_below_j,
+                        ])
 
         # For irregular foundations, constrain machines to valid positions
         if self.valid_cells is not None:
@@ -1842,6 +1994,7 @@ class CPSATFullSolver:
             use_belt_ports=True, max_belt_ports=4,
             valid_cells=self.valid_cells
         )
+        router.set_debug(self.debug_routing)
 
         # Mark machine positions as occupied (rotation-aware)
         occupied = set()
@@ -1917,34 +2070,54 @@ class CPSATFullSolver:
             if tree_idx < len(self.input_positions):
                 inp_x, inp_y, inp_floor, inp_side = self.input_positions[tree_idx]
 
-                # Start position inside grid from port
-                if inp_side == Side.WEST:
-                    start = (1, inp_y, inp_floor)
-                elif inp_side == Side.EAST:
-                    start = (self.grid_width - 2, inp_y, inp_floor)
-                elif inp_side == Side.NORTH:
-                    start = (inp_x, 1, inp_floor)
-                else:  # SOUTH
-                    start = (inp_x, self.grid_height - 2, inp_floor)
-
                 root_machine = tree_machines[0]
                 goal = machine_inputs[root_machine]
+
+                # Check if machine input port is adjacent to foundation input port
+                # If so, they're directly connected - no routing needed
+                if inp_side == Side.WEST:
+                    port_pos = (0, inp_y, inp_floor)
+                    directly_connected = (goal[0] == 0 and goal[1] == inp_y and goal[2] == inp_floor)
+                elif inp_side == Side.EAST:
+                    port_pos = (self.grid_width - 1, inp_y, inp_floor)
+                    directly_connected = (goal[0] == self.grid_width - 1 and goal[1] == inp_y and goal[2] == inp_floor)
+                elif inp_side == Side.NORTH:
+                    port_pos = (inp_x, 0, inp_floor)
+                    directly_connected = (goal[0] == inp_x and goal[1] == 0 and goal[2] == inp_floor)
+                else:  # SOUTH
+                    port_pos = (inp_x, self.grid_height - 1, inp_floor)
+                    directly_connected = (goal[0] == inp_x and goal[1] == self.grid_height - 1 and goal[2] == inp_floor)
 
                 if verbose:
                     print(f"    Input {tree_idx} -> Machine {root_machine}")
 
-                path = router.find_path(start, goal, allow_belt_ports=True)
-                if path:
-                    belts = router.path_to_belts(path)
-                    all_belts.extend(belts)
-                    for bx, by, bf, _, _ in belts:
-                        router.add_occupied(bx, by, bf)
+                if directly_connected:
+                    # Machine input port is at foundation port - no routing needed
                     if verbose:
-                        print(f"      Success: {len(belts)} belts")
+                        print(f"      Direct connection (no belts needed)")
                 else:
-                    all_success = False
-                    if verbose:
-                        print(f"      FAILED")
+                    # Need to route from inside the grid to machine input
+                    if inp_side == Side.WEST:
+                        start = (1, inp_y, inp_floor)
+                    elif inp_side == Side.EAST:
+                        start = (self.grid_width - 2, inp_y, inp_floor)
+                    elif inp_side == Side.NORTH:
+                        start = (inp_x, 1, inp_floor)
+                    else:  # SOUTH
+                        start = (inp_x, self.grid_height - 2, inp_floor)
+
+                    path = router.find_path(start, goal, allow_belt_ports=True)
+                    if path:
+                        belts = router.path_to_belts(path)
+                        all_belts.extend(belts)
+                        for bx, by, bf, _, _ in belts:
+                            router.add_occupied(bx, by, bf)
+                        if verbose:
+                            print(f"      Success: {len(belts)} belts")
+                    else:
+                        all_success = False
+                        if verbose:
+                            print(f"      FAILED")
 
             # Route tree internals and outputs
             if len(tree_machines) == 1:
@@ -2060,49 +2233,46 @@ class CPSATFullSolver:
             if verbose:
                 print(f"\n  Adding edge connection belts...")
 
+            # Track positions that already have belts
+            belt_positions = {(bx, by, bf) for bx, by, bf, _, _ in all_belts}
+            input_belts_added = 0
+            output_belts_added = 0
+
             # Add belts from input ports to first routing position
             for tree_idx, (inp_x, inp_y, inp_floor, inp_side) in enumerate(self.input_positions):
-                # Determine the first routing position (one tile inside)
-                if inp_side == Side.WEST:
-                    inner_pos = (1, inp_y, inp_floor)
-                    # Add belt from port to inner position
-                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.EAST))
-                elif inp_side == Side.EAST:
-                    inner_pos = (self.grid_width - 2, inp_y, inp_floor)
-                    # Add belt from port to inner position
-                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.WEST))
-                elif inp_side == Side.NORTH:
-                    inner_pos = (inp_x, 1, inp_floor)
-                    # Add belt from port to inner position
-                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.SOUTH))
-                else:  # SOUTH
-                    inner_pos = (inp_x, self.grid_height - 2, inp_floor)
-                    # Add belt from port to inner position
-                    all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.NORTH))
+                edge_pos = (inp_x, inp_y, inp_floor)
+                # Only add if not already occupied
+                if edge_pos not in belt_positions:
+                    if inp_side == Side.WEST:
+                        all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.EAST))
+                    elif inp_side == Side.EAST:
+                        all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.WEST))
+                    elif inp_side == Side.NORTH:
+                        all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.SOUTH))
+                    else:  # SOUTH
+                        all_belts.append((inp_x, inp_y, inp_floor, BuildingType.BELT_FORWARD, Rotation.NORTH))
+                    belt_positions.add(edge_pos)
+                    input_belts_added += 1
 
             # Add belts from last routing position to output ports
             for out_x, out_y, out_floor, out_side in self.output_positions:
-                # Determine the last routing position (one tile inside)
-                if out_side == Side.EAST:
-                    inner_pos = (self.grid_width - 2, out_y, out_floor)
-                    # Add belt from inner position to port
-                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.EAST))
-                elif out_side == Side.WEST:
-                    inner_pos = (1, out_y, out_floor)
-                    # Add belt from inner position to port
-                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.WEST))
-                elif out_side == Side.SOUTH:
-                    inner_pos = (out_x, self.grid_height - 2, out_floor)
-                    # Add belt from inner position to port
-                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.SOUTH))
-                else:  # NORTH
-                    inner_pos = (out_x, 1, out_floor)
-                    # Add belt from inner position to port
-                    all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.NORTH))
+                edge_pos = (out_x, out_y, out_floor)
+                # Only add if not already occupied
+                if edge_pos not in belt_positions:
+                    if out_side == Side.EAST:
+                        all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.EAST))
+                    elif out_side == Side.WEST:
+                        all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.WEST))
+                    elif out_side == Side.SOUTH:
+                        all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.SOUTH))
+                    else:  # NORTH
+                        all_belts.append((out_x, out_y, out_floor, BuildingType.BELT_FORWARD, Rotation.NORTH))
+                    belt_positions.add(edge_pos)
+                    output_belts_added += 1
 
             if verbose:
-                print(f"    Added {len(self.input_positions)} input edge belts")
-                print(f"    Added {len(self.output_positions)} output edge belts")
+                print(f"    Added {input_belts_added} input edge belts")
+                print(f"    Added {output_belts_added} output edge belts")
 
         return all_belts, all_success
 
@@ -2127,6 +2297,7 @@ class CPSATFullSolver:
             use_belt_ports=True, max_belt_ports=4,
             valid_cells=self.valid_cells
         )
+        router.set_debug(self.debug_routing)
 
         # Mark machine positions as occupied (rotation-aware)
         occupied = set()
@@ -2501,6 +2672,7 @@ class CPSATFullSolver:
             occupied, time_limit=time_limit,
             valid_cells=self.valid_cells
         )
+        router.set_debug(self.debug_routing)
 
         belts, success = router.route_all(connections, verbose=verbose)
 
@@ -2714,6 +2886,7 @@ class CPSATFullSolver:
                     occupied, time_limit=current_timeout,
                     valid_cells=self.valid_cells
                 )
+                tree_router.set_debug(self.debug_routing)
 
                 tree_belts, tree_success = tree_router.route_all(tree_connections, verbose=verbose)
 
@@ -2821,6 +2994,7 @@ class CPSATFullSolver:
                 use_belt_ports=True, max_belt_ports=4,
                 valid_cells=self.valid_cells
             )
+            router.set_debug(self.debug_routing)
             router.set_occupied(occupied.copy())
 
             all_belts = []
@@ -3320,6 +3494,7 @@ def solve_with_cpsat(
     max_machines: int = 10,
     time_limit: float = 60.0,
     verbose: bool = False,
+    debug_routing: bool = False,  # Enable detailed A* routing debug logs
     routing_mode: str = 'astar',  # 'astar', 'global', 'hybrid', or 'reroute'
     nogood_placements: List = None,  # Previous failed placements to exclude
     # Placement feedback learning
@@ -3360,6 +3535,7 @@ def solve_with_cpsat(
         enable_transformer_logging=enable_transformer_logging,
         transformer_db_path=transformer_db_path,
     )
+    solver.debug_routing = debug_routing  # Pass to solver for router creation
 
     solution = solver.solve(verbose=verbose, initial_nogoods=nogood_placements)
 
