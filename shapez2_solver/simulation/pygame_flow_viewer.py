@@ -410,6 +410,9 @@ class FlowViewer:
         # Draw toolbar
         self.draw_toolbar()
 
+        # Draw foundation outline and I/O zones first (behind buildings)
+        self.draw_foundation_features()
+
         # Draw grid
         self.draw_grid()
 
@@ -426,8 +429,109 @@ class FlowViewer:
         # Draw info panel
         self.draw_info_panel()
 
+    def draw_foundation_features(self):
+        """Draw foundation outline and valid I/O zones on edges."""
+        offset_y = self.toolbar_height
+        spec = FOUNDATION_SPECS[self.current_foundation_name]
+
+        # Draw foundation outline (thick border around the valid build area)
+        outline_rect = pygame.Rect(
+            0,
+            offset_y,
+            self.grid_width * self.cell_size,
+            self.grid_height * self.cell_size
+        )
+        pygame.draw.rect(self.screen, (100, 150, 100), outline_rect, 3)
+
+        # Draw I/O port zones on edges
+        # Each edge has ports centered on each 1x1 unit (4 ports per unit)
+        # Ports are at positions 3, 5, 8, 10 within each 14-tile unit
+
+        # Get port positions per side
+        io_zone_color = (60, 80, 60)  # Dark green for I/O zones
+        io_highlight_color = (80, 120, 80)  # Lighter when in input/output mode
+
+        # Highlight color based on mode
+        if self.mode in ("input", "output"):
+            zone_color = io_highlight_color
+        else:
+            zone_color = io_zone_color
+
+        # Calculate port positions for each side
+        # Ports are at fixed offsets within each 14-tile unit section
+        port_offsets = [3, 5, 8, 10]  # Grid positions within each unit
+
+        # WEST edge (x = -1, ports feed into x = 0)
+        for unit in range(spec.units_y):
+            unit_start = unit * 20 if unit > 0 else 0
+            for offset in port_offsets:
+                port_y = unit_start + offset
+                if port_y < self.grid_height:
+                    rect = pygame.Rect(
+                        0,
+                        offset_y + port_y * self.cell_size,
+                        self.cell_size // 4,
+                        self.cell_size
+                    )
+                    pygame.draw.rect(self.screen, zone_color, rect)
+
+        # EAST edge (ports at x = grid_width)
+        for unit in range(spec.units_y):
+            unit_start = unit * 20 if unit > 0 else 0
+            for offset in port_offsets:
+                port_y = unit_start + offset
+                if port_y < self.grid_height:
+                    rect = pygame.Rect(
+                        self.grid_width * self.cell_size - self.cell_size // 4,
+                        offset_y + port_y * self.cell_size,
+                        self.cell_size // 4,
+                        self.cell_size
+                    )
+                    pygame.draw.rect(self.screen, zone_color, rect)
+
+        # NORTH edge (y = -1, ports feed into y = 0)
+        for unit in range(spec.units_x):
+            unit_start = unit * 20 if unit > 0 else 0
+            for offset in port_offsets:
+                port_x = unit_start + offset
+                if port_x < self.grid_width:
+                    rect = pygame.Rect(
+                        port_x * self.cell_size,
+                        offset_y,
+                        self.cell_size,
+                        self.cell_size // 4
+                    )
+                    pygame.draw.rect(self.screen, zone_color, rect)
+
+        # SOUTH edge (ports at y = grid_height)
+        for unit in range(spec.units_x):
+            unit_start = unit * 20 if unit > 0 else 0
+            for offset in port_offsets:
+                port_x = unit_start + offset
+                if port_x < self.grid_width:
+                    rect = pygame.Rect(
+                        port_x * self.cell_size,
+                        offset_y + self.grid_height * self.cell_size - self.cell_size // 4,
+                        self.cell_size,
+                        self.cell_size // 4
+                    )
+                    pygame.draw.rect(self.screen, zone_color, rect)
+
+        # Draw corner markers to show foundation extent
+        corner_size = 8
+        corner_color = (150, 200, 150)
+        corners = [
+            (0, offset_y),  # Top-left
+            (self.grid_width * self.cell_size - corner_size, offset_y),  # Top-right
+            (0, offset_y + self.grid_height * self.cell_size - corner_size),  # Bottom-left
+            (self.grid_width * self.cell_size - corner_size,
+             offset_y + self.grid_height * self.cell_size - corner_size),  # Bottom-right
+        ]
+        for cx, cy in corners:
+            pygame.draw.rect(self.screen, corner_color, (cx, cy, corner_size, corner_size))
+
     def draw_preview(self):
-        """Draw a ghost preview of the building at cursor position."""
+        """Draw a ghost preview of the building at cursor position with full size."""
         if self.mode != "place":
             return
 
@@ -439,25 +543,90 @@ class FlowViewer:
             return
 
         offset_y = self.toolbar_height
-        rect = pygame.Rect(
-            grid_x * self.cell_size,
-            offset_y + grid_y * self.cell_size,
-            self.cell_size - 1,
-            self.cell_size - 1
-        )
 
-        # Draw semi-transparent preview
+        # Get building dimensions
+        spec = BUILDING_SPECS.get(self.selected_building)
+        base_w = spec.width if spec else 1
+        base_h = spec.height if spec else 1
+        depth = spec.depth if spec else 1
+
+        # Adjust for rotation
+        if self.current_rotation in (Rotation.SOUTH, Rotation.NORTH):
+            eff_w, eff_h = base_h, base_w
+        else:
+            eff_w, eff_h = base_w, base_h
+
+        # Check if placement is valid
+        can_place = self._can_place_building(grid_x, grid_y, self.current_floor)
         preview_color = BUILDING_COLORS.get(self.selected_building, GRAY)
-        # Create a surface for alpha blending
-        preview_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-        preview_surface.fill((*preview_color, 128))  # 50% transparent
-        self.screen.blit(preview_surface, rect.topleft)
+        outline_color = GREEN if can_place else RED
 
-        # Draw building symbol on top
-        self.draw_building_symbol(rect, self.selected_building, self.current_rotation)
+        # Draw all cells the building will occupy
+        for dx in range(eff_w):
+            for dy in range(eff_h):
+                cell_x = grid_x + dx
+                cell_y = grid_y + dy
 
-        # Draw outline
-        pygame.draw.rect(self.screen, WHITE, rect, 2)
+                if cell_x >= self.grid_width or cell_y >= self.grid_height:
+                    continue
+
+                rect = pygame.Rect(
+                    cell_x * self.cell_size,
+                    offset_y + cell_y * self.cell_size,
+                    self.cell_size - 1,
+                    self.cell_size - 1
+                )
+
+                # Draw semi-transparent preview
+                preview_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                alpha = 100 if can_place else 60
+                preview_surface.fill((*preview_color, alpha))
+                self.screen.blit(preview_surface, rect.topleft)
+
+                # Draw building symbol only on origin cell
+                if dx == 0 and dy == 0:
+                    self.draw_building_symbol(rect, self.selected_building, self.current_rotation)
+
+                # Draw cell outline
+                pygame.draw.rect(self.screen, outline_color, rect, 2)
+
+        # Draw multi-floor indicator if building spans floors
+        if depth > 1:
+            text = self.font_small.render(f"+{depth-1}F", True, YELLOW)
+            self.screen.blit(text, (grid_x * self.cell_size + 2, offset_y + grid_y * self.cell_size + 2))
+
+        # Show input/output port positions for preview
+        if spec and self.selected_building in BUILDING_PORTS:
+            ports_def = BUILDING_PORTS[self.selected_building]
+            # Show input ports
+            for rel_x, rel_y, rel_z in ports_def.get('inputs', []):
+                rot_x, rot_y = self._rotate_offset(rel_x, rel_y)
+                port_x = grid_x + rot_x
+                port_y = grid_y + rot_y
+                if 0 <= port_x < self.grid_width and 0 <= port_y < self.grid_height:
+                    px = port_x * self.cell_size + self.cell_size // 2
+                    py = offset_y + port_y * self.cell_size + self.cell_size // 2
+                    pygame.draw.circle(self.screen, CYAN, (px, py), 6, 2)
+            # Show output ports
+            for rel_x, rel_y, rel_z in ports_def.get('outputs', []):
+                rot_x, rot_y = self._rotate_offset(rel_x, rel_y)
+                port_x = grid_x + rot_x
+                port_y = grid_y + rot_y
+                if 0 <= port_x < self.grid_width and 0 <= port_y < self.grid_height:
+                    px = port_x * self.cell_size + self.cell_size // 2
+                    py = offset_y + port_y * self.cell_size + self.cell_size // 2
+                    pygame.draw.circle(self.screen, ORANGE, (px, py), 6, 2)
+
+    def _rotate_offset(self, dx: int, dy: int) -> Tuple[int, int]:
+        """Rotate a relative offset by current rotation."""
+        if self.current_rotation == Rotation.EAST:
+            return (dx, dy)
+        elif self.current_rotation == Rotation.SOUTH:
+            return (-dy, dx)
+        elif self.current_rotation == Rotation.WEST:
+            return (-dx, -dy)
+        else:  # NORTH
+            return (dy, -dx)
 
     def draw_port_labels(self):
         """Draw input/output port labels for machines on the machine edges."""
