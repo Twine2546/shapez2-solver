@@ -81,11 +81,11 @@ class FlowViewer:
         self.num_floors = num_floors
 
         self.cell_size = 40
-        self.sidebar_width = 320
+        self.sidebar_width = 350
         self.toolbar_height = 60
 
         self.screen_width = self.grid_width * self.cell_size + self.sidebar_width
-        self.screen_height = self.grid_height * self.cell_size + self.toolbar_height + 200  # Extra for info
+        self.screen_height = max(800, self.grid_height * self.cell_size + self.toolbar_height + 220)  # Ensure minimum height
 
         self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
         pygame.display.set_caption("Flow Simulator - Interactive")
@@ -119,14 +119,19 @@ class FlowViewer:
             BuildingType.LIFT_UP,
             BuildingType.LIFT_DOWN,
             BuildingType.CUTTER,
+            BuildingType.CUTTER_MIRRORED,
             BuildingType.HALF_CUTTER,
             BuildingType.ROTATOR_CW,
             BuildingType.ROTATOR_CCW,
             BuildingType.ROTATOR_180,
             BuildingType.STACKER,
+            BuildingType.STACKER_BENT,
+            BuildingType.STACKER_BENT_MIRRORED,
             BuildingType.UNSTACKER,
             BuildingType.SWAPPER,
             BuildingType.SPLITTER,
+            BuildingType.SPLITTER_LEFT,
+            BuildingType.SPLITTER_RIGHT,
             BuildingType.MERGER,
             BuildingType.PAINTER,
         ]
@@ -355,40 +360,56 @@ class FlowViewer:
         pygame.draw.rect(self.screen, WHITE, rect, 2)
 
     def draw_port_labels(self):
-        """Draw input/output port labels for machines."""
+        """Draw input/output port labels for machines on the machine edges."""
         offset_y = self.toolbar_height
 
         for origin, machine in self.sim.machines.items():
-            if origin[2] != self.current_floor:
+            ox, oy, oz = origin
+            if oz != self.current_floor:
                 continue
 
-            # Draw input ports
+            # Machine center position on screen
+            mcx = ox * self.cell_size + self.cell_size // 2
+            mcy = offset_y + oy * self.cell_size + self.cell_size // 2
+
+            # Draw input ports - show on machine edge pointing towards port
             for port in machine.input_ports:
                 px, py, pz = port['position']
                 if pz != self.current_floor:
                     continue
-                # Check if port position is on grid
-                if 0 <= px < self.grid_width and 0 <= py < self.grid_height:
-                    cx = px * self.cell_size + self.cell_size // 2
-                    cy = offset_y + py * self.cell_size + self.cell_size // 2
-                    # Draw small "IN" label
-                    pygame.draw.circle(self.screen, CYAN, (cx, cy), 8)
-                    text = self.font_small.render("I", True, BLACK)
-                    self.screen.blit(text, (cx - 3, cy - 5))
+
+                # Calculate direction from machine to port
+                dx = px - ox
+                dy = py - oy
+
+                # Draw label on machine edge in direction of port
+                label_x = mcx + dx * (self.cell_size // 2 - 5)
+                label_y = mcy + dy * (self.cell_size // 2 - 5)
+
+                # Draw small "I" label (input)
+                pygame.draw.circle(self.screen, CYAN, (int(label_x), int(label_y)), 7)
+                text = self.font_small.render("I", True, BLACK)
+                self.screen.blit(text, (label_x - 3, label_y - 5))
 
             # Draw output ports
             for port in machine.output_ports:
                 px, py, pz = port['position']
                 if pz != self.current_floor:
                     continue
-                if 0 <= px < self.grid_width and 0 <= py < self.grid_height:
-                    cx = px * self.cell_size + self.cell_size // 2
-                    cy = offset_y + py * self.cell_size + self.cell_size // 2
-                    # Draw small "OUT" label
-                    color = RED if port.get('backed_up') else ORANGE
-                    pygame.draw.circle(self.screen, color, (cx, cy), 8)
-                    text = self.font_small.render("O", True, BLACK)
-                    self.screen.blit(text, (cx - 3, cy - 5))
+
+                # Calculate direction from machine to port
+                dx = px - ox
+                dy = py - oy
+
+                # Draw label on machine edge in direction of port
+                label_x = mcx + dx * (self.cell_size // 2 - 5)
+                label_y = mcy + dy * (self.cell_size // 2 - 5)
+
+                # Draw small "O" label (output)
+                color = RED if port.get('backed_up') else ORANGE
+                pygame.draw.circle(self.screen, color, (int(label_x), int(label_y)), 7)
+                text = self.font_small.render("O", True, BLACK)
+                self.screen.blit(text, (label_x - 3, label_y - 5))
     
     def draw_toolbar(self):
         """Draw top toolbar."""
