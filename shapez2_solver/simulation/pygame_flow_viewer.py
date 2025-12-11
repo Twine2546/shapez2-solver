@@ -38,11 +38,37 @@ BUILDING_COLORS = {
     BuildingType.BELT_LEFT: (100, 100, 120),
     BuildingType.BELT_RIGHT: (100, 100, 120),
     BuildingType.CUTTER: (200, 100, 100),
+    BuildingType.CUTTER_MIRRORED: (200, 100, 100),
+    BuildingType.HALF_CUTTER: (180, 80, 80),
     BuildingType.ROTATOR_CW: (100, 200, 100),
     BuildingType.ROTATOR_CCW: (100, 200, 100),
+    BuildingType.ROTATOR_180: (80, 180, 80),
     BuildingType.STACKER: (100, 100, 200),
+    BuildingType.STACKER_BENT: (100, 100, 200),
+    BuildingType.UNSTACKER: (80, 80, 180),
+    BuildingType.SWAPPER: (180, 180, 100),
     BuildingType.SPLITTER: (200, 200, 100),
+    BuildingType.SPLITTER_LEFT: (200, 200, 100),
+    BuildingType.SPLITTER_RIGHT: (200, 200, 100),
     BuildingType.MERGER: (200, 100, 200),
+    BuildingType.PAINTER: (100, 180, 180),
+    BuildingType.BELT_PORT_SENDER: (150, 100, 200),
+    BuildingType.BELT_PORT_RECEIVER: (200, 100, 150),
+    BuildingType.LIFT_UP: (150, 150, 200),
+    BuildingType.LIFT_DOWN: (200, 150, 150),
+}
+
+# Shape colors for visualization
+SHAPE_COLORS = {
+    "Cu": (200, 150, 100),   # Copper
+    "Ru": (200, 80, 80),     # Ruby/Red
+    "Gr": (80, 200, 80),     # Green
+    "Bl": (80, 80, 200),     # Blue
+    "Cy": (80, 200, 200),    # Cyan
+    "Pu": (200, 80, 200),    # Purple
+    "Ye": (200, 200, 80),    # Yellow
+    "Wh": (240, 240, 240),   # White
+    "--": (40, 40, 40),      # Empty
 }
 
 
@@ -79,18 +105,30 @@ class FlowViewer:
         self.sim = FlowSimulator(width, height, num_floors)
         self.last_report = None
         
-        # Building palette
+        # Building palette - expanded with all useful building types
         self.building_palette = [
             BuildingType.BELT_FORWARD,
             BuildingType.BELT_LEFT,
             BuildingType.BELT_RIGHT,
+            BuildingType.BELT_PORT_SENDER,
+            BuildingType.BELT_PORT_RECEIVER,
+            BuildingType.LIFT_UP,
+            BuildingType.LIFT_DOWN,
             BuildingType.CUTTER,
+            BuildingType.HALF_CUTTER,
             BuildingType.ROTATOR_CW,
             BuildingType.ROTATOR_CCW,
+            BuildingType.ROTATOR_180,
+            BuildingType.STACKER,
+            BuildingType.UNSTACKER,
+            BuildingType.SWAPPER,
             BuildingType.SPLITTER,
             BuildingType.MERGER,
-            BuildingType.STACKER,
+            BuildingType.PAINTER,
         ]
+
+        # Toggle for showing shapes on belts
+        self.show_shapes = True
         
         self.clock = pygame.time.Clock()
     
@@ -191,9 +229,21 @@ class FlowViewer:
             self.last_report = None
         elif key == pygame.K_s:
             # Cycle through shapes
-            shapes = ["CuCuCuCu", "Cu------", "CuCu----", "----CuCu", "RuRuRuRu"]
+            shapes = ["CuCuCuCu", "Cu------", "CuCu----", "----CuCu", "RuRuRuRu",
+                      "GrGrGrGr", "BlBlBlBl", "Cu--Cu--", "--Cu--Cu"]
             idx = shapes.index(self.input_shape) if self.input_shape in shapes else 0
             self.input_shape = shapes[(idx + 1) % len(shapes)]
+        elif key == pygame.K_v:
+            # Toggle shape visualization
+            self.show_shapes = not self.show_shapes
+        elif key == pygame.K_PAGEUP:
+            # Scroll building palette up
+            current_idx = self.building_palette.index(self.selected_building)
+            self.selected_building = self.building_palette[max(0, current_idx - 1)]
+        elif key == pygame.K_PAGEDOWN:
+            # Scroll building palette down
+            current_idx = self.building_palette.index(self.selected_building)
+            self.selected_building = self.building_palette[min(len(self.building_palette) - 1, current_idx + 1)]
     
     def draw(self):
         """Draw everything."""
@@ -236,10 +286,39 @@ class FlowViewer:
         shape_text = self.font.render(f"Shape(S): {self.input_shape}", True, YELLOW)
         self.screen.blit(shape_text, (350, 40))
     
+    def draw_shape_mini(self, rect: pygame.Rect, shape: str):
+        """Draw a mini shape visualization in the cell."""
+        if not shape or shape == "--------":
+            return
+
+        # Shape format: TLTRBLBR (8 chars, pairs for each quarter)
+        # Draw 4 small squares representing the shape quarters
+        qw = rect.width // 4
+        qh = rect.height // 4
+        margin = 2
+
+        quarters = []
+        if len(shape) >= 8:
+            quarters = [shape[0:2], shape[2:4], shape[4:6], shape[6:8]]
+        elif len(shape) >= 4:
+            quarters = [shape[0:1] + "-", shape[1:2] + "-", shape[2:3] + "-", shape[3:4] + "-"]
+
+        positions = [
+            (rect.x + margin, rect.y + margin),           # TL
+            (rect.x + rect.width - qw - margin, rect.y + margin),  # TR
+            (rect.x + margin, rect.y + rect.height - qh - margin),  # BL
+            (rect.x + rect.width - qw - margin, rect.y + rect.height - qh - margin),  # BR
+        ]
+
+        for i, (q, (qx, qy)) in enumerate(zip(quarters, positions)):
+            color = SHAPE_COLORS.get(q, SHAPE_COLORS.get("--", (40, 40, 40)))
+            if q != "--":
+                pygame.draw.rect(self.screen, color, (qx, qy, qw - 1, qh - 1))
+
     def draw_grid(self):
         """Draw the placement grid."""
         offset_y = self.toolbar_height
-        
+
         # Draw cells
         for y in range(self.grid_height):
             for x in range(self.grid_width):
@@ -249,10 +328,10 @@ class FlowViewer:
                     self.cell_size - 1,
                     self.cell_size - 1
                 )
-                
+
                 pos = (x, y, self.current_floor)
                 cell = self.sim.cells.get(pos)
-                
+
                 # Background color
                 if cell and cell.building_type:
                     color = BUILDING_COLORS.get(cell.building_type, GRAY)
@@ -262,31 +341,62 @@ class FlowViewer:
                         color = tuple(min(255, c + 50) for c in color)
                 else:
                     color = (40, 40, 40)
-                
+
                 pygame.draw.rect(self.screen, color, rect)
-                
+
                 # Draw building symbol
                 if cell and cell.building_type:
                     self.draw_building_symbol(rect, cell.building_type, cell.rotation)
-                    
-                    # Draw throughput if flowing
+
+                    # Draw shape visualization if flowing
+                    if cell.throughput > 0 and cell.shape and self.show_shapes:
+                        self.draw_shape_mini(rect, cell.shape)
+
+                    # Draw throughput number
                     if cell.throughput > 0:
                         tp_text = self.font_small.render(f"{cell.throughput:.0f}", True, YELLOW)
                         self.screen.blit(tp_text, (rect.x + 2, rect.y + rect.height - 12))
-                
+
+                        # Draw utilization bar
+                        bar_width = int((rect.width - 4) * min(1.0, cell.utilization / 100))
+                        bar_color = GREEN if cell.utilization < 80 else (YELLOW if cell.utilization < 100 else RED)
+                        pygame.draw.rect(self.screen, bar_color,
+                                        (rect.x + 2, rect.y + rect.height - 4, bar_width, 3))
+
                 # Check for inputs/outputs
                 for inp in self.sim.inputs:
                     if inp['position'] == pos:
-                        pygame.draw.circle(self.screen, GREEN, rect.center, 8)
-                        text = self.font_small.render("IN", True, BLACK)
-                        self.screen.blit(text, (rect.centerx - 8, rect.centery - 5))
-                
+                        pygame.draw.circle(self.screen, GREEN, rect.center, 10, 2)
+                        # Draw input shape
+                        if self.show_shapes:
+                            self.draw_shape_mini(rect, inp['shape'])
+                        text = self.font_small.render("IN", True, GREEN)
+                        self.screen.blit(text, (rect.centerx - 8, rect.y + 2))
+
                 for out in self.sim.outputs:
                     if out['position'] == pos:
-                        pygame.draw.circle(self.screen, RED, rect.center, 8)
-                        text = self.font_small.render("OUT", True, BLACK)
-                        self.screen.blit(text, (rect.centerx - 10, rect.centery - 5))
-        
+                        pygame.draw.circle(self.screen, RED, rect.center, 10, 2)
+                        # Draw output shape if received
+                        if self.show_shapes and out.get('actual_shape'):
+                            self.draw_shape_mini(rect, out['actual_shape'])
+                        text = self.font_small.render("OUT", True, RED)
+                        self.screen.blit(text, (rect.centerx - 10, rect.y + 2))
+
+        # Draw flow paths (lines connecting traced paths)
+        if hasattr(self.sim, 'traced_paths') and self.sim.traced_paths:
+            for path in self.sim.traced_paths:
+                if len(path) < 2:
+                    continue
+                # Only draw paths on current floor
+                path_on_floor = [(p[0], p[1]) for p in path if p[2] == self.current_floor]
+                if len(path_on_floor) >= 2:
+                    points = [
+                        (p[0] * self.cell_size + self.cell_size // 2,
+                         offset_y + p[1] * self.cell_size + self.cell_size // 2)
+                        for p in path_on_floor
+                    ]
+                    pygame.draw.lines(self.screen, (100, 255, 100, 128), False, points, 2)
+
         # Draw grid lines
         for x in range(self.grid_width + 1):
             pygame.draw.line(
@@ -304,7 +414,7 @@ class FlowViewer:
     def draw_building_symbol(self, rect: pygame.Rect, bt: BuildingType, rotation: Rotation):
         """Draw a building's symbol."""
         cx, cy = rect.center
-        
+
         if bt == BuildingType.BELT_FORWARD:
             # Arrow
             if rotation == Rotation.EAST:
@@ -316,24 +426,93 @@ class FlowViewer:
             else:
                 points = [(cx, cy + 10), (cx, cy - 5), (cx - 5, cy - 5), (cx, cy - 12), (cx + 5, cy - 5), (cx, cy - 5)]
             pygame.draw.polygon(self.screen, WHITE, points)
-        
-        elif bt == BuildingType.CUTTER:
+
+        elif bt == BuildingType.BELT_LEFT:
+            # Curved arrow left
+            pygame.draw.arc(self.screen, WHITE, (cx - 12, cy - 12, 24, 24), 0, 1.57, 2)
+            text = self.font_small.render("L", True, WHITE)
+            self.screen.blit(text, (cx - 3, cy - 5))
+
+        elif bt == BuildingType.BELT_RIGHT:
+            # Curved arrow right
+            pygame.draw.arc(self.screen, WHITE, (cx - 12, cy - 12, 24, 24), 1.57, 3.14, 2)
+            text = self.font_small.render("R", True, WHITE)
+            self.screen.blit(text, (cx - 3, cy - 5))
+
+        elif bt == BuildingType.BELT_PORT_SENDER:
+            # Triangle pointing in direction (sender)
+            pygame.draw.polygon(self.screen, CYAN, [(cx - 8, cy - 8), (cx + 10, cy), (cx - 8, cy + 8)])
+            text = self.font_small.render("⊳", True, WHITE)
+            self.screen.blit(text, (cx - 4, cy - 6))
+
+        elif bt == BuildingType.BELT_PORT_RECEIVER:
+            # Triangle pointing inward (receiver)
+            pygame.draw.polygon(self.screen, PURPLE, [(cx + 8, cy - 8), (cx - 10, cy), (cx + 8, cy + 8)])
+            text = self.font_small.render("⊲", True, WHITE)
+            self.screen.blit(text, (cx - 4, cy - 6))
+
+        elif bt == BuildingType.LIFT_UP:
+            # Up arrow with vertical bar
+            pygame.draw.line(self.screen, WHITE, (cx, cy + 8), (cx, cy - 8), 2)
+            pygame.draw.polygon(self.screen, WHITE, [(cx, cy - 12), (cx - 6, cy - 4), (cx + 6, cy - 4)])
+            text = self.font_small.render("↑", True, WHITE)
+            self.screen.blit(text, (cx - 4, cy - 5))
+
+        elif bt == BuildingType.LIFT_DOWN:
+            # Down arrow with vertical bar
+            pygame.draw.line(self.screen, WHITE, (cx, cy - 8), (cx, cy + 8), 2)
+            pygame.draw.polygon(self.screen, WHITE, [(cx, cy + 12), (cx - 6, cy + 4), (cx + 6, cy + 4)])
+            text = self.font_small.render("↓", True, WHITE)
+            self.screen.blit(text, (cx - 4, cy - 5))
+
+        elif bt in (BuildingType.CUTTER, BuildingType.CUTTER_MIRRORED):
             pygame.draw.rect(self.screen, WHITE, (cx - 8, cy - 8, 16, 16), 2)
             text = self.font.render("C", True, WHITE)
             self.screen.blit(text, (cx - 4, cy - 7))
-        
-        elif bt in (BuildingType.ROTATOR_CW, BuildingType.ROTATOR_CCW):
+
+        elif bt == BuildingType.HALF_CUTTER:
+            pygame.draw.rect(self.screen, WHITE, (cx - 8, cy - 8, 16, 16), 2)
+            text = self.font_small.render("HC", True, WHITE)
+            self.screen.blit(text, (cx - 7, cy - 5))
+
+        elif bt in (BuildingType.ROTATOR_CW, BuildingType.ROTATOR_CCW, BuildingType.ROTATOR_180):
             pygame.draw.circle(self.screen, WHITE, (cx, cy), 10, 2)
-            symbol = "↻" if bt == BuildingType.ROTATOR_CW else "↺"
+            if bt == BuildingType.ROTATOR_CW:
+                symbol = "↻"
+            elif bt == BuildingType.ROTATOR_CCW:
+                symbol = "↺"
+            else:
+                symbol = "⟲"
             text = self.font.render(symbol, True, WHITE)
             self.screen.blit(text, (cx - 6, cy - 8))
-        
-        elif bt == BuildingType.SPLITTER:
+
+        elif bt in (BuildingType.STACKER, BuildingType.STACKER_BENT):
+            pygame.draw.rect(self.screen, WHITE, (cx - 8, cy - 8, 16, 16), 2)
+            # Stack symbol - two horizontal lines
+            pygame.draw.line(self.screen, WHITE, (cx - 5, cy - 3), (cx + 5, cy - 3), 2)
+            pygame.draw.line(self.screen, WHITE, (cx - 5, cy + 3), (cx + 5, cy + 3), 2)
+
+        elif bt == BuildingType.UNSTACKER:
+            pygame.draw.rect(self.screen, WHITE, (cx - 8, cy - 8, 16, 16), 2)
+            text = self.font_small.render("US", True, WHITE)
+            self.screen.blit(text, (cx - 7, cy - 5))
+
+        elif bt == BuildingType.SWAPPER:
+            pygame.draw.rect(self.screen, WHITE, (cx - 8, cy - 8, 16, 16), 2)
+            # X symbol for swap
+            pygame.draw.line(self.screen, WHITE, (cx - 5, cy - 5), (cx + 5, cy + 5), 2)
+            pygame.draw.line(self.screen, WHITE, (cx + 5, cy - 5), (cx - 5, cy + 5), 2)
+
+        elif bt in (BuildingType.SPLITTER, BuildingType.SPLITTER_LEFT, BuildingType.SPLITTER_RIGHT):
             pygame.draw.polygon(self.screen, WHITE, [(cx - 8, cy - 8), (cx + 8, cy), (cx - 8, cy + 8)], 2)
-        
+
         elif bt == BuildingType.MERGER:
             pygame.draw.polygon(self.screen, WHITE, [(cx + 8, cy - 8), (cx - 8, cy), (cx + 8, cy + 8)], 2)
-        
+
+        elif bt == BuildingType.PAINTER:
+            pygame.draw.rect(self.screen, WHITE, (cx - 8, cy - 8, 16, 16), 2)
+            pygame.draw.circle(self.screen, CYAN, (cx, cy), 5)
+
         else:
             # Default: just draw first letter
             text = self.font.render(bt.name[0], True, WHITE)
@@ -369,10 +548,14 @@ class FlowViewer:
             "Right Click: Rotate",
             "1-4: Mode select",
             "R: Rotate",
-            "S: Cycle shape",
+            "S: Cycle input shape",
+            "V: Toggle shape view",
             "↑↓: Change floor",
+            "PgUp/Dn: Scroll bldgs",
             "Space: Simulate",
             "C: Clear all",
+            "",
+            f"Shapes: {'ON' if self.show_shapes else 'OFF'}",
         ]
         for line in controls:
             text = self.font_small.render(line, True, LIGHT_GRAY)
