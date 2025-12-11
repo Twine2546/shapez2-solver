@@ -791,7 +791,7 @@ class FlowSimulator:
             if pos in self.cells:
                 cell = self.cells[pos]
                 cell.shape = shape
-                cell.throughput = throughput  # Set initial throughput
+                cell.throughput += throughput  # ADD to existing throughput for merging
                 visited.add(pos)  # Mark as visited so trace doesn't double-count
                 path.append(pos)
 

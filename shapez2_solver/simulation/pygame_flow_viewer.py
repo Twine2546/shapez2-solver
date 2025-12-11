@@ -595,52 +595,60 @@ class FlowViewer:
             text = self.font_small.render(f"+{depth-1}F", True, YELLOW)
             self.screen.blit(text, (grid_x * self.cell_size + 2, offset_y + grid_y * self.cell_size + 2))
 
-        # Show input/output port positions for preview as full highlighted squares
+        # Show input/output ports as edge markers ON the machine cells
+        # Ports show which edge of the machine belts connect to
         if spec and self.selected_building in BUILDING_PORTS:
             ports_def = BUILDING_PORTS[self.selected_building]
-            # Show input ports as cyan highlighted squares
+            bar_thickness = 4
+
+            # Show input ports as cyan edge bars on the machine cell
             for rel_x, rel_y, rel_z in ports_def.get('inputs', []):
                 rot_x, rot_y = self._rotate_offset(rel_x, rel_y)
-                port_x = grid_x + rot_x
-                port_y = grid_y + rot_y
-                if 0 <= port_x < self.grid_width and 0 <= port_y < self.grid_height:
-                    port_rect = pygame.Rect(
-                        port_x * self.cell_size,
-                        offset_y + port_y * self.cell_size,
-                        self.cell_size - 1,
-                        self.cell_size - 1
-                    )
-                    # Semi-transparent cyan fill
-                    port_surface = pygame.Surface((port_rect.width, port_rect.height), pygame.SRCALPHA)
-                    port_surface.fill((0, 200, 200, 60))
-                    self.screen.blit(port_surface, port_rect.topleft)
-                    # Cyan border
-                    pygame.draw.rect(self.screen, CYAN, port_rect, 2)
-                    # "IN" label
-                    text = self.font_small.render("IN", True, CYAN)
-                    self.screen.blit(text, (port_rect.centerx - 8, port_rect.centery - 5))
+                # Port position is external - find the machine cell it connects to
+                # Input from (-1, 0) means machine cell (0, 0) has input on WEST edge
+                machine_cell_x = grid_x - rot_x  # Opposite of port direction
+                machine_cell_y = grid_y - rot_y
+                # But we need the cell relative to origin, so use the port direction to find edge
+                # Actually, let's draw on the machine cell that this port connects to
+                # For input at (-1,0), the machine cell at (0,0) has a west input edge
+                cell_x = grid_x  # Input connects to origin cell (adjusted by port offset gives external pos)
+                cell_y = grid_y + rot_y  # Y position within machine for multi-cell machines
 
-            # Show output ports as orange highlighted squares
+                if 0 <= cell_x < self.grid_width and 0 <= cell_y < self.grid_height:
+                    cx = cell_x * self.cell_size
+                    cy = offset_y + cell_y * self.cell_size
+                    # Determine which edge based on port offset direction
+                    if rot_x < 0:  # Port to west, input on west edge
+                        bar_rect = (cx, cy, bar_thickness, self.cell_size - 1)
+                    elif rot_x > 0:  # Port to east, input on east edge
+                        bar_rect = (cx + self.cell_size - bar_thickness - 1, cy, bar_thickness, self.cell_size - 1)
+                    elif rot_y < 0:  # Port to north, input on north edge
+                        bar_rect = (cx, cy, self.cell_size - 1, bar_thickness)
+                    else:  # Port to south, input on south edge
+                        bar_rect = (cx, cy + self.cell_size - bar_thickness - 1, self.cell_size - 1, bar_thickness)
+                    pygame.draw.rect(self.screen, CYAN, bar_rect)
+
+            # Show output ports as orange edge bars on the machine cell
             for idx, (rel_x, rel_y, rel_z) in enumerate(ports_def.get('outputs', [])):
                 rot_x, rot_y = self._rotate_offset(rel_x, rel_y)
-                port_x = grid_x + rot_x
-                port_y = grid_y + rot_y
-                if 0 <= port_x < self.grid_width and 0 <= port_y < self.grid_height:
-                    port_rect = pygame.Rect(
-                        port_x * self.cell_size,
-                        offset_y + port_y * self.cell_size,
-                        self.cell_size - 1,
-                        self.cell_size - 1
-                    )
-                    # Semi-transparent orange fill
-                    port_surface = pygame.Surface((port_rect.width, port_rect.height), pygame.SRCALPHA)
-                    port_surface.fill((255, 165, 0, 60))
-                    self.screen.blit(port_surface, port_rect.topleft)
-                    # Orange border
-                    pygame.draw.rect(self.screen, ORANGE, port_rect, 2)
-                    # Output number label
-                    text = self.font_small.render(f"O{idx}", True, ORANGE)
-                    self.screen.blit(text, (port_rect.centerx - 6, port_rect.centery - 5))
+                # For multi-cell machines, output position indicates which cell
+                # Output at (1, 0) means cell at origin, output at (1, 1) means cell at y+1
+                cell_x = grid_x
+                cell_y = grid_y + (rot_y if rot_x != 0 else 0)  # Y offset for vertical machines
+
+                if 0 <= cell_x < self.grid_width and 0 <= cell_y < self.grid_height:
+                    cx = cell_x * self.cell_size
+                    cy = offset_y + cell_y * self.cell_size
+                    # Determine which edge based on port offset direction
+                    if rot_x > 0:  # Output to east
+                        bar_rect = (cx + self.cell_size - bar_thickness - 1, cy, bar_thickness, self.cell_size - 1)
+                    elif rot_x < 0:  # Output to west
+                        bar_rect = (cx, cy, bar_thickness, self.cell_size - 1)
+                    elif rot_y > 0:  # Output to south
+                        bar_rect = (cx, cy + self.cell_size - bar_thickness - 1, self.cell_size - 1, bar_thickness)
+                    else:  # Output to north
+                        bar_rect = (cx, cy, self.cell_size - 1, bar_thickness)
+                    pygame.draw.rect(self.screen, ORANGE, bar_rect)
 
     def _rotate_offset(self, dx: int, dy: int) -> Tuple[int, int]:
         """Rotate a relative offset by current rotation."""
