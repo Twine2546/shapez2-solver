@@ -87,11 +87,19 @@ class FlowViewer:
         self.sidebar_width = 350
         self.toolbar_height = 60
 
-        self.screen_width = self.grid_width * self.cell_size + self.sidebar_width
-        self.screen_height = max(800, self.grid_height * self.cell_size + self.toolbar_height + 220)  # Ensure minimum height
+        # Fixed window size - grid scales to fit
+        self.screen_width = 1200
+        self.screen_height = 900
 
         self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
         pygame.display.set_caption("Flow Simulator - Interactive")
+
+        # Calculate initial cell size to fit grid
+        available_width = self.screen_width - self.sidebar_width - 20
+        available_height = self.screen_height - self.toolbar_height - 240
+        cell_size_for_width = available_width // self.grid_width
+        cell_size_for_height = available_height // self.grid_height
+        self.cell_size = max(8, min(cell_size_for_width, cell_size_for_height, 40))
 
         self.font = pygame.font.SysFont("monospace", 14)
         self.font_large = pygame.font.SysFont("monospace", 18, bold=True)
@@ -383,7 +391,7 @@ class FlowViewer:
         self.set_foundation(self.foundation_names[self.current_foundation_idx])
 
     def set_foundation(self, name: str):
-        """Set foundation by name and resize everything."""
+        """Set foundation by name and scale grid to fit window."""
         if name not in FOUNDATION_SPECS:
             return
 
@@ -397,11 +405,17 @@ class FlowViewer:
         self.sim = FlowSimulator(self.grid_width, self.grid_height, self.num_floors)
         self.last_report = None
 
-        # Resize window
-        self.screen_width = self.grid_width * self.cell_size + self.sidebar_width
-        self.screen_height = max(800, self.grid_height * self.cell_size + self.toolbar_height + 220)
-        self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
-        pygame.display.set_caption(f"Flow Simulator - {name} Foundation")
+        # Calculate cell size to fit grid in fixed window area
+        # Keep window size fixed, scale cell_size to fit the grid
+        available_width = self.screen_width - self.sidebar_width - 20  # 20px margin
+        available_height = self.screen_height - self.toolbar_height - 240  # Space for info panel
+
+        # Calculate cell size that fits both dimensions
+        cell_size_for_width = available_width // self.grid_width
+        cell_size_for_height = available_height // self.grid_height
+        self.cell_size = max(8, min(cell_size_for_width, cell_size_for_height, 40))  # Clamp between 8 and 40
+
+        pygame.display.set_caption(f"Flow Simulator - {name} Foundation ({self.grid_width}x{self.grid_height})")
     
     def draw(self):
         """Draw everything."""
@@ -434,14 +448,17 @@ class FlowViewer:
         offset_y = self.toolbar_height
         spec = FOUNDATION_SPECS[self.current_foundation_name]
 
-        # Draw foundation outline (thick border around the valid build area)
-        outline_rect = pygame.Rect(
+        # Draw foundation background (slightly lighter than dark gray)
+        foundation_rect = pygame.Rect(
             0,
             offset_y,
             self.grid_width * self.cell_size,
             self.grid_height * self.cell_size
         )
-        pygame.draw.rect(self.screen, (100, 150, 100), outline_rect, 3)
+        pygame.draw.rect(self.screen, (50, 55, 60), foundation_rect)  # Foundation area
+
+        # Draw foundation outline (bright green border around the valid build area)
+        pygame.draw.rect(self.screen, (100, 200, 100), foundation_rect, 4)  # Thick bright border
 
         # Draw I/O port zones on edges
         # Each edge has ports centered on each 1x1 unit (4 ports per unit)
