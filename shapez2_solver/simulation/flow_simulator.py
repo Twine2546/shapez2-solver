@@ -519,8 +519,9 @@ class FlowSimulator:
         Find valid output positions for a belt, supporting splitting.
 
         A belt can split to multiple adjacent belts/machines as long as:
-        1. The adjacent position accepts input from this belt's direction
-        2. The output directions are not 180° apart (can't go forward AND backward)
+        1. WE are outputting in that direction (primary direction only for BELT_FORWARD)
+        2. The adjacent position accepts input from this belt's direction
+        3. The output directions are not 180° apart (can't go forward AND backward)
 
         Returns list of (position, direction, is_machine_input) tuples.
         """
@@ -529,6 +530,11 @@ class FlowSimulator:
 
         # Get the belt's primary output direction
         primary_dir = self._get_belt_output_direction(belt_type, rotation)
+
+        # Determine which directions we can output to
+        # BELT_FORWARD only outputs in primary direction
+        # BELT_LEFT/RIGHT could potentially split, but for now treat same as forward
+        allowed_output_dirs = {primary_dir}
 
         # Check all 4 adjacent positions for potential outputs
         adjacent = [
@@ -539,6 +545,10 @@ class FlowSimulator:
         ]
 
         for adj_pos, direction_to_adj, dir_char in adjacent:
+            # Skip directions we're not outputting to
+            if direction_to_adj not in allowed_output_dirs:
+                continue
+
             adj_cell = self.cells.get(adj_pos)
 
             # Direction from adj back to us (opposite)
@@ -576,16 +586,19 @@ class FlowSimulator:
                     continue
 
                 # Check if the adjacent belt accepts input from our direction
+                # A belt can accept input from ANY direction EXCEPT its output direction
                 adj_output_dir = self._get_belt_output_direction(adj_cell.building_type, adj_cell.rotation)
 
-                # Adjacent belt accepts from us if we're NOT coming from its output direction
+                # From the adjacent cell's perspective, what direction are we?
                 our_direction_from_adj = {
-                    Rotation.EAST: Rotation.WEST,
+                    Rotation.EAST: Rotation.WEST,   # We went east to reach them, so we're to their west
                     Rotation.WEST: Rotation.EAST,
                     Rotation.NORTH: Rotation.SOUTH,
                     Rotation.SOUTH: Rotation.NORTH,
                 }[direction_to_adj]
 
+                # Adjacent belt accepts from us if we're NOT at their output direction
+                # (can receive from side or back, just not front)
                 if our_direction_from_adj != adj_output_dir:
                     valid_outputs.append((adj_pos, direction_to_adj, False))
 
