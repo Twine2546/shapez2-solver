@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from typing import Dict, List, Optional, Tuple
 from shapez2_solver.simulation.flow_simulator import FlowSimulator, MACHINE_THROUGHPUT, BELT_THROUGHPUT
 from shapez2_solver.blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS, BUILDING_PORTS
+from shapez2_solver.evolution.foundation_config import FOUNDATION_SPECS
 
 
 # Colors
@@ -45,6 +46,7 @@ BUILDING_COLORS = {
     BuildingType.ROTATOR_180: (80, 180, 80),
     BuildingType.STACKER: (100, 100, 200),
     BuildingType.STACKER_BENT: (100, 100, 200),
+    BuildingType.STACKER_BENT_MIRRORED: (100, 100, 200),
     BuildingType.UNSTACKER: (80, 80, 180),
     BuildingType.SWAPPER: (180, 180, 100),
     BuildingType.SPLITTER: (200, 200, 100),
@@ -52,6 +54,7 @@ BUILDING_COLORS = {
     BuildingType.SPLITTER_RIGHT: (200, 200, 100),
     BuildingType.MERGER: (200, 100, 200),
     BuildingType.PAINTER: (100, 180, 180),
+    BuildingType.PAINTER_MIRRORED: (100, 180, 180),
     BuildingType.BELT_PORT_SENDER: (150, 100, 200),
     BuildingType.BELT_PORT_RECEIVER: (200, 100, 150),
     BuildingType.LIFT_UP: (150, 150, 200),
@@ -105,6 +108,14 @@ class FlowViewer:
         self.mouse_pos = (0, 0)
         self.hovered_palette_idx = -1
 
+        # Foundation options - use actual FOUNDATION_SPECS (including irregular shapes)
+        self.foundation_names = [
+            "1x1", "2x1", "1x2", "2x2", "3x2", "3x3",  # Rectangular
+            "L", "L4", "T", "S4", "Cross"  # Irregular
+        ]
+        self.current_foundation_idx = 0
+        self.current_foundation_name = "1x1"
+
         # Simulator
         self.sim = FlowSimulator(width, height, num_floors)
         self.last_report = None
@@ -134,6 +145,7 @@ class FlowViewer:
             BuildingType.SPLITTER_RIGHT,
             BuildingType.MERGER,
             BuildingType.PAINTER,
+            BuildingType.PAINTER_MIRRORED,
         ]
 
         # Palette scroll offset (for when list is too long)
@@ -175,6 +187,39 @@ class FlowViewer:
 
         pygame.quit()
 
+    def _can_place_building(self, x: int, y: int, floor: int) -> bool:
+        """Check if a building can be placed at this position (no overlap)."""
+        spec = BUILDING_SPECS.get(self.selected_building)
+        if not spec:
+            return True  # Unknown building, allow placement
+
+        base_w = spec.width
+        base_h = spec.height
+        depth = spec.depth
+
+        # Adjust for rotation
+        if self.current_rotation in (Rotation.SOUTH, Rotation.NORTH):
+            eff_w, eff_h = base_h, base_w
+        else:
+            eff_w, eff_h = base_w, base_h
+
+        # Check all cells the building would occupy
+        for dx in range(eff_w):
+            for dy in range(eff_h):
+                for dz in range(depth):
+                    check_pos = (x + dx, y + dy, floor + dz)
+                    # Check if position is out of bounds
+                    if check_pos[0] >= self.grid_width or check_pos[1] >= self.grid_height:
+                        return False
+                    if check_pos[2] >= self.num_floors:
+                        return False
+                    # Check if already occupied
+                    if check_pos in self.sim.cells:
+                        cell = self.sim.cells[check_pos]
+                        if cell.building_type is not None:
+                            return False
+        return True
+
     def update_hover(self):
         """Update hover state based on mouse position."""
         x, y = self.mouse_pos
@@ -184,7 +229,12 @@ class FlowViewer:
 
         if x > sidebar_x:
             rel_x = x - sidebar_x
-            rel_y = y - self.toolbar_height - 70  # Account for title and floor buttons
+            # Calculate dynamic offset based on foundation rows
+            cols = 4
+            num_rows = (len(self.foundation_names) + cols - 1) // cols
+            foundation_area_end = 18 + num_rows * 26
+            palette_y_start = foundation_area_end + 25 + 60 + 25
+            rel_y = y - self.toolbar_height - palette_y_start
 
             if 0 <= rel_x < self.sidebar_width - 20:
                 idx = rel_y // 25 + self.palette_scroll
@@ -202,6 +252,9 @@ class FlowViewer:
         if 0 <= grid_x < self.grid_width and 0 <= grid_y < self.grid_height:
             if button == 1:  # Left click
                 if self.mode == "place":
+                    # Check if cells are already occupied
+                    if not self._can_place_building(grid_x, grid_y, self.current_floor):
+                        return  # Cell occupied, don't place
                     self.sim.place_building(
                         self.selected_building,
                         grid_x, grid_y, self.current_floor,
@@ -238,8 +291,25 @@ class FlowViewer:
             rel_x = x - sidebar_x
             rel_y = y - self.toolbar_height
 
-            # Floor buttons (at top of sidebar)
-            if 10 <= rel_y <= 50:
+            # Foundation buttons (4 per row, starting at y=18)
+            btn_width = 45
+            cols = 4
+            num_rows = (len(self.foundation_names) + cols - 1) // cols
+            foundation_area_end = 18 + num_rows * 26
+            if 18 <= rel_y <= foundation_area_end:
+                for i, name in enumerate(self.foundation_names):
+                    row = i // cols
+                    col = i % cols
+                    btn_x = 10 + col * (btn_width + 5)
+                    btn_y = 18 + row * 26
+                    if btn_x <= rel_x <= btn_x + btn_width and btn_y <= rel_y <= btn_y + 22:
+                        self.set_foundation(name)
+                        self.current_foundation_idx = i
+                        return
+
+            # Floor buttons (after foundation buttons)
+            floor_y_start = foundation_area_end + 25
+            if floor_y_start <= rel_y <= floor_y_start + 50:
                 btn_width = 40
                 for f in range(self.num_floors):
                     btn_x = 10 + f * (btn_width + 5)
@@ -248,8 +318,9 @@ class FlowViewer:
                         self.last_report = self.sim.simulate()
                         return
 
-            # Building palette (starts at y offset 70)
-            palette_y = rel_y - 70
+            # Building palette (dynamically offset based on foundation rows)
+            palette_y_start = foundation_area_end + 25 + 60 + 25  # floor section + buildings title
+            palette_y = rel_y - palette_y_start
             if palette_y >= 0 and button == 1:
                 idx = palette_y // 25 + self.palette_scroll
                 if 0 <= idx < len(self.building_palette):
@@ -302,6 +373,35 @@ class FlowViewer:
             # Scroll building palette down
             current_idx = self.building_palette.index(self.selected_building)
             self.selected_building = self.building_palette[min(len(self.building_palette) - 1, current_idx + 1)]
+        elif key == pygame.K_f:
+            # Cycle through foundations
+            self.cycle_foundation()
+
+    def cycle_foundation(self):
+        """Switch to next foundation size."""
+        self.current_foundation_idx = (self.current_foundation_idx + 1) % len(self.foundation_names)
+        self.set_foundation(self.foundation_names[self.current_foundation_idx])
+
+    def set_foundation(self, name: str):
+        """Set foundation by name and resize everything."""
+        if name not in FOUNDATION_SPECS:
+            return
+
+        spec = FOUNDATION_SPECS[name]
+        self.current_foundation_name = name
+        self.grid_width = spec.grid_width
+        self.grid_height = spec.grid_height
+        self.num_floors = spec.num_floors
+
+        # Recreate simulator with new dimensions
+        self.sim = FlowSimulator(self.grid_width, self.grid_height, self.num_floors)
+        self.last_report = None
+
+        # Resize window
+        self.screen_width = self.grid_width * self.cell_size + self.sidebar_width
+        self.screen_height = max(800, self.grid_height * self.cell_size + self.toolbar_height + 220)
+        self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
+        pygame.display.set_caption(f"Flow Simulator - {name} Foundation")
     
     def draw(self):
         """Draw everything."""
@@ -365,30 +465,41 @@ class FlowViewer:
 
         for origin, machine in self.sim.machines.items():
             ox, oy, oz = origin
-            if oz != self.current_floor:
-                continue
 
-            # Machine center position on screen
+            # Machine center position on screen (always at origin x,y)
             mcx = ox * self.cell_size + self.cell_size // 2
             mcy = offset_y + oy * self.cell_size + self.cell_size // 2
 
-            # Draw input ports - show on machine edge pointing towards port
+            # Draw input ports - show ports on current floor even if machine origin is on different floor
             for port in machine.input_ports:
                 px, py, pz = port['position']
                 if pz != self.current_floor:
                     continue
 
-                # Calculate direction from machine to port
+                # For multi-floor machines, draw port at its actual position
+                # Calculate direction from machine to port (in x,y plane)
                 dx = px - ox
                 dy = py - oy
 
-                # Draw label on machine edge in direction of port
-                label_x = mcx + dx * (self.cell_size // 2 - 5)
-                label_y = mcy + dy * (self.cell_size // 2 - 5)
+                # Draw label at port position (for ports on different floors, show at port x,y)
+                port_cx = px * self.cell_size + self.cell_size // 2
+                port_cy = offset_y + py * self.cell_size + self.cell_size // 2
 
-                # Draw small "I" label (input)
+                # If machine origin is on this floor, draw on edge; otherwise draw at port position
+                if oz == self.current_floor:
+                    label_x = mcx + dx * (self.cell_size // 2 - 5)
+                    label_y = mcy + dy * (self.cell_size // 2 - 5)
+                else:
+                    # Machine is on different floor, show port with indicator
+                    label_x = port_cx
+                    label_y = port_cy
+
+                # Draw small "I" label (input) with floor indicator for multi-floor
                 pygame.draw.circle(self.screen, CYAN, (int(label_x), int(label_y)), 7)
-                text = self.font_small.render("I", True, BLACK)
+                label = "I"
+                if pz != oz:  # Port on different floor than machine origin
+                    label = f"I{pz}"
+                text = self.font_small.render(label, True, BLACK)
                 self.screen.blit(text, (label_x - 3, label_y - 5))
 
             # Draw output ports
@@ -397,18 +508,26 @@ class FlowViewer:
                 if pz != self.current_floor:
                     continue
 
-                # Calculate direction from machine to port
                 dx = px - ox
                 dy = py - oy
 
-                # Draw label on machine edge in direction of port
-                label_x = mcx + dx * (self.cell_size // 2 - 5)
-                label_y = mcy + dy * (self.cell_size // 2 - 5)
+                port_cx = px * self.cell_size + self.cell_size // 2
+                port_cy = offset_y + py * self.cell_size + self.cell_size // 2
+
+                if oz == self.current_floor:
+                    label_x = mcx + dx * (self.cell_size // 2 - 5)
+                    label_y = mcy + dy * (self.cell_size // 2 - 5)
+                else:
+                    label_x = port_cx
+                    label_y = port_cy
 
                 # Draw small "O" label (output)
                 color = RED if port.get('backed_up') else ORANGE
                 pygame.draw.circle(self.screen, color, (int(label_x), int(label_y)), 7)
-                text = self.font_small.render("O", True, BLACK)
+                label = "O"
+                if pz != oz:
+                    label = f"O{pz}"
+                text = self.font_small.render(label, True, BLACK)
                 self.screen.blit(text, (label_x - 3, label_y - 5))
     
     def draw_toolbar(self):
@@ -566,26 +685,63 @@ class FlowViewer:
         cx, cy = rect.center
 
         if bt == BuildingType.BELT_FORWARD:
-            # Arrow
-            if rotation == Rotation.EAST:
-                points = [(cx - 10, cy), (cx + 5, cy), (cx + 5, cy - 5), (cx + 12, cy), (cx + 5, cy + 5), (cx + 5, cy)]
-            elif rotation == Rotation.WEST:
-                points = [(cx + 10, cy), (cx - 5, cy), (cx - 5, cy - 5), (cx - 12, cy), (cx - 5, cy + 5), (cx - 5, cy)]
-            elif rotation == Rotation.SOUTH:
-                points = [(cx, cy - 10), (cx, cy + 5), (cx - 5, cy + 5), (cx, cy + 12), (cx + 5, cy + 5), (cx, cy + 5)]
-            else:
-                points = [(cx, cy + 10), (cx, cy - 5), (cx - 5, cy - 5), (cx, cy - 12), (cx + 5, cy - 5), (cx, cy - 5)]
-            pygame.draw.polygon(self.screen, WHITE, points)
+            # Clear directional arrow
+            # Draw shaft and arrowhead based on direction
+            if rotation == Rotation.EAST:  # →
+                # Shaft
+                pygame.draw.line(self.screen, WHITE, (cx - 12, cy), (cx + 8, cy), 3)
+                # Arrowhead
+                pygame.draw.polygon(self.screen, WHITE, [
+                    (cx + 14, cy), (cx + 4, cy - 7), (cx + 4, cy + 7)
+                ])
+            elif rotation == Rotation.WEST:  # ←
+                pygame.draw.line(self.screen, WHITE, (cx + 12, cy), (cx - 8, cy), 3)
+                pygame.draw.polygon(self.screen, WHITE, [
+                    (cx - 14, cy), (cx - 4, cy - 7), (cx - 4, cy + 7)
+                ])
+            elif rotation == Rotation.SOUTH:  # ↓
+                pygame.draw.line(self.screen, WHITE, (cx, cy - 12), (cx, cy + 8), 3)
+                pygame.draw.polygon(self.screen, WHITE, [
+                    (cx, cy + 14), (cx - 7, cy + 4), (cx + 7, cy + 4)
+                ])
+            else:  # NORTH ↑
+                pygame.draw.line(self.screen, WHITE, (cx, cy + 12), (cx, cy - 8), 3)
+                pygame.draw.polygon(self.screen, WHITE, [
+                    (cx, cy - 14), (cx - 7, cy - 4), (cx + 7, cy - 4)
+                ])
 
         elif bt == BuildingType.BELT_LEFT:
-            # Curved arrow left
-            pygame.draw.arc(self.screen, WHITE, (cx - 12, cy - 12, 24, 24), 0, 1.57, 2)
+            # Curved arrow turning left based on rotation
+            # Draw a curved arrow with proper rotation
+            if rotation == Rotation.EAST:  # Enter from west, exit north
+                pygame.draw.arc(self.screen, WHITE, (cx - 14, cy - 14, 28, 28), 3.14, 4.71, 3)
+                pygame.draw.polygon(self.screen, WHITE, [(cx, cy - 14), (cx - 5, cy - 6), (cx + 5, cy - 6)])
+            elif rotation == Rotation.SOUTH:  # Enter from north, exit east
+                pygame.draw.arc(self.screen, WHITE, (cx - 14, cy - 14, 28, 28), 4.71, 6.28, 3)
+                pygame.draw.polygon(self.screen, WHITE, [(cx + 14, cy), (cx + 6, cy - 5), (cx + 6, cy + 5)])
+            elif rotation == Rotation.WEST:  # Enter from east, exit south
+                pygame.draw.arc(self.screen, WHITE, (cx - 14, cy - 14, 28, 28), 0, 1.57, 3)
+                pygame.draw.polygon(self.screen, WHITE, [(cx, cy + 14), (cx - 5, cy + 6), (cx + 5, cy + 6)])
+            else:  # NORTH - Enter from south, exit west
+                pygame.draw.arc(self.screen, WHITE, (cx - 14, cy - 14, 28, 28), 1.57, 3.14, 3)
+                pygame.draw.polygon(self.screen, WHITE, [(cx - 14, cy), (cx - 6, cy - 5), (cx - 6, cy + 5)])
             text = self.font_small.render("L", True, WHITE)
             self.screen.blit(text, (cx - 3, cy - 5))
 
         elif bt == BuildingType.BELT_RIGHT:
-            # Curved arrow right
-            pygame.draw.arc(self.screen, WHITE, (cx - 12, cy - 12, 24, 24), 1.57, 3.14, 2)
+            # Curved arrow turning right based on rotation
+            if rotation == Rotation.EAST:  # Enter from west, exit south
+                pygame.draw.arc(self.screen, WHITE, (cx - 14, cy - 14, 28, 28), 4.71, 6.28, 3)
+                pygame.draw.polygon(self.screen, WHITE, [(cx, cy + 14), (cx - 5, cy + 6), (cx + 5, cy + 6)])
+            elif rotation == Rotation.SOUTH:  # Enter from north, exit west
+                pygame.draw.arc(self.screen, WHITE, (cx - 14, cy - 14, 28, 28), 0, 1.57, 3)
+                pygame.draw.polygon(self.screen, WHITE, [(cx - 14, cy), (cx - 6, cy - 5), (cx - 6, cy + 5)])
+            elif rotation == Rotation.WEST:  # Enter from east, exit north
+                pygame.draw.arc(self.screen, WHITE, (cx - 14, cy - 14, 28, 28), 1.57, 3.14, 3)
+                pygame.draw.polygon(self.screen, WHITE, [(cx, cy - 14), (cx - 5, cy - 6), (cx + 5, cy - 6)])
+            else:  # NORTH - Enter from south, exit east
+                pygame.draw.arc(self.screen, WHITE, (cx - 14, cy - 14, 28, 28), 3.14, 4.71, 3)
+                pygame.draw.polygon(self.screen, WHITE, [(cx + 14, cy), (cx + 6, cy - 5), (cx + 6, cy + 5)])
             text = self.font_small.render("R", True, WHITE)
             self.screen.blit(text, (cx - 3, cy - 5))
 
@@ -636,7 +792,7 @@ class FlowViewer:
             text = self.font.render(symbol, True, WHITE)
             self.screen.blit(text, (cx - 6, cy - 8))
 
-        elif bt in (BuildingType.STACKER, BuildingType.STACKER_BENT):
+        elif bt in (BuildingType.STACKER, BuildingType.STACKER_BENT, BuildingType.STACKER_BENT_MIRRORED):
             pygame.draw.rect(self.screen, WHITE, (cx - 8, cy - 8, 16, 16), 2)
             # Stack symbol - two horizontal lines
             pygame.draw.line(self.screen, WHITE, (cx - 5, cy - 3), (cx + 5, cy - 3), 2)
@@ -659,9 +815,13 @@ class FlowViewer:
         elif bt == BuildingType.MERGER:
             pygame.draw.polygon(self.screen, WHITE, [(cx + 8, cy - 8), (cx - 8, cy), (cx + 8, cy + 8)], 2)
 
-        elif bt == BuildingType.PAINTER:
+        elif bt in (BuildingType.PAINTER, BuildingType.PAINTER_MIRRORED):
             pygame.draw.rect(self.screen, WHITE, (cx - 8, cy - 8, 16, 16), 2)
             pygame.draw.circle(self.screen, CYAN, (cx, cy), 5)
+            if bt == BuildingType.PAINTER_MIRRORED:
+                # Add M marker for mirrored
+                text = self.font_small.render("M", True, WHITE)
+                self.screen.blit(text, (cx + 4, cy - 10))
 
         else:
             # Default: just draw first letter
@@ -672,6 +832,29 @@ class FlowViewer:
         """Draw building palette and info."""
         x = self.grid_width * self.cell_size + 10
         y = self.toolbar_height + 10
+
+        # Foundation selector
+        found_label = self.font.render("Foundation (F):", True, WHITE)
+        self.screen.blit(found_label, (x, y))
+        y += 18
+
+        # Foundation buttons (4 per row)
+        btn_width = 45
+        cols = 4
+        btn_x = x
+        start_y = y
+        for i, name in enumerate(self.foundation_names):
+            row = i // cols
+            col = i % cols
+            btn_x = x + col * (btn_width + 5)
+            btn_y = start_y + row * 26
+            color = GREEN if name == self.current_foundation_name else LIGHT_GRAY
+            pygame.draw.rect(self.screen, color, (btn_x, btn_y, btn_width, 22))
+            pygame.draw.rect(self.screen, WHITE, (btn_x, btn_y, btn_width, 22), 1)
+            text = self.font_small.render(name, True, BLACK)
+            self.screen.blit(text, (btn_x + 3, btn_y + 5))
+        num_rows = (len(self.foundation_names) + cols - 1) // cols
+        y = start_y + num_rows * 26 + 5
 
         # Floor buttons
         floor_label = self.font.render("Floor:", True, WHITE)
@@ -687,11 +870,15 @@ class FlowViewer:
             text = self.font.render(str(f), True, BLACK)
             self.screen.blit(text, (btn_x + 15, btn_y + 5))
 
-        y += 60
+        y += 55
 
         # Building palette title
         title = self.font_large.render("Buildings", True, WHITE)
         self.screen.blit(title, (x, y))
+        # Show current foundation info
+        spec = FOUNDATION_SPECS[self.current_foundation_name]
+        info = self.font_small.render(f"Grid: {spec.grid_width}x{spec.grid_height}", True, LIGHT_GRAY)
+        self.screen.blit(info, (x + 90, y + 4))
         y += 25
 
         # Building list with scroll
@@ -742,6 +929,7 @@ class FlowViewer:
             "1-4: Mode select",
             "R: Rotate",
             "S: Cycle shape",
+            "F: Next foundation",
             "V: Shapes " + ("ON" if self.show_shapes else "OFF"),
             "P: Ports " + ("ON" if self.show_ports else "OFF"),
             "Scroll: Building list",
@@ -802,7 +990,10 @@ class FlowViewer:
 
 
 def main():
-    viewer = FlowViewer(14, 14, 4)
+    # Start with 1x1 foundation (14x14 grid)
+    spec = FOUNDATION_SPECS["1x1"]
+    viewer = FlowViewer(spec.grid_width, spec.grid_height, spec.num_floors)
+    pygame.display.set_caption("Flow Simulator - 1x1 Foundation")
     viewer.run()
 
 

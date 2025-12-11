@@ -37,6 +37,7 @@ MACHINE_THROUGHPUT = {
     BuildingType.UNSTACKER: 30.0,
     BuildingType.SWAPPER: 45.0,
     BuildingType.PAINTER: 45.0,
+    BuildingType.PAINTER_MIRRORED: 45.0,
     BuildingType.SPLITTER: 180.0,
     BuildingType.MERGER: 180.0,
 }
@@ -385,7 +386,7 @@ class FlowSimulator:
             # Swapper: swap right halves between two inputs
             return self._swap_quadrants(input_shape, input_shape2, output_index)
 
-        elif building_type == BuildingType.PAINTER:
+        elif building_type in (BuildingType.PAINTER, BuildingType.PAINTER_MIRRORED):
             # Painter: apply color from input 1 to shape from input 0
             # Color input is treated as the color code
             return self._paint_shape(input_shape, input_shape2[:2] if input_shape2 else "Cu")
@@ -490,6 +491,14 @@ class FlowSimulator:
             for port in machine.input_ports:
                 # Match if: belt pointing TO input, OR belt IS at input position
                 if port['position'] == next_pos or port['position'] == start:
+                    # Update the belt at the input port position (if there is one)
+                    if next_pos in self.cells and port['position'] == next_pos:
+                        next_cell = self.cells[next_pos]
+                        if next_cell.building_type:  # It's a belt
+                            next_cell.shape = shape
+                            next_cell.throughput += throughput
+                            if path is not None:
+                                path.append(next_pos)
                     port['shape'] = shape
                     port['throughput'] += throughput
                     port['connected'] = True

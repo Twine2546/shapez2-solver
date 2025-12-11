@@ -44,6 +44,7 @@ class BuildingType(Enum):
 
     # Painters
     PAINTER = "PainterInternalVariant"
+    PAINTER_MIRRORED = "PainterInternalVariantMirrored"
 
     # Other
     TRASH = "TrashInternalVariant"
@@ -104,12 +105,17 @@ BUILDING_SPECS: Dict[BuildingType, BuildingSpec] = {
     BuildingType.ROTATOR_CCW: BuildingSpec(1, 1, 1, 1, 1, 2, 30, 90),
     BuildingType.ROTATOR_180: BuildingSpec(1, 1, 1, 1, 1, 2, 30, 90),
 
-    # Cutter: 1x2x1, 4 per belt, 15-45 ops/min, 1 in -> 2 out
+    # Cutters:
+    # Half-cutter: 1x1, destroys one half
     BuildingType.HALF_CUTTER: BuildingSpec(1, 1, 1, 1, 1, 4, 15, 45),
+    # Cutter: 1x2, outputs both halves to separate outputs
     BuildingType.CUTTER: BuildingSpec(1, 2, 1, 1, 2, 4, 15, 45),
+    # Cutter Mirrored: 1x1, outputs both halves (compact version)
+    BuildingType.CUTTER_MIRRORED: BuildingSpec(1, 1, 1, 1, 2, 4, 15, 45),
 
-    # Swapper: 2x2, 2 in -> 2 out
-    BuildingType.SWAPPER: BuildingSpec(2, 2, 1, 2, 2, 4, 15, 45),
+    # Swapper: 1x2, 2 in -> 2 out (swaps halves between two parallel items)
+    # Width=1, Height=2 so it spans two Y positions for side-by-side inputs
+    BuildingType.SWAPPER: BuildingSpec(1, 2, 1, 2, 2, 4, 15, 45),
 
     # Stacker (Straight): 1x1x2 (2 floors tall), 6 per belt, 10-30 ops/min
     # Input 0: bottom floor from west (the "bottom" shape)
@@ -128,8 +134,10 @@ BUILDING_SPECS: Dict[BuildingType, BuildingSpec] = {
     # Output 1: top floor to east (top layer)
     BuildingType.UNSTACKER: BuildingSpec(1, 1, 2, 1, 2, 6, 10, 30),
 
-    # Painter: 1x2, shape + color inputs
+    # Painter: 1x2, shape + color inputs (color from north)
     BuildingType.PAINTER: BuildingSpec(1, 2, 1, 2, 1, 4, 15, 45),
+    # Painter Mirrored: 1x2, color from south instead of north
+    BuildingType.PAINTER_MIRRORED: BuildingSpec(1, 2, 1, 2, 1, 4, 15, 45),
 
     # Trash: 1x1
     BuildingType.TRASH: BuildingSpec(1, 1, 1, 1, 0, 1, 180, 180),
@@ -176,15 +184,15 @@ BUILDING_PORTS: Dict[BuildingType, Dict[str, List[Tuple[int, int, int]]]] = {
         'inputs': [(-1, 0, 0)],  # Input from west
         'outputs': [(1, 0, 0), (1, 1, 0)],  # Two outputs to east (top half at y=0, bottom half at y=1)
     },
-    # Cutter Mirrored: 1x2, same input, outputs mirrored
+    # Cutter Mirrored: 1x1, two outputs (one forward, one to side)
     BuildingType.CUTTER_MIRRORED: {
-        'inputs': [(-1, 0, 0)],  # Input from west (same as normal)
-        'outputs': [(1, 0, 0), (1, -1, 0)],  # Two outputs to east (top half at y=0, bottom half at y=-1)
+        'inputs': [(-1, 0, 0)],  # Input from west
+        'outputs': [(1, 0, 0), (0, -1, 0)],  # Output 0 to east, output 1 to north
     },
-    # Swapper: 2x2, two inputs, two outputs
+    # Swapper: 1x2, two inputs from west, two outputs to east
     BuildingType.SWAPPER: {
-        'inputs': [(-1, 0, 0), (-1, 1, 0)],  # Two inputs from west
-        'outputs': [(2, 0, 0), (2, 1, 0)],   # Two outputs to east
+        'inputs': [(-1, 0, 0), (-1, 1, 0)],  # Two inputs from west at y=0 and y=1
+        'outputs': [(1, 0, 0), (1, 1, 0)],   # Two outputs to east at y=0 and y=1
     },
     # Stacker (Straight): 2 floors - bottom input floor 0, top input floor 1, output floor 0
     BuildingType.STACKER: {
@@ -206,9 +214,14 @@ BUILDING_PORTS: Dict[BuildingType, Dict[str, List[Tuple[int, int, int]]]] = {
         'inputs': [(-1, 0, 0)],               # Input on floor 0
         'outputs': [(1, 0, 0), (1, 0, 1)],    # Bottom layer to floor 0, top layer to floor 1
     },
-    # Painter: shape input + color input
+    # Painter: shape input + color input (color from north)
     BuildingType.PAINTER: {
         'inputs': [(-1, 0, 0), (0, -1, 0)],  # Shape from west, color from north
+        'outputs': [(1, 0, 0)],
+    },
+    # Painter Mirrored: color from south instead of north
+    BuildingType.PAINTER_MIRRORED: {
+        'inputs': [(-1, 0, 0), (0, 1, 0)],  # Shape from west, color from south
         'outputs': [(1, 0, 0)],
     },
     BuildingType.TRASH: {
