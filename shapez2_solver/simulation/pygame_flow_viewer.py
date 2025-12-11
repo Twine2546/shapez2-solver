@@ -982,20 +982,23 @@ class FlowViewer:
             ])
 
         elif bt == BuildingType.CUTTER_MIRRORED:
-            # CUTTER_MIRRORED: 1x1, input from west, one output east, one output north (up)
-            # Mirror of CUTTER - outputs go up instead of down
+            # CUTTER_MIRRORED: 1x2, input at bottom (y+1), outputs go east with second going north
+            # Mirror of CUTTER - input at bottom, second output goes up instead of down
             pygame.draw.rect(self.screen, WHITE, (cx - 10, cy - 10, 20, 20), 2)
             # Vertical cutting line (blade)
             pygame.draw.line(self.screen, WHITE, (cx, cy - 8), (cx, cy + 8), 2)
-            # Input indicator (left arrow pointing in)
-            pygame.draw.line(self.screen, CYAN, (cx - 14, cy), (cx - 10, cy), 2)
-            # Output indicators - one goes right, one goes up
+            # Input indicator at BOTTOM (y+1 relative to origin, shown with down offset)
+            pygame.draw.line(self.screen, CYAN, (cx - 14, cy + 3), (cx - 10, cy + 3), 2)
+            # Output indicators - both go right, but second output goes UP (north)
             pygame.draw.line(self.screen, ORANGE, (cx + 10, cy + 3), (cx + 14, cy + 3), 2)
-            pygame.draw.line(self.screen, ORANGE, (cx - 3, cy - 10), (cx - 3, cy - 14), 2)
-            # Up arrow showing second output goes to y-1
+            pygame.draw.line(self.screen, ORANGE, (cx + 10, cy - 3), (cx + 14, cy - 3), 2)
+            # Up arrow showing second output goes to y-1 (north)
             pygame.draw.polygon(self.screen, ORANGE, [
                 (cx + 5, cy - 8), (cx + 2, cy - 4), (cx + 8, cy - 4)
             ])
+            # "M" marker for mirrored
+            text = self.font_small.render("M", True, WHITE)
+            self.screen.blit(text, (cx - 3, cy - 3))
 
         elif bt == BuildingType.HALF_CUTTER:
             pygame.draw.rect(self.screen, WHITE, (cx - 8, cy - 8, 16, 16), 2)

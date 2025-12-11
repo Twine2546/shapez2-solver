@@ -108,10 +108,10 @@ BUILDING_SPECS: Dict[BuildingType, BuildingSpec] = {
     # Cutters:
     # Half-cutter: 1x1, destroys one half
     BuildingType.HALF_CUTTER: BuildingSpec(1, 1, 1, 1, 1, 4, 15, 45),
-    # Cutter: 1x2, outputs both halves to separate outputs
+    # Cutter: 1x2, outputs both halves to separate outputs (second output goes south/y+1)
     BuildingType.CUTTER: BuildingSpec(1, 2, 1, 1, 2, 4, 15, 45),
-    # Cutter Mirrored: 1x1, outputs both halves (compact version)
-    BuildingType.CUTTER_MIRRORED: BuildingSpec(1, 1, 1, 1, 2, 4, 15, 45),
+    # Cutter Mirrored: 1x2, outputs both halves (second output goes north/y-1, mirror of CUTTER)
+    BuildingType.CUTTER_MIRRORED: BuildingSpec(1, 2, 1, 1, 2, 4, 15, 45),
 
     # Swapper: 1x2, 2 in -> 2 out (swaps halves between two parallel items)
     # Width=1, Height=2 so it spans two Y positions for side-by-side inputs
@@ -179,15 +179,15 @@ BUILDING_PORTS: Dict[BuildingType, Dict[str, List[Tuple[int, int, int]]]] = {
         'inputs': [(-1, 0, 0)],
         'outputs': [(1, 0, 0)],
     },
-    # Cutter: 1x2, input on one side, two outputs
+    # Cutter: 1x2, input at top, outputs go east (one at top row, one at bottom row going south)
     BuildingType.CUTTER: {
-        'inputs': [(-1, 0, 0)],  # Input from west
-        'outputs': [(1, 0, 0), (1, 1, 0)],  # Two outputs to east (top half at y=0, bottom half at y=1)
+        'inputs': [(-1, 0, 0)],  # Input from west at top of building
+        'outputs': [(1, 0, 0), (1, 1, 0)],  # Output 0 at y=0, Output 1 at y=1 (south)
     },
-    # Cutter Mirrored: 1x1, two outputs (one forward, one to side)
+    # Cutter Mirrored: 1x2, input at bottom, outputs go east (mirror of CUTTER - second output goes north)
     BuildingType.CUTTER_MIRRORED: {
-        'inputs': [(-1, 0, 0)],  # Input from west
-        'outputs': [(1, 0, 0), (0, -1, 0)],  # Output 0 to east, output 1 to north
+        'inputs': [(-1, 1, 0)],  # Input from west at BOTTOM of building (mirrored)
+        'outputs': [(1, 1, 0), (1, 0, 0)],  # Output 0 at y=1, Output 1 at y=0 (north, mirrored)
     },
     # Swapper: 1x2, two inputs from west, two outputs to east
     BuildingType.SWAPPER: {
