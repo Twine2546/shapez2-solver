@@ -1015,9 +1015,11 @@ class FlowSimulator:
                     # Look for belt at the expected position
                     if belt_pos in self.cells and self.cells[belt_pos].building_type:
                         port['connected'] = True
-                        # Trace from the belt
+                        # Trace from the belt - use fresh visited set to allow merging
+                        # Multiple machine outputs should be able to merge downstream
                         path = []
-                        self._trace_from_position(belt_pos, port['shape'], port['throughput'], visited, path)
+                        output_visited = set()
+                        self._trace_from_position(belt_pos, port['shape'], port['throughput'], output_visited, path)
                         if path:
                             self.traced_paths.append(path)
                     else:
