@@ -595,27 +595,52 @@ class FlowViewer:
             text = self.font_small.render(f"+{depth-1}F", True, YELLOW)
             self.screen.blit(text, (grid_x * self.cell_size + 2, offset_y + grid_y * self.cell_size + 2))
 
-        # Show input/output port positions for preview
+        # Show input/output port positions for preview as full highlighted squares
         if spec and self.selected_building in BUILDING_PORTS:
             ports_def = BUILDING_PORTS[self.selected_building]
-            # Show input ports
+            # Show input ports as cyan highlighted squares
             for rel_x, rel_y, rel_z in ports_def.get('inputs', []):
                 rot_x, rot_y = self._rotate_offset(rel_x, rel_y)
                 port_x = grid_x + rot_x
                 port_y = grid_y + rot_y
                 if 0 <= port_x < self.grid_width and 0 <= port_y < self.grid_height:
-                    px = port_x * self.cell_size + self.cell_size // 2
-                    py = offset_y + port_y * self.cell_size + self.cell_size // 2
-                    pygame.draw.circle(self.screen, CYAN, (px, py), 6, 2)
-            # Show output ports
-            for rel_x, rel_y, rel_z in ports_def.get('outputs', []):
+                    port_rect = pygame.Rect(
+                        port_x * self.cell_size,
+                        offset_y + port_y * self.cell_size,
+                        self.cell_size - 1,
+                        self.cell_size - 1
+                    )
+                    # Semi-transparent cyan fill
+                    port_surface = pygame.Surface((port_rect.width, port_rect.height), pygame.SRCALPHA)
+                    port_surface.fill((0, 200, 200, 60))
+                    self.screen.blit(port_surface, port_rect.topleft)
+                    # Cyan border
+                    pygame.draw.rect(self.screen, CYAN, port_rect, 2)
+                    # "IN" label
+                    text = self.font_small.render("IN", True, CYAN)
+                    self.screen.blit(text, (port_rect.centerx - 8, port_rect.centery - 5))
+
+            # Show output ports as orange highlighted squares
+            for idx, (rel_x, rel_y, rel_z) in enumerate(ports_def.get('outputs', [])):
                 rot_x, rot_y = self._rotate_offset(rel_x, rel_y)
                 port_x = grid_x + rot_x
                 port_y = grid_y + rot_y
                 if 0 <= port_x < self.grid_width and 0 <= port_y < self.grid_height:
-                    px = port_x * self.cell_size + self.cell_size // 2
-                    py = offset_y + port_y * self.cell_size + self.cell_size // 2
-                    pygame.draw.circle(self.screen, ORANGE, (px, py), 6, 2)
+                    port_rect = pygame.Rect(
+                        port_x * self.cell_size,
+                        offset_y + port_y * self.cell_size,
+                        self.cell_size - 1,
+                        self.cell_size - 1
+                    )
+                    # Semi-transparent orange fill
+                    port_surface = pygame.Surface((port_rect.width, port_rect.height), pygame.SRCALPHA)
+                    port_surface.fill((255, 165, 0, 60))
+                    self.screen.blit(port_surface, port_rect.topleft)
+                    # Orange border
+                    pygame.draw.rect(self.screen, ORANGE, port_rect, 2)
+                    # Output number label
+                    text = self.font_small.render(f"O{idx}", True, ORANGE)
+                    self.screen.blit(text, (port_rect.centerx - 6, port_rect.centery - 5))
 
     def _rotate_offset(self, dx: int, dy: int) -> Tuple[int, int]:
         """Rotate a relative offset by current rotation."""
