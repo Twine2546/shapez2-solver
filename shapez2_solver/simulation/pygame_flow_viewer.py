@@ -487,18 +487,20 @@ class FlowViewer:
                 pygame.draw.line(self.screen, color, (rect.x, y), (rect.x + rect.width, y), line_width)
 
     def _draw_blocked_cell(self, x: int, y: int, offset_y: int):
-        """Draw a blocked/invalid cell with X pattern."""
+        """Draw a blocked/invalid cell with X pattern - highly visible."""
         rect = pygame.Rect(
             x * self.cell_size,
             offset_y + y * self.cell_size,
             self.cell_size - 1,
             self.cell_size - 1
         )
-        # Dark red background
-        pygame.draw.rect(self.screen, (40, 20, 20), rect)
-        # X pattern
-        pygame.draw.line(self.screen, (80, 40, 40), rect.topleft, rect.bottomright, 2)
-        pygame.draw.line(self.screen, (80, 40, 40), rect.topright, rect.bottomleft, 2)
+        # Brighter red/maroon background for visibility
+        pygame.draw.rect(self.screen, (80, 30, 30), rect)
+        # Bright X pattern
+        pygame.draw.line(self.screen, (150, 60, 60), rect.topleft, rect.bottomright, 2)
+        pygame.draw.line(self.screen, (150, 60, 60), rect.topright, rect.bottomleft, 2)
+        # Border to make it stand out
+        pygame.draw.rect(self.screen, (120, 50, 50), rect, 1)
 
     def draw_foundation_features(self):
         """Draw foundation outline, invalid squares, and valid I/O zones on edges."""
@@ -753,7 +755,7 @@ class FlowViewer:
                     direction = 'W'
 
                 # Rotate position and direction
-                rot_x, rot_y = self._rotate_offset(rel_x, rel_y)
+                rot_x, rot_y = self._rotate_offset(rel_x, rel_y, base_w, base_h)
                 rot_dir = self._rotate_direction_char(direction)
 
                 # Cell position is internal to machine footprint
@@ -775,7 +777,7 @@ class FlowViewer:
                     rel_x, rel_y, rel_z = port_info
                     direction = 'E'
 
-                rot_x, rot_y = self._rotate_offset(rel_x, rel_y)
+                rot_x, rot_y = self._rotate_offset(rel_x, rel_y, base_w, base_h)
                 rot_dir = self._rotate_direction_char(direction)
 
                 cell_x = grid_x + rot_x
@@ -787,16 +789,24 @@ class FlowViewer:
                     bar_rect = self._get_edge_bar_rect(cx, cy, rot_dir, bar_thickness)
                     pygame.draw.rect(self.screen, ORANGE, bar_rect)
 
-    def _rotate_offset(self, dx: int, dy: int) -> Tuple[int, int]:
-        """Rotate a relative offset by current rotation."""
+    def _rotate_offset(self, dx: int, dy: int, width: int = 1, height: int = 1) -> Tuple[int, int]:
+        """Rotate a relative offset by current rotation.
+
+        Args:
+            dx, dy: Relative offset within original bounding box
+            width, height: Original building dimensions (before rotation)
+        """
         if self.current_rotation == Rotation.EAST:
             return (dx, dy)
         elif self.current_rotation == Rotation.SOUTH:
-            return (-dy, dx)
+            # 90° CW: map (x, y) to (y, width-1-x)
+            return (dy, width - 1 - dx)
         elif self.current_rotation == Rotation.WEST:
-            return (-dx, -dy)
+            # 180°: map (x, y) to (width-1-x, height-1-y)
+            return (width - 1 - dx, height - 1 - dy)
         else:  # NORTH
-            return (dy, -dx)
+            # 270° CW: map (x, y) to (height-1-y, x)
+            return (height - 1 - dy, dx)
 
     def _rotate_direction_char(self, direction: str) -> str:
         """Rotate a direction character by current rotation."""

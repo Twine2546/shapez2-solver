@@ -88,16 +88,27 @@ def are_directions_opposite(dir1: Rotation, dir2: Rotation) -> bool:
     return (dir1, dir2) in opposites
 
 
-def rotate_offset(dx: int, dy: int, rotation: Rotation) -> Tuple[int, int]:
-    """Rotate a relative offset by rotation."""
+def rotate_offset(dx: int, dy: int, rotation: Rotation, width: int = 1, height: int = 1) -> Tuple[int, int]:
+    """Rotate a relative offset by rotation (90° CW increments).
+
+    Args:
+        dx, dy: Relative offset within original bounding box
+        rotation: Target rotation
+        width, height: Original building dimensions (before rotation)
+
+    Returns adjusted offset that stays within the rotated bounding box.
+    """
     if rotation == Rotation.EAST:
         return (dx, dy)
     elif rotation == Rotation.SOUTH:
-        return (-dy, dx)
+        # 90° CW: map (x, y) to (y, width-1-x)
+        return (dy, width - 1 - dx)
     elif rotation == Rotation.WEST:
-        return (-dx, -dy)
+        # 180°: map (x, y) to (width-1-x, height-1-y)
+        return (width - 1 - dx, height - 1 - dy)
     else:  # NORTH
-        return (dy, -dx)
+        # 270° CW: map (x, y) to (height-1-y, x)
+        return (height - 1 - dy, dx)
 
 
 @dataclass
@@ -237,7 +248,7 @@ class FlowSimulator:
                     rel_x, rel_y, rel_z = port_info
                     direction = 'W'  # Default input from west
 
-                rot_x, rot_y = rotate_offset(rel_x, rel_y, rotation)
+                rot_x, rot_y = rotate_offset(rel_x, rel_y, rotation, base_w, base_h)
                 # Port position is ON the machine cell
                 machine_cell_pos = (x + rot_x, y + rot_y, floor + rel_z)
                 # Rotate direction based on machine rotation
@@ -259,7 +270,7 @@ class FlowSimulator:
                     rel_x, rel_y, rel_z = port_info
                     direction = 'E'  # Default output to east
 
-                rot_x, rot_y = rotate_offset(rel_x, rel_y, rotation)
+                rot_x, rot_y = rotate_offset(rel_x, rel_y, rotation, base_w, base_h)
                 machine_cell_pos = (x + rot_x, y + rot_y, floor + rel_z)
                 rot_dir = self._rotate_direction(direction, rotation)
                 output_ports.append({
