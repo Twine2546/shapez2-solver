@@ -53,6 +53,41 @@ def direction_delta(rotation: Rotation) -> Tuple[int, int]:
     }[rotation]
 
 
+def delta_to_direction(dx: int, dy: int) -> Optional[Rotation]:
+    """Convert (dx, dy) delta to a Rotation direction."""
+    mapping = {
+        (1, 0): Rotation.EAST,
+        (-1, 0): Rotation.WEST,
+        (0, 1): Rotation.SOUTH,
+        (0, -1): Rotation.NORTH,
+    }
+    return mapping.get((dx, dy))
+
+
+def get_belt_input_direction(building_type: BuildingType, rotation: Rotation) -> Rotation:
+    """Get the direction a belt receives input FROM."""
+    # All belt types receive from behind their facing direction
+    # BELT_FORWARD facing EAST receives from WEST
+    # BELT_LEFT facing EAST receives from WEST (turns left to north)
+    # BELT_RIGHT facing EAST receives from WEST (turns right to south)
+    opposite = {
+        Rotation.EAST: Rotation.WEST,
+        Rotation.WEST: Rotation.EAST,
+        Rotation.NORTH: Rotation.SOUTH,
+        Rotation.SOUTH: Rotation.NORTH,
+    }
+    return opposite[rotation]
+
+
+def are_directions_opposite(dir1: Rotation, dir2: Rotation) -> bool:
+    """Check if two directions are 180° apart (opposite)."""
+    opposites = {
+        (Rotation.EAST, Rotation.WEST), (Rotation.WEST, Rotation.EAST),
+        (Rotation.NORTH, Rotation.SOUTH), (Rotation.SOUTH, Rotation.NORTH),
+    }
+    return (dir1, dir2) in opposites
+
+
 def rotate_offset(dx: int, dy: int, rotation: Rotation) -> Tuple[int, int]:
     """Rotate a relative offset by rotation."""
     if rotation == Rotation.EAST:
@@ -402,6 +437,77 @@ class FlowSimulator:
         # Default: pass through
         return input_shape
     
+    def _find_belt_branch_outputs(self, pos: Tuple[int, int, int], primary_direction: Rotation) -> List[Tuple[Tuple[int, int, int], Rotation]]:
+        """
+        Find all valid output positions for a belt, supporting branching.
+
+        A belt can branch to multiple adjacent belts as long as:
+        1. The adjacent belt accepts input from this belt's direction
+        2. The output directions are not 180° apart
+
+        Returns list of (position, direction_from_source) tuples.
+        """
+        x, y, z = pos
+        valid_outputs = []
+
+        # Check all 4 adjacent positions
+        adjacent = [
+            ((x + 1, y, z), Rotation.EAST),
+            ((x - 1, y, z), Rotation.WEST),
+            ((x, y + 1, z), Rotation.SOUTH),
+            ((x, y - 1, z), Rotation.NORTH),
+        ]
+
+        for adj_pos, direction_to_adj in adjacent:
+            adj_cell = self.cells.get(adj_pos)
+            if not adj_cell or not adj_cell.building_type:
+                continue
+
+            # Check if adjacent cell is a belt-type building
+            if adj_cell.building_type not in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
+                                               BuildingType.BELT_RIGHT, BuildingType.BELT_PORT_SENDER,
+                                               BuildingType.BELT_PORT_RECEIVER, BuildingType.LIFT_UP,
+                                               BuildingType.LIFT_DOWN):
+                # Could be a machine - check if it's a valid destination
+                # For now, only handle belt-to-belt branching
+                continue
+
+            # Check if the adjacent belt accepts input from our direction
+            # The adjacent belt's input direction must match where we are relative to it
+            adj_input_dir = get_belt_input_direction(adj_cell.building_type, adj_cell.rotation)
+
+            # We are at position `pos`, adjacent is at `adj_pos`
+            # From adjacent's perspective, we are in direction opposite to direction_to_adj
+            our_direction_from_adj = {
+                Rotation.EAST: Rotation.WEST,
+                Rotation.WEST: Rotation.EAST,
+                Rotation.NORTH: Rotation.SOUTH,
+                Rotation.SOUTH: Rotation.NORTH,
+            }[direction_to_adj]
+
+            # Adjacent belt accepts from us if its input direction matches where we are
+            if adj_input_dir == our_direction_from_adj:
+                valid_outputs.append((adj_pos, direction_to_adj))
+
+        # If we have multiple outputs, check they're not 180° apart
+        if len(valid_outputs) > 1:
+            # Check all pairs for 180° conflict
+            directions = [d for _, d in valid_outputs]
+            has_conflict = False
+            for i in range(len(directions)):
+                for j in range(i + 1, len(directions)):
+                    if are_directions_opposite(directions[i], directions[j]):
+                        has_conflict = True
+                        break
+                if has_conflict:
+                    break
+
+            if has_conflict:
+                # Only use primary direction output
+                valid_outputs = [(p, d) for p, d in valid_outputs if d == primary_direction]
+
+        return valid_outputs
+
     def _find_belt_port_receiver(self, sender_pos: Tuple[int, int, int]) -> Optional[Tuple[int, int, int]]:
         """Find the receiver position for a belt port sender."""
         # Belt ports can jump up to 4 cells in their facing direction
@@ -447,8 +553,78 @@ class FlowSimulator:
         # Handle different building types
         if cell.building_type in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
                                    BuildingType.BELT_RIGHT):
-            # Standard belt movement
-            dx, dy = direction_delta(cell.rotation)
+            # Get primary output direction based on belt type
+            if cell.building_type == BuildingType.BELT_FORWARD:
+                primary_dir = cell.rotation
+            elif cell.building_type == BuildingType.BELT_LEFT:
+                # Left turn: EAST->NORTH, SOUTH->EAST, WEST->SOUTH, NORTH->WEST
+                left_turn = {
+                    Rotation.EAST: Rotation.NORTH,
+                    Rotation.SOUTH: Rotation.EAST,
+                    Rotation.WEST: Rotation.SOUTH,
+                    Rotation.NORTH: Rotation.WEST,
+                }
+                primary_dir = left_turn[cell.rotation]
+            else:  # BELT_RIGHT
+                # Right turn: EAST->SOUTH, SOUTH->WEST, WEST->NORTH, NORTH->EAST
+                right_turn = {
+                    Rotation.EAST: Rotation.SOUTH,
+                    Rotation.SOUTH: Rotation.WEST,
+                    Rotation.WEST: Rotation.NORTH,
+                    Rotation.NORTH: Rotation.EAST,
+                }
+                primary_dir = right_turn[cell.rotation]
+
+            # Find all valid branch outputs
+            branch_outputs = self._find_belt_branch_outputs(start, primary_dir)
+
+            if branch_outputs:
+                # Split throughput among branches
+                branch_throughput = throughput / len(branch_outputs)
+
+                for branch_pos, branch_dir in branch_outputs:
+                    # Check for machine inputs at branch position
+                    fed_machine = False
+                    for origin, machine in self.machines.items():
+                        for port in machine.input_ports:
+                            if port['position'] == branch_pos:
+                                # Update belt at branch position
+                                branch_cell = self.cells.get(branch_pos)
+                                if branch_cell and branch_cell.building_type:
+                                    branch_cell.shape = shape
+                                    branch_cell.throughput += branch_throughput
+                                port['shape'] = shape
+                                port['throughput'] += branch_throughput
+                                port['connected'] = True
+                                fed_machine = True
+                                break
+                        if fed_machine:
+                            break
+
+                    # Check for edge outputs at branch position
+                    if not fed_machine:
+                        for out in self.outputs:
+                            if out['position'] == branch_pos:
+                                branch_cell = self.cells.get(branch_pos)
+                                if branch_cell and branch_cell.building_type:
+                                    branch_cell.shape = shape
+                                    branch_cell.throughput += branch_throughput
+                                out['actual_shape'] = shape
+                                out['throughput'] += branch_throughput
+                                fed_machine = True
+                                break
+
+                    # Continue tracing if it's a belt
+                    if not fed_machine and branch_pos in self.cells:
+                        branch_path = [] if path is not None else None
+                        self._trace_from_position(branch_pos, shape, branch_throughput, visited, branch_path)
+                        if path is not None and branch_path:
+                            path.extend(branch_path)
+
+                return  # Already handled all branches
+
+            # No valid branches found, use primary direction
+            dx, dy = direction_delta(primary_dir)
             next_pos = (start[0] + dx, start[1] + dy, start[2])
 
         elif cell.building_type == BuildingType.BELT_PORT_SENDER:
@@ -578,8 +754,10 @@ class FlowSimulator:
             out['throughput'] = 0.0
 
         # Phase 1: Trace from inputs through belts to first machines
-        visited = set()
+        # Use per-input visited sets to allow merging (multiple inputs into one belt)
+        # But track globally visited to prevent infinite loops within same trace
         for inp in self.inputs:
+            visited = set()  # Fresh visited set for each input to allow merging
             pos = inp['position']
             shape = inp['shape']
             throughput = inp['throughput']
@@ -590,8 +768,39 @@ class FlowSimulator:
             if pos in self.cells:
                 cell = self.cells[pos]
                 cell.shape = shape
-                cell.throughput = throughput
-                self._trace_from_position(pos, shape, throughput, visited, path)
+                cell.throughput = throughput  # Set initial throughput
+                visited.add(pos)  # Mark as visited so trace doesn't double-count
+                path.append(pos)
+
+                # Find next position based on belt type and trace from there
+                if cell.building_type in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
+                                          BuildingType.BELT_RIGHT):
+                    # Get primary output direction
+                    if cell.building_type == BuildingType.BELT_FORWARD:
+                        primary_dir = cell.rotation
+                    elif cell.building_type == BuildingType.BELT_LEFT:
+                        left_turn = {Rotation.EAST: Rotation.NORTH, Rotation.SOUTH: Rotation.EAST,
+                                     Rotation.WEST: Rotation.SOUTH, Rotation.NORTH: Rotation.WEST}
+                        primary_dir = left_turn[cell.rotation]
+                    else:
+                        right_turn = {Rotation.EAST: Rotation.SOUTH, Rotation.SOUTH: Rotation.WEST,
+                                      Rotation.WEST: Rotation.NORTH, Rotation.NORTH: Rotation.EAST}
+                        primary_dir = right_turn[cell.rotation]
+
+                    # Find branch outputs and trace from each
+                    branch_outputs = self._find_belt_branch_outputs(pos, primary_dir)
+                    if branch_outputs:
+                        branch_throughput = throughput / len(branch_outputs)
+                        for branch_pos, _ in branch_outputs:
+                            self._trace_from_position(branch_pos, shape, branch_throughput, visited, path)
+                    else:
+                        # No branches, trace in primary direction
+                        dx, dy = direction_delta(primary_dir)
+                        next_pos = (pos[0] + dx, pos[1] + dy, pos[2])
+                        self._trace_from_position(next_pos, shape, throughput, visited, path)
+                else:
+                    # Non-standard belt at input, just trace forward
+                    self._trace_from_position(pos, shape, throughput, visited, path)
             else:
                 # Check if directly feeding a machine input
                 for origin, machine in self.machines.items():
@@ -1034,6 +1243,77 @@ def demo():
     report5 = sim5.simulate()
     sim5.print_grid(0)
     print(report5)
+
+    # Test 6: Belt branching (90° allowed)
+    print("\n\n>>> TEST 6: Belt Branching (90° - ALLOWED)")
+    print("    One input belt branching to two belts at 90°")
+    print("    Expected: 90/min to each branch")
+
+    sim6 = FlowSimulator(14, 14, 4)
+    # Input belt going east
+    sim6.place_building(BuildingType.BELT_FORWARD, 3, 5, 0, Rotation.EAST)
+    # Branch belt going east (continues forward)
+    sim6.place_building(BuildingType.BELT_FORWARD, 4, 5, 0, Rotation.EAST)
+    # Branch belt going north (takes from south - 90° branch)
+    sim6.place_building(BuildingType.BELT_FORWARD, 4, 4, 0, Rotation.NORTH)
+    # Continue east branch
+    sim6.place_building(BuildingType.BELT_FORWARD, 5, 5, 0, Rotation.EAST)
+    # Continue north branch
+    sim6.place_building(BuildingType.BELT_FORWARD, 4, 3, 0, Rotation.NORTH)
+
+    sim6.set_input(3, 5, 0, "CuCuCuCu", 180.0)
+    sim6.set_output(6, 5, 0)  # East output
+    sim6.set_output(4, 2, 0)  # North output
+
+    report6 = sim6.simulate()
+    sim6.print_grid(0)
+    print(report6)
+
+    # Test 7: Belt branching (180° NOT allowed)
+    print("\n\n>>> TEST 7: Belt Branching (180° - NOT ALLOWED)")
+    print("    One input belt with opposite direction branches")
+    print("    Expected: Only primary direction gets flow")
+
+    sim7 = FlowSimulator(14, 14, 4)
+    # Input belt going east
+    sim7.place_building(BuildingType.BELT_FORWARD, 3, 5, 0, Rotation.EAST)
+    # Branch belt going east (forward)
+    sim7.place_building(BuildingType.BELT_FORWARD, 4, 5, 0, Rotation.EAST)
+    # Branch belt going west (opposite - should be blocked)
+    sim7.place_building(BuildingType.BELT_FORWARD, 2, 5, 0, Rotation.WEST)
+    # Continue east
+    sim7.place_building(BuildingType.BELT_FORWARD, 5, 5, 0, Rotation.EAST)
+
+    sim7.set_input(3, 5, 0, "CuCuCuCu", 180.0)
+    sim7.set_output(6, 5, 0)  # East output
+    sim7.set_output(1, 5, 0)  # West output (should get nothing)
+
+    report7 = sim7.simulate()
+    sim7.print_grid(0)
+    print(report7)
+
+    # Test 8: Belt merging (multiple inputs to one belt)
+    print("\n\n>>> TEST 8: Belt Merging")
+    print("    Two input belts merging into one")
+    print("    Expected: Combined throughput on merged belt")
+
+    sim8 = FlowSimulator(14, 14, 4)
+    # Two input belts
+    sim8.place_building(BuildingType.BELT_FORWARD, 2, 4, 0, Rotation.SOUTH)  # Goes south to merge point
+    sim8.place_building(BuildingType.BELT_FORWARD, 2, 6, 0, Rotation.NORTH)  # Goes north to merge point
+    # Merge point
+    sim8.place_building(BuildingType.BELT_FORWARD, 2, 5, 0, Rotation.EAST)  # Receives from both, outputs east
+    # Continue east
+    sim8.place_building(BuildingType.BELT_FORWARD, 3, 5, 0, Rotation.EAST)
+    sim8.place_building(BuildingType.BELT_FORWARD, 4, 5, 0, Rotation.EAST)
+
+    sim8.set_input(2, 4, 0, "CuCuCuCu", 90.0)  # 90 from north
+    sim8.set_input(2, 6, 0, "CuCuCuCu", 90.0)  # 90 from south
+    sim8.set_output(5, 5, 0)  # Should receive 180 combined
+
+    report8 = sim8.simulate()
+    sim8.print_grid(0)
+    print(report8)
 
 
 if __name__ == "__main__":
