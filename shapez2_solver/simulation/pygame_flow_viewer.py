@@ -619,52 +619,46 @@ class FlowViewer:
             bar_thickness = 4
 
             # Show input ports as cyan edge bars on the machine cell
-            for rel_x, rel_y, rel_z in ports_def.get('inputs', []):
+            for port_info in ports_def.get('inputs', []):
+                if len(port_info) == 4:
+                    rel_x, rel_y, rel_z, direction = port_info
+                else:
+                    rel_x, rel_y, rel_z = port_info
+                    direction = 'W'
+
+                # Rotate position and direction
                 rot_x, rot_y = self._rotate_offset(rel_x, rel_y)
-                # Port position is external - find the machine cell it connects to
-                # Input from (-1, 0) means machine cell (0, 0) has input on WEST edge
-                machine_cell_x = grid_x - rot_x  # Opposite of port direction
-                machine_cell_y = grid_y - rot_y
-                # But we need the cell relative to origin, so use the port direction to find edge
-                # Actually, let's draw on the machine cell that this port connects to
-                # For input at (-1,0), the machine cell at (0,0) has a west input edge
-                cell_x = grid_x  # Input connects to origin cell (adjusted by port offset gives external pos)
-                cell_y = grid_y + rot_y  # Y position within machine for multi-cell machines
+                rot_dir = self._rotate_direction_char(direction)
+
+                # Cell position is internal to machine footprint
+                cell_x = grid_x + rot_x
+                cell_y = grid_y + rot_y
 
                 if 0 <= cell_x < self.grid_width and 0 <= cell_y < self.grid_height:
                     cx = cell_x * self.cell_size
                     cy = offset_y + cell_y * self.cell_size
-                    # Determine which edge based on port offset direction
-                    if rot_x < 0:  # Port to west, input on west edge
-                        bar_rect = (cx, cy, bar_thickness, self.cell_size - 1)
-                    elif rot_x > 0:  # Port to east, input on east edge
-                        bar_rect = (cx + self.cell_size - bar_thickness - 1, cy, bar_thickness, self.cell_size - 1)
-                    elif rot_y < 0:  # Port to north, input on north edge
-                        bar_rect = (cx, cy, self.cell_size - 1, bar_thickness)
-                    else:  # Port to south, input on south edge
-                        bar_rect = (cx, cy + self.cell_size - bar_thickness - 1, self.cell_size - 1, bar_thickness)
+                    # Draw bar on the edge indicated by direction
+                    bar_rect = self._get_edge_bar_rect(cx, cy, rot_dir, bar_thickness)
                     pygame.draw.rect(self.screen, CYAN, bar_rect)
 
             # Show output ports as orange edge bars on the machine cell
-            for idx, (rel_x, rel_y, rel_z) in enumerate(ports_def.get('outputs', [])):
+            for port_info in ports_def.get('outputs', []):
+                if len(port_info) == 4:
+                    rel_x, rel_y, rel_z, direction = port_info
+                else:
+                    rel_x, rel_y, rel_z = port_info
+                    direction = 'E'
+
                 rot_x, rot_y = self._rotate_offset(rel_x, rel_y)
-                # For multi-cell machines, output position indicates which cell
-                # Output at (1, 0) means cell at origin, output at (1, 1) means cell at y+1
-                cell_x = grid_x
-                cell_y = grid_y + (rot_y if rot_x != 0 else 0)  # Y offset for vertical machines
+                rot_dir = self._rotate_direction_char(direction)
+
+                cell_x = grid_x + rot_x
+                cell_y = grid_y + rot_y
 
                 if 0 <= cell_x < self.grid_width and 0 <= cell_y < self.grid_height:
                     cx = cell_x * self.cell_size
                     cy = offset_y + cell_y * self.cell_size
-                    # Determine which edge based on port offset direction
-                    if rot_x > 0:  # Output to east
-                        bar_rect = (cx + self.cell_size - bar_thickness - 1, cy, bar_thickness, self.cell_size - 1)
-                    elif rot_x < 0:  # Output to west
-                        bar_rect = (cx, cy, bar_thickness, self.cell_size - 1)
-                    elif rot_y > 0:  # Output to south
-                        bar_rect = (cx, cy + self.cell_size - bar_thickness - 1, self.cell_size - 1, bar_thickness)
-                    else:  # Output to north
-                        bar_rect = (cx, cy, self.cell_size - 1, bar_thickness)
+                    bar_rect = self._get_edge_bar_rect(cx, cy, rot_dir, bar_thickness)
                     pygame.draw.rect(self.screen, ORANGE, bar_rect)
 
     def _rotate_offset(self, dx: int, dy: int) -> Tuple[int, int]:
@@ -678,42 +672,63 @@ class FlowViewer:
         else:  # NORTH
             return (dy, -dx)
 
+    def _rotate_direction_char(self, direction: str) -> str:
+        """Rotate a direction character by current rotation."""
+        directions = ['E', 'S', 'W', 'N']  # Clockwise order
+        rotations = {
+            Rotation.EAST: 0,
+            Rotation.SOUTH: 1,
+            Rotation.WEST: 2,
+            Rotation.NORTH: 3,
+        }
+        idx = directions.index(direction)
+        new_idx = (idx + rotations[self.current_rotation]) % 4
+        return directions[new_idx]
+
+    def _get_edge_bar_rect(self, cx: int, cy: int, direction: str, thickness: int) -> Tuple[int, int, int, int]:
+        """Get rectangle for drawing a bar on a cell edge."""
+        if direction == 'W':
+            return (cx, cy, thickness, self.cell_size - 1)
+        elif direction == 'E':
+            return (cx + self.cell_size - thickness - 1, cy, thickness, self.cell_size - 1)
+        elif direction == 'N':
+            return (cx, cy, self.cell_size - 1, thickness)
+        else:  # S
+            return (cx, cy + self.cell_size - thickness - 1, self.cell_size - 1, thickness)
+
     def draw_port_labels(self):
         """Draw input/output port labels for machines on the machine edges."""
         offset_y = self.toolbar_height
 
+        # Direction to edge offset mapping
+        dir_to_offset = {
+            'W': (-0.4, 0),
+            'E': (0.4, 0),
+            'N': (0, -0.4),
+            'S': (0, 0.4),
+        }
+
         for origin, machine in self.sim.machines.items():
             ox, oy, oz = origin
 
-            # Machine center position on screen (always at origin x,y)
-            mcx = ox * self.cell_size + self.cell_size // 2
-            mcy = offset_y + oy * self.cell_size + self.cell_size // 2
-
-            # Draw input ports - show ports on current floor even if machine origin is on different floor
+            # Draw input ports
             for port in machine.input_ports:
                 px, py, pz = port['position']
                 if pz != self.current_floor:
                     continue
 
-                # For multi-floor machines, draw port at its actual position
-                # Calculate direction from machine to port (in x,y plane)
-                dx = px - ox
-                dy = py - oy
+                port_dir = port.get('direction', 'W')
 
-                # Draw label at port position (for ports on different floors, show at port x,y)
+                # Port is ON the machine cell, draw label on the appropriate edge
                 port_cx = px * self.cell_size + self.cell_size // 2
                 port_cy = offset_y + py * self.cell_size + self.cell_size // 2
 
-                # If machine origin is on this floor, draw on edge; otherwise draw at port position
-                if oz == self.current_floor:
-                    label_x = mcx + dx * (self.cell_size // 2 - 5)
-                    label_y = mcy + dy * (self.cell_size // 2 - 5)
-                else:
-                    # Machine is on different floor, show port with indicator
-                    label_x = port_cx
-                    label_y = port_cy
+                # Offset label toward the edge based on direction
+                dx, dy = dir_to_offset.get(port_dir, (0, 0))
+                label_x = port_cx + dx * self.cell_size
+                label_y = port_cy + dy * self.cell_size
 
-                # Draw small "I" label (input) with floor indicator for multi-floor
+                # Draw small "I" label (input)
                 pygame.draw.circle(self.screen, CYAN, (int(label_x), int(label_y)), 7)
                 label = "I"
                 if pz != oz:  # Port on different floor than machine origin
@@ -727,18 +742,14 @@ class FlowViewer:
                 if pz != self.current_floor:
                     continue
 
-                dx = px - ox
-                dy = py - oy
+                port_dir = port.get('direction', 'E')
 
                 port_cx = px * self.cell_size + self.cell_size // 2
                 port_cy = offset_y + py * self.cell_size + self.cell_size // 2
 
-                if oz == self.current_floor:
-                    label_x = mcx + dx * (self.cell_size // 2 - 5)
-                    label_y = mcy + dy * (self.cell_size // 2 - 5)
-                else:
-                    label_x = port_cx
-                    label_y = port_cy
+                dx, dy = dir_to_offset.get(port_dir, (0, 0))
+                label_x = port_cx + dx * self.cell_size
+                label_y = port_cy + dy * self.cell_size
 
                 # Draw small "O" label (output)
                 color = RED if port.get('backed_up') else ORANGE

@@ -154,121 +154,134 @@ BUILDING_SPECS: Dict[BuildingType, BuildingSpec] = {
 
 
 # Port configurations for buildings
-# Format: {BuildingType: {'inputs': [(rel_x, rel_y, floor), ...], 'outputs': [(rel_x, rel_y, floor), ...]}}
-# rel_x, rel_y are relative to building origin, floor is 0-indexed
-# For EAST rotation (default): inputs from west (-x), outputs to east (+x)
-BUILDING_PORTS: Dict[BuildingType, Dict[str, List[Tuple[int, int, int]]]] = {
-    # Single floor buildings - all ports on floor 0
+# FORMAT: (cell_x, cell_y, cell_z, direction)
+#   - cell_x, cell_y, cell_z: Position relative to building origin (INTERNAL to footprint)
+#   - direction: Which edge the port is on ('W'=west, 'E'=east, 'N'=north, 'S'=south)
+#     For inputs: direction items come FROM
+#     For outputs: direction items go TO
+# For EAST rotation (default): inputs from west, outputs to east
+BUILDING_PORTS: Dict[BuildingType, Dict[str, List[Tuple[int, int, int, str]]]] = {
+    # Belts - 1x1, pass-through
     BuildingType.BELT_FORWARD: {
-        'inputs': [(-1, 0, 0)],
-        'outputs': [(1, 0, 0)],
+        'inputs': [(0, 0, 0, 'W')],   # Input from west edge
+        'outputs': [(0, 0, 0, 'E')],  # Output to east edge
     },
+    BuildingType.BELT_LEFT: {
+        'inputs': [(0, 0, 0, 'W')],   # Input from west edge
+        'outputs': [(0, 0, 0, 'N')],  # Output to north edge (left turn)
+    },
+    BuildingType.BELT_RIGHT: {
+        'inputs': [(0, 0, 0, 'W')],   # Input from west edge
+        'outputs': [(0, 0, 0, 'S')],  # Output to south edge (right turn)
+    },
+
+    # Rotators - 1x1
     BuildingType.ROTATOR_CW: {
-        'inputs': [(-1, 0, 0)],
-        'outputs': [(1, 0, 0)],
+        'inputs': [(0, 0, 0, 'W')],
+        'outputs': [(0, 0, 0, 'E')],
     },
     BuildingType.ROTATOR_CCW: {
-        'inputs': [(-1, 0, 0)],
-        'outputs': [(1, 0, 0)],
+        'inputs': [(0, 0, 0, 'W')],
+        'outputs': [(0, 0, 0, 'E')],
     },
     BuildingType.ROTATOR_180: {
-        'inputs': [(-1, 0, 0)],
-        'outputs': [(1, 0, 0)],
+        'inputs': [(0, 0, 0, 'W')],
+        'outputs': [(0, 0, 0, 'E')],
     },
     BuildingType.HALF_CUTTER: {
-        'inputs': [(-1, 0, 0)],
-        'outputs': [(1, 0, 0)],
+        'inputs': [(0, 0, 0, 'W')],
+        'outputs': [(0, 0, 0, 'E')],
     },
-    # Cutter: 1x2, input at top, outputs go east (one at top row, one at bottom row going south)
+    # Cutter: 1x2, input on top cell (0,0), outputs from both cells to east
     BuildingType.CUTTER: {
-        'inputs': [(-1, 0, 0)],  # Input from west at top of building
-        'outputs': [(1, 0, 0), (1, 1, 0)],  # Output 0 at y=0, Output 1 at y=1 (south)
+        'inputs': [(0, 0, 0, 'W')],  # Input on top cell from west
+        'outputs': [(0, 0, 0, 'E'), (0, 1, 0, 'E')],  # Output from top and bottom cells to east
     },
-    # Cutter Mirrored: 1x2, input at bottom, outputs go east (mirror of CUTTER - second output goes north)
+    # Cutter Mirrored: 1x2, input on bottom cell (0,1), outputs from both cells
     BuildingType.CUTTER_MIRRORED: {
-        'inputs': [(-1, 1, 0)],  # Input from west at BOTTOM of building (mirrored)
-        'outputs': [(1, 1, 0), (1, 0, 0)],  # Output 0 at y=1, Output 1 at y=0 (north, mirrored)
+        'inputs': [(0, 1, 0, 'W')],  # Input on bottom cell from west (mirrored)
+        'outputs': [(0, 1, 0, 'E'), (0, 0, 0, 'E')],  # Output from bottom and top cells
     },
-    # Swapper: 1x2, two inputs from west, two outputs to east
+    # Swapper: 1x2, inputs on both cells from west, outputs from both to east
     BuildingType.SWAPPER: {
-        'inputs': [(-1, 0, 0), (-1, 1, 0)],  # Two inputs from west at y=0 and y=1
-        'outputs': [(1, 0, 0), (1, 1, 0)],   # Two outputs to east at y=0 and y=1
+        'inputs': [(0, 0, 0, 'W'), (0, 1, 0, 'W')],
+        'outputs': [(0, 0, 0, 'E'), (0, 1, 0, 'E')],
     },
-    # Stacker (Straight): 2 floors - bottom input floor 0, top input floor 1, output floor 0
+    # Stacker (Straight): inputs on floor 0 and 1, output from floor 0 to east
     BuildingType.STACKER: {
-        'inputs': [(-1, 0, 0), (-1, 0, 1)],  # Bottom shape from floor 0, top shape from floor 1
-        'outputs': [(1, 0, 0)],               # Output on floor 0 (straight ahead)
+        'inputs': [(0, 0, 0, 'W'), (0, 0, 1, 'W')],  # Floor 0 and floor 1 inputs
+        'outputs': [(0, 0, 0, 'E')],
     },
-    # Stacker (Bent): 2 floors - same inputs, but output is perpendicular (to south)
+    # Stacker (Bent): inputs same, output to south
     BuildingType.STACKER_BENT: {
-        'inputs': [(-1, 0, 0), (-1, 0, 1)],  # Bottom shape from floor 0, top shape from floor 1
-        'outputs': [(0, 1, 0)],               # Output on floor 0 (bent to south)
+        'inputs': [(0, 0, 0, 'W'), (0, 0, 1, 'W')],
+        'outputs': [(0, 0, 0, 'S')],  # Output to south
     },
-    # Stacker (Bent Mirrored): 2 floors - same inputs, output bent to north
+    # Stacker (Bent Mirrored): output to north
     BuildingType.STACKER_BENT_MIRRORED: {
-        'inputs': [(-1, 0, 0), (-1, 0, 1)],  # Bottom shape from floor 0, top shape from floor 1
-        'outputs': [(0, -1, 0)],              # Output on floor 0 (bent to north)
+        'inputs': [(0, 0, 0, 'W'), (0, 0, 1, 'W')],
+        'outputs': [(0, 0, 0, 'N')],  # Output to north
     },
-    # Unstacker: 2 floors - input floor 0, outputs on both floors
+    # Unstacker: input floor 0, outputs on floor 0 and 1
     BuildingType.UNSTACKER: {
-        'inputs': [(-1, 0, 0)],               # Input on floor 0
-        'outputs': [(1, 0, 0), (1, 0, 1)],    # Bottom layer to floor 0, top layer to floor 1
+        'inputs': [(0, 0, 0, 'W')],
+        'outputs': [(0, 0, 0, 'E'), (0, 0, 1, 'E')],
     },
-    # Painter: shape input + color input (color from north)
+    # Painter: shape from west, color from north
     BuildingType.PAINTER: {
-        'inputs': [(-1, 0, 0), (0, -1, 0)],  # Shape from west, color from north
-        'outputs': [(1, 0, 0)],
+        'inputs': [(0, 0, 0, 'W'), (0, 0, 0, 'N')],
+        'outputs': [(0, 0, 0, 'E')],
     },
-    # Painter Mirrored: color from south instead of north
+    # Painter Mirrored: color from south
     BuildingType.PAINTER_MIRRORED: {
-        'inputs': [(-1, 0, 0), (0, 1, 0)],  # Shape from west, color from south
-        'outputs': [(1, 0, 0)],
+        'inputs': [(0, 0, 0, 'W'), (0, 0, 0, 'S')],
+        'outputs': [(0, 0, 0, 'E')],
     },
     BuildingType.TRASH: {
-        'inputs': [(-1, 0, 0)],
+        'inputs': [(0, 0, 0, 'W')],
         'outputs': [],
     },
     BuildingType.PIN_PUSHER: {
-        'inputs': [(-1, 0, 0)],
-        'outputs': [(1, 0, 0)],
+        'inputs': [(0, 0, 0, 'W')],
+        'outputs': [(0, 0, 0, 'E')],
     },
-    # Splitters: 1 input -> 2 outputs (left and right side)
+    # Splitters: input from west, outputs to north and south
     BuildingType.SPLITTER: {
-        'inputs': [(-1, 0, 0)],
-        'outputs': [(0, -1, 0), (0, 1, 0)],  # Split to north and south
+        'inputs': [(0, 0, 0, 'W')],
+        'outputs': [(0, 0, 0, 'N'), (0, 0, 0, 'S')],
     },
     BuildingType.SPLITTER_LEFT: {
-        'inputs': [(-1, 0, 0)],
-        'outputs': [(0, -1, 0), (0, 1, 0)],  # Priority to north
+        'inputs': [(0, 0, 0, 'W')],
+        'outputs': [(0, 0, 0, 'N'), (0, 0, 0, 'S')],
     },
     BuildingType.SPLITTER_RIGHT: {
-        'inputs': [(-1, 0, 0)],
-        'outputs': [(0, -1, 0), (0, 1, 0)],  # Priority to south
+        'inputs': [(0, 0, 0, 'W')],
+        'outputs': [(0, 0, 0, 'N'), (0, 0, 0, 'S')],
     },
-    # Mergers: 2 inputs -> 1 output
+    # Mergers: inputs from north and south, output to east
     BuildingType.MERGER: {
-        'inputs': [(0, -1, 0), (0, 1, 0)],  # From north and south
-        'outputs': [(1, 0, 0)],
+        'inputs': [(0, 0, 0, 'N'), (0, 0, 0, 'S')],
+        'outputs': [(0, 0, 0, 'E')],
     },
     # Lifts: vertical movement between floors
     BuildingType.LIFT_UP: {
-        'inputs': [(-1, 0, 0)],   # Input on floor 0
-        'outputs': [(1, 0, 1)],   # Output on floor 1
+        'inputs': [(0, 0, 0, 'W')],
+        'outputs': [(0, 0, 1, 'E')],
     },
     BuildingType.LIFT_DOWN: {
-        'inputs': [(-1, 0, 1)],   # Input on floor 1
-        'outputs': [(1, 0, 0)],   # Output on floor 0
+        'inputs': [(0, 0, 1, 'W')],
+        'outputs': [(0, 0, 0, 'E')],
     },
     # Belt ports (teleporters) - sender/receiver pairs
     # Note: sender has no physical output, receiver has no physical input
     # They are linked by channel ID in the game
     BuildingType.BELT_PORT_SENDER: {
-        'inputs': [(-1, 0, 0)],   # Input from west
-        'outputs': [],            # No physical output (teleports)
+        'inputs': [(0, 0, 0, 'W')],   # Input from west edge
+        'outputs': [],                 # No physical output (teleports)
     },
     BuildingType.BELT_PORT_RECEIVER: {
-        'inputs': [],             # No physical input (receives teleport)
-        'outputs': [(1, 0, 0)],   # Output to east
+        'inputs': [],                  # No physical input (receives teleport)
+        'outputs': [(0, 0, 0, 'E')],   # Output to east edge
     },
 }
 
@@ -307,19 +320,64 @@ class Rotation(Enum):
         return dirs[self]
 
 
-def get_building_ports(building_type: BuildingType, rotation: Rotation = Rotation.EAST) -> Dict[str, List[Tuple[int, int, int]]]:
-    """Get input/output port positions for a building type and rotation."""
-    ports = BUILDING_PORTS.get(building_type, {
-        'inputs': [(-1, 0, 0)],
-        'outputs': [(1, 0, 0)],
-    })
+def _rotate_position(x: int, y: int, rotation: Rotation) -> Tuple[int, int]:
+    """Rotate a relative position by the given rotation."""
+    if rotation == Rotation.EAST:
+        return (x, y)
+    elif rotation == Rotation.SOUTH:
+        return (-y, x)
+    elif rotation == Rotation.WEST:
+        return (-x, -y)
+    else:  # NORTH
+        return (y, -x)
+
+
+def _rotate_direction(direction: str, rotation: Rotation) -> str:
+    """Rotate a direction by the given rotation."""
+    directions = ['E', 'S', 'W', 'N']  # Clockwise order
+    rotations = {
+        Rotation.EAST: 0,
+        Rotation.SOUTH: 1,
+        Rotation.WEST: 2,
+        Rotation.NORTH: 3,
+    }
+    idx = directions.index(direction)
+    new_idx = (idx + rotations[rotation]) % 4
+    return directions[new_idx]
+
+
+def get_building_ports(building_type: BuildingType, rotation: Rotation = Rotation.EAST) -> Dict[str, List[Tuple[int, int, int, str]]]:
+    """Get input/output port positions for a building type and rotation.
+
+    Returns ports in format: (cell_x, cell_y, cell_z, direction)
+    All positions are INTERNAL to the building footprint.
+    """
+    default_ports = {
+        'inputs': [(0, 0, 0, 'W')],
+        'outputs': [(0, 0, 0, 'E')],
+    }
+    ports = BUILDING_PORTS.get(building_type, default_ports)
 
     if rotation == Rotation.EAST:
         return ports  # Default orientation
 
     # Rotate ports for other orientations
-    # TODO: Implement rotation transformation
-    return ports
+    rotated = {'inputs': [], 'outputs': []}
+
+    for port_type in ['inputs', 'outputs']:
+        for port in ports.get(port_type, []):
+            if len(port) == 4:
+                x, y, z, direction = port
+                rot_x, rot_y = _rotate_position(x, y, rotation)
+                rot_dir = _rotate_direction(direction, rotation)
+                rotated[port_type].append((rot_x, rot_y, z, rot_dir))
+            else:
+                # Legacy 3-tuple format - shouldn't happen anymore
+                x, y, z = port
+                rot_x, rot_y = _rotate_position(x, y, rotation)
+                rotated[port_type].append((rot_x, rot_y, z, 'W' if port_type == 'inputs' else 'E'))
+
+    return rotated
 
 
 def get_throughput_ratio(building_type: BuildingType) -> int:

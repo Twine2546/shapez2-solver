@@ -225,33 +225,53 @@ class FlowSimulator:
         
         # For machines, create state and calculate ports
         if building_type in MACHINE_THROUGHPUT:
-            ports_def = BUILDING_PORTS.get(building_type, {'inputs': [(-1,0,0)], 'outputs': [(1,0,0)]})
-            
+            ports_def = BUILDING_PORTS.get(building_type, {'inputs': [(0,0,0,'W')], 'outputs': [(0,0,0,'E')]})
+
             input_ports = []
-            for i, (rel_x, rel_y, rel_z) in enumerate(ports_def.get('inputs', [])):
+            for i, port_info in enumerate(ports_def.get('inputs', [])):
+                # New format: (cell_x, cell_y, cell_z, direction) - all internal
+                if len(port_info) == 4:
+                    rel_x, rel_y, rel_z, direction = port_info
+                else:
+                    # Old format fallback
+                    rel_x, rel_y, rel_z = port_info
+                    direction = 'W'  # Default input from west
+
                 rot_x, rot_y = rotate_offset(rel_x, rel_y, rotation)
-                world_pos = (x + rot_x, y + rot_y, floor + rel_z)
+                # Port position is ON the machine cell
+                machine_cell_pos = (x + rot_x, y + rot_y, floor + rel_z)
+                # Rotate direction based on machine rotation
+                rot_dir = self._rotate_direction(direction, rotation)
                 input_ports.append({
                     'index': i,
-                    'position': world_pos,
+                    'position': machine_cell_pos,  # Position ON the machine
+                    'direction': rot_dir,  # Which edge receives input
                     'shape': None,
                     'throughput': 0.0,
                     'connected': False,
                 })
-            
+
             output_ports = []
-            for i, (rel_x, rel_y, rel_z) in enumerate(ports_def.get('outputs', [])):
+            for i, port_info in enumerate(ports_def.get('outputs', [])):
+                if len(port_info) == 4:
+                    rel_x, rel_y, rel_z, direction = port_info
+                else:
+                    rel_x, rel_y, rel_z = port_info
+                    direction = 'E'  # Default output to east
+
                 rot_x, rot_y = rotate_offset(rel_x, rel_y, rotation)
-                world_pos = (x + rot_x, y + rot_y, floor + rel_z)
+                machine_cell_pos = (x + rot_x, y + rot_y, floor + rel_z)
+                rot_dir = self._rotate_direction(direction, rotation)
                 output_ports.append({
                     'index': i,
-                    'position': world_pos,
+                    'position': machine_cell_pos,  # Position ON the machine
+                    'direction': rot_dir,  # Which edge outputs
                     'shape': None,
                     'throughput': 0.0,
                     'connected': False,
                     'backed_up': False,
                 })
-            
+
             self.machines[origin] = MachineState(
                 origin=origin,
                 building_type=building_type,
@@ -260,6 +280,28 @@ class FlowSimulator:
                 output_ports=output_ports,
                 max_throughput=MACHINE_THROUGHPUT[building_type],
             )
+
+    def _rotate_direction(self, direction: str, rotation: Rotation) -> str:
+        """Rotate a direction (W/E/N/S) by the building rotation."""
+        directions = ['E', 'S', 'W', 'N']  # Clockwise order
+        rotations = {
+            Rotation.EAST: 0,
+            Rotation.SOUTH: 1,
+            Rotation.WEST: 2,
+            Rotation.NORTH: 3,
+        }
+        idx = directions.index(direction)
+        new_idx = (idx + rotations[rotation]) % 4
+        return directions[new_idx]
+
+    def _direction_to_delta(self, direction: str) -> Tuple[int, int]:
+        """Convert direction to (dx, dy) for finding adjacent cell."""
+        return {
+            'E': (1, 0),
+            'W': (-1, 0),
+            'N': (0, -1),
+            'S': (0, 1),
+        }[direction]
     
     def set_input(self, x: int, y: int, floor: int, shape: str, throughput: float = 180.0):
         """Set an input source."""
@@ -437,6 +479,17 @@ class FlowSimulator:
         # Default: pass through
         return input_shape
     
+    def _get_adjacent_pos_for_direction(self, pos: Tuple[int, int, int], direction: str) -> Tuple[int, int, int]:
+        """Get the adjacent position in the given direction."""
+        x, y, z = pos
+        deltas = {'E': (1, 0), 'W': (-1, 0), 'N': (0, -1), 'S': (0, 1)}
+        dx, dy = deltas[direction]
+        return (x + dx, y + dy, z)
+
+    def _opposite_direction(self, direction: str) -> str:
+        """Get the opposite direction."""
+        return {'E': 'W', 'W': 'E', 'N': 'S', 'S': 'N'}[direction]
+
     def _find_belt_branch_outputs(self, pos: Tuple[int, int, int], primary_direction: Rotation) -> List[Tuple[Tuple[int, int, int], Rotation, bool]]:
         """
         Find all valid output positions for a belt, supporting branching.
@@ -452,21 +505,28 @@ class FlowSimulator:
 
         # Check all 4 adjacent positions
         adjacent = [
-            ((x + 1, y, z), Rotation.EAST),
-            ((x - 1, y, z), Rotation.WEST),
-            ((x, y + 1, z), Rotation.SOUTH),
-            ((x, y - 1, z), Rotation.NORTH),
+            ((x + 1, y, z), Rotation.EAST, 'E'),
+            ((x - 1, y, z), Rotation.WEST, 'W'),
+            ((x, y + 1, z), Rotation.SOUTH, 'S'),
+            ((x, y - 1, z), Rotation.NORTH, 'N'),
         ]
 
-        for adj_pos, direction_to_adj in adjacent:
+        for adj_pos, direction_to_adj, dir_char in adjacent:
             adj_cell = self.cells.get(adj_pos)
 
-            # First check if this position is a machine input port
+            # Direction from adj back to us (opposite)
+            dir_from_adj_to_us = self._opposite_direction(dir_char)
+
+            # Check if adjacent position is a machine cell with an input facing us
+            # A port with direction 'W' means it receives from the west (our position if we're west of it)
             is_machine_input = False
             for origin, machine in self.machines.items():
                 for port in machine.input_ports:
-                    if port['position'] == adj_pos:
-                        # This adjacent position is a machine input port
+                    # Port is ON the machine cell at port['position']
+                    # Port direction tells us which edge receives input
+                    # If port direction is 'W', it receives from the cell to its west
+                    if port['position'] == adj_pos and port.get('direction') == dir_from_adj_to_us:
+                        # Machine at adj_pos has an input that receives from our direction
                         valid_outputs.append((adj_pos, direction_to_adj, True))
                         is_machine_input = True
                         break
@@ -476,43 +536,41 @@ class FlowSimulator:
             if is_machine_input:
                 continue  # Already added as machine input
 
-            # Check for edge outputs
+            # Check for edge outputs at adjacent position
             for out in self.outputs:
                 if out['position'] == adj_pos:
                     valid_outputs.append((adj_pos, direction_to_adj, False))
+                    break
+            else:
+                # Not an edge output, check for belt connection
+                if not adj_cell or not adj_cell.building_type:
                     continue
 
-            if not adj_cell or not adj_cell.building_type:
-                continue
+                # Check if adjacent cell is a belt-type building
+                if adj_cell.building_type not in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
+                                                   BuildingType.BELT_RIGHT, BuildingType.BELT_PORT_SENDER,
+                                                   BuildingType.BELT_PORT_RECEIVER, BuildingType.LIFT_UP,
+                                                   BuildingType.LIFT_DOWN):
+                    # Could be a machine body cell - skip
+                    continue
 
-            # Check if adjacent cell is a belt-type building
-            if adj_cell.building_type not in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
-                                               BuildingType.BELT_RIGHT, BuildingType.BELT_PORT_SENDER,
-                                               BuildingType.BELT_PORT_RECEIVER, BuildingType.LIFT_UP,
-                                               BuildingType.LIFT_DOWN):
-                # Could be a machine body cell - skip
-                continue
+                # Check if the adjacent belt accepts input from our direction
+                adj_input_dir = get_belt_input_direction(adj_cell.building_type, adj_cell.rotation)
 
-            # Check if the adjacent belt accepts input from our direction
-            # The adjacent belt's input direction must match where we are relative to it
-            adj_input_dir = get_belt_input_direction(adj_cell.building_type, adj_cell.rotation)
+                # From adjacent's perspective, we are in the opposite direction
+                our_direction_from_adj = {
+                    Rotation.EAST: Rotation.WEST,
+                    Rotation.WEST: Rotation.EAST,
+                    Rotation.NORTH: Rotation.SOUTH,
+                    Rotation.SOUTH: Rotation.NORTH,
+                }[direction_to_adj]
 
-            # We are at position `pos`, adjacent is at `adj_pos`
-            # From adjacent's perspective, we are in direction opposite to direction_to_adj
-            our_direction_from_adj = {
-                Rotation.EAST: Rotation.WEST,
-                Rotation.WEST: Rotation.EAST,
-                Rotation.NORTH: Rotation.SOUTH,
-                Rotation.SOUTH: Rotation.NORTH,
-            }[direction_to_adj]
-
-            # Adjacent belt accepts from us if its input direction matches where we are
-            if adj_input_dir == our_direction_from_adj:
-                valid_outputs.append((adj_pos, direction_to_adj, False))
+                # Adjacent belt accepts from us if its input direction matches where we are
+                if adj_input_dir == our_direction_from_adj:
+                    valid_outputs.append((adj_pos, direction_to_adj, False))
 
         # If we have multiple outputs, check they're not 180° apart
         if len(valid_outputs) > 1:
-            # Check all pairs for 180° conflict
             directions = [d for _, d, _ in valid_outputs]
             has_conflict = False
             for i in range(len(directions)):
@@ -685,19 +743,18 @@ class FlowSimulator:
             # Non-belt building - stop tracing
             return
 
-        # Check if next position is a machine input, or if the belt is at an input port position
+        # Check if next position is a machine input
+        # Machine inputs are ON the machine cell - belt must be adjacent in the input direction
         for origin, machine in self.machines.items():
             for port in machine.input_ports:
-                # Match if: belt pointing TO input, OR belt IS at input position
-                if port['position'] == next_pos or port['position'] == start:
-                    # Update the belt at the input port position (if there is one)
-                    if next_pos in self.cells and port['position'] == next_pos:
-                        next_cell = self.cells[next_pos]
-                        if next_cell.building_type:  # It's a belt
-                            next_cell.shape = shape
-                            next_cell.throughput += throughput
-                            if path is not None:
-                                path.append(next_pos)
+                port_pos = port['position']
+                port_dir = port.get('direction', 'W')
+                # The belt position that can feed this port is adjacent in the input direction
+                # e.g., if port direction is 'W', the belt must be to the west of the port
+                expected_belt_pos = self._get_adjacent_pos_for_direction(port_pos, port_dir)
+
+                if start == expected_belt_pos:
+                    # This belt is in the right position to feed this machine input
                     port['shape'] = shape
                     port['throughput'] += throughput
                     port['connected'] = True
@@ -728,20 +785,28 @@ class FlowSimulator:
         count = 0
         for port in machine.output_ports:
             out_pos = port['position']
-            # Check for belt at output
-            if out_pos in self.cells and self.cells[out_pos].building_type:
+            out_dir = port.get('direction', 'E')
+            # Belt should be adjacent to machine in the output direction
+            belt_pos = self._get_adjacent_pos_for_direction(out_pos, out_dir)
+
+            # Check for belt at expected position
+            if belt_pos in self.cells and self.cells[belt_pos].building_type:
                 count += 1
             else:
-                # Check for machine input or edge output
+                # Check for direct machine-to-machine connection
                 for other_origin, other_m in self.machines.items():
                     if other_origin == machine.origin:
                         continue
                     for other_port in other_m.input_ports:
-                        if other_port['position'] == out_pos:
+                        other_port_pos = other_port['position']
+                        other_port_dir = other_port.get('direction', 'W')
+                        expected_feed_pos = self._get_adjacent_pos_for_direction(other_port_pos, other_port_dir)
+                        if expected_feed_pos == out_pos and self._opposite_direction(out_dir) == other_port_dir:
                             count += 1
                             break
+                # Check for edge output at belt position
                 for out in self.outputs:
-                    if out['position'] == out_pos:
+                    if out['position'] == belt_pos:
                         count += 1
         return count
 
@@ -914,34 +979,43 @@ class FlowSimulator:
                         port['throughput'] = effective_tp
 
                     # Check if output is connected and trace from there
+                    # Output port is ON the machine cell, direction tells where output goes
                     out_pos = port['position']
+                    out_dir = port.get('direction', 'E')
+                    # Belt should be adjacent to machine in the output direction
+                    belt_pos = self._get_adjacent_pos_for_direction(out_pos, out_dir)
 
-                    # Look for belt at output position
-                    if out_pos in self.cells and self.cells[out_pos].building_type:
+                    # Look for belt at the expected position
+                    if belt_pos in self.cells and self.cells[belt_pos].building_type:
                         port['connected'] = True
-                        # Trace from output
+                        # Trace from the belt
                         path = []
-                        self._trace_from_position(out_pos, port['shape'], port['throughput'], visited, path)
+                        self._trace_from_position(belt_pos, port['shape'], port['throughput'], visited, path)
                         if path:
                             self.traced_paths.append(path)
                     else:
-                        # Check if output goes to another machine or edge output
+                        # Check if output goes to another machine input (direct connection)
                         found_dest = False
                         for other_origin, other_machine in self.machines.items():
                             if other_origin == origin:
                                 continue
                             for other_port in other_machine.input_ports:
-                                if other_port['position'] == out_pos:
+                                other_port_pos = other_port['position']
+                                other_port_dir = other_port.get('direction', 'W')
+                                # Check if this machine's output feeds directly to other machine's input
+                                # Output at out_pos going out_dir should match input expecting from opposite direction
+                                expected_feed_pos = self._get_adjacent_pos_for_direction(other_port_pos, other_port_dir)
+                                if expected_feed_pos == out_pos and self._opposite_direction(out_dir) == other_port_dir:
                                     port['connected'] = True
-                                    # Feed directly to other machine's input
                                     other_port['shape'] = port['shape']
                                     other_port['throughput'] += port['throughput']
                                     other_port['connected'] = True
                                     found_dest = True
                                     break
 
+                        # Check for edge outputs at belt position
                         for out in self.outputs:
-                            if out['position'] == out_pos:
+                            if out['position'] == belt_pos:
                                 port['connected'] = True
                                 out['actual_shape'] = port['shape']
                                 out['throughput'] += port['throughput']
@@ -951,8 +1025,8 @@ class FlowSimulator:
                             port['backed_up'] = True
                             self.errors.append(
                                 f"{machine.building_type.name} @ {origin}: "
-                                f"output[{port['index']}] at {out_pos} has no destination "
-                                f"(shape={port['shape']}, {port['throughput']:.0f}/min will back up!)"
+                                f"output[{port['index']}] at {out_pos} dir={out_dir} has no destination "
+                                f"(belt expected at {belt_pos}, shape={port['shape']}, {port['throughput']:.0f}/min will back up!)"
                             )
 
             if not changes:
