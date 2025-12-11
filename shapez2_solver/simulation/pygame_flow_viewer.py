@@ -771,10 +771,37 @@ class FlowViewer:
             text = self.font_small.render("↓", True, WHITE)
             self.screen.blit(text, (cx - 4, cy - 5))
 
-        elif bt in (BuildingType.CUTTER, BuildingType.CUTTER_MIRRORED):
-            pygame.draw.rect(self.screen, WHITE, (cx - 8, cy - 8, 16, 16), 2)
-            text = self.font.render("C", True, WHITE)
-            self.screen.blit(text, (cx - 4, cy - 7))
+        elif bt == BuildingType.CUTTER:
+            # CUTTER: 1x2, input from west, outputs go east at y=0 and y=1 (down)
+            # Draw box with vertical cutting line
+            pygame.draw.rect(self.screen, WHITE, (cx - 10, cy - 10, 20, 20), 2)
+            # Vertical cutting line (blade)
+            pygame.draw.line(self.screen, WHITE, (cx, cy - 8), (cx, cy + 8), 2)
+            # Input indicator (left arrow pointing in)
+            pygame.draw.line(self.screen, CYAN, (cx - 14, cy), (cx - 10, cy), 2)
+            # Output indicators - both go right, show split going down
+            pygame.draw.line(self.screen, ORANGE, (cx + 10, cy - 3), (cx + 14, cy - 3), 2)
+            pygame.draw.line(self.screen, ORANGE, (cx + 10, cy + 3), (cx + 14, cy + 3), 2)
+            # Down arrow showing second output goes to y+1
+            pygame.draw.polygon(self.screen, ORANGE, [
+                (cx + 5, cy + 8), (cx + 2, cy + 4), (cx + 8, cy + 4)
+            ])
+
+        elif bt == BuildingType.CUTTER_MIRRORED:
+            # CUTTER_MIRRORED: 1x1, input from west, one output east, one output north (up)
+            # Mirror of CUTTER - outputs go up instead of down
+            pygame.draw.rect(self.screen, WHITE, (cx - 10, cy - 10, 20, 20), 2)
+            # Vertical cutting line (blade)
+            pygame.draw.line(self.screen, WHITE, (cx, cy - 8), (cx, cy + 8), 2)
+            # Input indicator (left arrow pointing in)
+            pygame.draw.line(self.screen, CYAN, (cx - 14, cy), (cx - 10, cy), 2)
+            # Output indicators - one goes right, one goes up
+            pygame.draw.line(self.screen, ORANGE, (cx + 10, cy + 3), (cx + 14, cy + 3), 2)
+            pygame.draw.line(self.screen, ORANGE, (cx - 3, cy - 10), (cx - 3, cy - 14), 2)
+            # Up arrow showing second output goes to y-1
+            pygame.draw.polygon(self.screen, ORANGE, [
+                (cx + 5, cy - 8), (cx + 2, cy - 4), (cx + 8, cy - 4)
+            ])
 
         elif bt == BuildingType.HALF_CUTTER:
             pygame.draw.rect(self.screen, WHITE, (cx - 8, cy - 8, 16, 16), 2)
