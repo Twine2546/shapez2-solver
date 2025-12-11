@@ -196,7 +196,7 @@ class FlowViewer:
         pygame.quit()
 
     def _can_place_building(self, x: int, y: int, floor: int) -> bool:
-        """Check if a building can be placed at this position (no overlap)."""
+        """Check if a building can be placed at this position (no overlap, valid cells)."""
         spec = BUILDING_SPECS.get(self.selected_building)
         if not spec:
             return True  # Unknown building, allow placement
@@ -211,6 +211,10 @@ class FlowViewer:
         else:
             eff_w, eff_h = base_w, base_h
 
+        # Get valid cells for irregular foundations
+        foundation_spec = FOUNDATION_SPECS[self.current_foundation_name]
+        valid_cells = foundation_spec.get_valid_grid_cells()
+
         # Check all cells the building would occupy
         for dx in range(eff_w):
             for dy in range(eff_h):
@@ -220,6 +224,9 @@ class FlowViewer:
                     if check_pos[0] >= self.grid_width or check_pos[1] >= self.grid_height:
                         return False
                     if check_pos[2] >= self.num_floors:
+                        return False
+                    # Check if position is on invalid cell (irregular foundations)
+                    if valid_cells is not None and (check_pos[0], check_pos[1]) not in valid_cells:
                         return False
                     # Check if already occupied
                     if check_pos in self.sim.cells:
@@ -443,8 +450,58 @@ class FlowViewer:
         # Draw info panel
         self.draw_info_panel()
 
+    def _draw_hatched_rect(self, rect: pygame.Rect, color: Tuple[int, int, int],
+                            line_spacing: int = 6, line_width: int = 1, diagonal: bool = True):
+        """Draw a rectangle with a hatched pattern."""
+        # Draw background first (darker version of color)
+        bg_color = tuple(max(0, c - 30) for c in color)
+        pygame.draw.rect(self.screen, bg_color, rect)
+
+        if diagonal:
+            # Diagonal hatching (/ pattern)
+            for i in range(-rect.height, rect.width + rect.height, line_spacing):
+                start_x = rect.x + i
+                start_y = rect.y
+                end_x = rect.x + i + rect.height
+                end_y = rect.y + rect.height
+
+                # Clip to rect bounds
+                if start_x < rect.x:
+                    start_y += rect.x - start_x
+                    start_x = rect.x
+                if end_x > rect.x + rect.width:
+                    end_y -= end_x - (rect.x + rect.width)
+                    end_x = rect.x + rect.width
+                if start_y < rect.y:
+                    start_x += rect.y - start_y
+                    start_y = rect.y
+                if end_y > rect.y + rect.height:
+                    end_x -= end_y - (rect.y + rect.height)
+                    end_y = rect.y + rect.height
+
+                if start_x < end_x and start_y < end_y:
+                    pygame.draw.line(self.screen, color, (start_x, start_y), (end_x, end_y), line_width)
+        else:
+            # Horizontal hatching
+            for y in range(rect.y, rect.y + rect.height, line_spacing):
+                pygame.draw.line(self.screen, color, (rect.x, y), (rect.x + rect.width, y), line_width)
+
+    def _draw_blocked_cell(self, x: int, y: int, offset_y: int):
+        """Draw a blocked/invalid cell with X pattern."""
+        rect = pygame.Rect(
+            x * self.cell_size,
+            offset_y + y * self.cell_size,
+            self.cell_size - 1,
+            self.cell_size - 1
+        )
+        # Dark red background
+        pygame.draw.rect(self.screen, (40, 20, 20), rect)
+        # X pattern
+        pygame.draw.line(self.screen, (80, 40, 40), rect.topleft, rect.bottomright, 2)
+        pygame.draw.line(self.screen, (80, 40, 40), rect.topright, rect.bottomleft, 2)
+
     def draw_foundation_features(self):
-        """Draw foundation outline and valid I/O zones on edges."""
+        """Draw foundation outline, invalid squares, and valid I/O zones on edges."""
         offset_y = self.toolbar_height
         spec = FOUNDATION_SPECS[self.current_foundation_name]
 
@@ -457,16 +514,25 @@ class FlowViewer:
         )
         pygame.draw.rect(self.screen, (50, 55, 60), foundation_rect)  # Foundation area
 
+        # For irregular foundations, block out invalid cells
+        valid_cells = spec.get_valid_grid_cells()
+        if valid_cells is not None:
+            # Draw blocked cells (cells not in valid_cells set)
+            for y in range(self.grid_height):
+                for x in range(self.grid_width):
+                    if (x, y) not in valid_cells:
+                        self._draw_blocked_cell(x, y, offset_y)
+
         # Draw foundation outline (bright green border around the valid build area)
         pygame.draw.rect(self.screen, (100, 200, 100), foundation_rect, 4)  # Thick bright border
 
-        # Draw I/O port zones on edges
+        # Draw I/O port zones on edges with hatched pattern
         # Each edge has ports centered on each 1x1 unit (4 ports per unit)
         # Ports are at positions 3, 5, 8, 10 within each 14-tile unit
 
-        # Get port positions per side
-        io_zone_color = (60, 80, 60)  # Dark green for I/O zones
-        io_highlight_color = (80, 120, 80)  # Lighter when in input/output mode
+        # Port zone colors
+        io_zone_color = (60, 100, 60)  # Dark green for I/O zones
+        io_highlight_color = (80, 140, 80)  # Lighter when in input/output mode
 
         # Highlight color based on mode
         if self.mode in ("input", "output"):
@@ -478,61 +544,121 @@ class FlowViewer:
         # Ports are at fixed offsets within each 14-tile unit section
         port_offsets = [3, 5, 8, 10]  # Grid positions within each unit
 
-        # WEST edge (x = -1, ports feed into x = 0)
-        for unit in range(spec.units_y):
-            unit_start = unit * 20 if unit > 0 else 0
+        # For irregular foundations, need to check which unit cells are present
+        cells_set = set(spec.present_cells) if spec.present_cells else None
+
+        # Collect all exposed edges for irregular foundations
+        # Each exposed edge is identified by (unit_x, unit_y, side)
+        exposed_west = []  # List of unit_y values with exposed west edge
+        exposed_east = []  # List of unit_y values with exposed east edge
+        exposed_north = []  # List of unit_x values with exposed north edge
+        exposed_south = []  # List of unit_x values with exposed south edge
+
+        if cells_set is not None:
+            for ux, uy in cells_set:
+                # West edge: exposed if no cell to the left
+                if (ux - 1, uy) not in cells_set:
+                    exposed_west.append((ux, uy))
+                # East edge: exposed if no cell to the right
+                if (ux + 1, uy) not in cells_set:
+                    exposed_east.append((ux, uy))
+                # North edge: exposed if no cell above
+                if (ux, uy - 1) not in cells_set:
+                    exposed_north.append((ux, uy))
+                # South edge: exposed if no cell below
+                if (ux, uy + 1) not in cells_set:
+                    exposed_south.append((ux, uy))
+
+        # WEST edge - draw ports for all exposed west faces
+        if cells_set is None:
+            # Rectangular: all units on west side
+            west_units = [(0, unit) for unit in range(spec.units_y)]
+        else:
+            west_units = exposed_west
+
+        for ux, uy in west_units:
+            unit_start_y = uy * 20 if uy > 0 else 0
+            unit_start_x = ux * 20 if ux > 0 else 0
             for offset in port_offsets:
-                port_y = unit_start + offset
+                port_y = unit_start_y + offset
                 if port_y < self.grid_height:
                     rect = pygame.Rect(
-                        0,
+                        unit_start_x,  # x position at left edge of this unit
                         offset_y + port_y * self.cell_size,
                         self.cell_size // 4,
                         self.cell_size
                     )
-                    pygame.draw.rect(self.screen, zone_color, rect)
+                    self._draw_hatched_rect(rect, zone_color, line_spacing=4)
 
-        # EAST edge (ports at x = grid_width)
-        for unit in range(spec.units_y):
-            unit_start = unit * 20 if unit > 0 else 0
+        # EAST edge - draw ports for all exposed east faces
+        if cells_set is None:
+            # Rectangular: all units on east side
+            east_units = [(spec.units_x - 1, unit) for unit in range(spec.units_y)]
+        else:
+            east_units = exposed_east
+
+        for ux, uy in east_units:
+            unit_start_y = uy * 20 if uy > 0 else 0
+            # East edge of this unit: unit_start_x + 14 (or grid_width if at boundary)
+            unit_start_x = ux * 20 if ux > 0 else 0
+            edge_x = unit_start_x + 14  # Right edge of 14-tile unit
+            if edge_x > self.grid_width:
+                edge_x = self.grid_width
             for offset in port_offsets:
-                port_y = unit_start + offset
+                port_y = unit_start_y + offset
                 if port_y < self.grid_height:
                     rect = pygame.Rect(
-                        self.grid_width * self.cell_size - self.cell_size // 4,
+                        edge_x * self.cell_size - self.cell_size // 4,
                         offset_y + port_y * self.cell_size,
                         self.cell_size // 4,
                         self.cell_size
                     )
-                    pygame.draw.rect(self.screen, zone_color, rect)
+                    self._draw_hatched_rect(rect, zone_color, line_spacing=4)
 
-        # NORTH edge (y = -1, ports feed into y = 0)
-        for unit in range(spec.units_x):
-            unit_start = unit * 20 if unit > 0 else 0
+        # NORTH edge - draw ports for all exposed north faces
+        if cells_set is None:
+            # Rectangular: all units on north side
+            north_units = [(unit, 0) for unit in range(spec.units_x)]
+        else:
+            north_units = exposed_north
+
+        for ux, uy in north_units:
+            unit_start_x = ux * 20 if ux > 0 else 0
+            unit_start_y = uy * 20 if uy > 0 else 0
             for offset in port_offsets:
-                port_x = unit_start + offset
+                port_x = unit_start_x + offset
                 if port_x < self.grid_width:
                     rect = pygame.Rect(
                         port_x * self.cell_size,
-                        offset_y,
+                        offset_y + unit_start_y * self.cell_size,  # Top edge of this unit
                         self.cell_size,
                         self.cell_size // 4
                     )
-                    pygame.draw.rect(self.screen, zone_color, rect)
+                    self._draw_hatched_rect(rect, zone_color, line_spacing=4)
 
-        # SOUTH edge (ports at y = grid_height)
-        for unit in range(spec.units_x):
-            unit_start = unit * 20 if unit > 0 else 0
+        # SOUTH edge - draw ports for all exposed south faces
+        if cells_set is None:
+            # Rectangular: all units on south side
+            south_units = [(unit, spec.units_y - 1) for unit in range(spec.units_x)]
+        else:
+            south_units = exposed_south
+
+        for ux, uy in south_units:
+            unit_start_x = ux * 20 if ux > 0 else 0
+            unit_start_y = uy * 20 if uy > 0 else 0
+            edge_y = unit_start_y + 14  # Bottom edge of 14-tile unit
+            if edge_y > self.grid_height:
+                edge_y = self.grid_height
             for offset in port_offsets:
-                port_x = unit_start + offset
+                port_x = unit_start_x + offset
                 if port_x < self.grid_width:
                     rect = pygame.Rect(
                         port_x * self.cell_size,
-                        offset_y + self.grid_height * self.cell_size - self.cell_size // 4,
+                        offset_y + edge_y * self.cell_size - self.cell_size // 4,
                         self.cell_size,
                         self.cell_size // 4
                     )
-                    pygame.draw.rect(self.screen, zone_color, rect)
+                    self._draw_hatched_rect(rect, zone_color, line_spacing=4)
 
         # Draw corner markers to show foundation extent
         corner_size = 8
