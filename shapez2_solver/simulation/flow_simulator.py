@@ -437,15 +437,15 @@ class FlowSimulator:
         # Default: pass through
         return input_shape
     
-    def _find_belt_branch_outputs(self, pos: Tuple[int, int, int], primary_direction: Rotation) -> List[Tuple[Tuple[int, int, int], Rotation]]:
+    def _find_belt_branch_outputs(self, pos: Tuple[int, int, int], primary_direction: Rotation) -> List[Tuple[Tuple[int, int, int], Rotation, bool]]:
         """
         Find all valid output positions for a belt, supporting branching.
 
-        A belt can branch to multiple adjacent belts as long as:
-        1. The adjacent belt accepts input from this belt's direction
+        A belt can branch to multiple destinations as long as:
+        1. The adjacent position accepts input from this belt's direction
         2. The output directions are not 180° apart
 
-        Returns list of (position, direction_from_source) tuples.
+        Returns list of (position, direction_from_source, is_machine_input) tuples.
         """
         x, y, z = pos
         valid_outputs = []
@@ -460,6 +460,28 @@ class FlowSimulator:
 
         for adj_pos, direction_to_adj in adjacent:
             adj_cell = self.cells.get(adj_pos)
+
+            # First check if this position is a machine input port
+            is_machine_input = False
+            for origin, machine in self.machines.items():
+                for port in machine.input_ports:
+                    if port['position'] == adj_pos:
+                        # This adjacent position is a machine input port
+                        valid_outputs.append((adj_pos, direction_to_adj, True))
+                        is_machine_input = True
+                        break
+                if is_machine_input:
+                    break
+
+            if is_machine_input:
+                continue  # Already added as machine input
+
+            # Check for edge outputs
+            for out in self.outputs:
+                if out['position'] == adj_pos:
+                    valid_outputs.append((adj_pos, direction_to_adj, False))
+                    continue
+
             if not adj_cell or not adj_cell.building_type:
                 continue
 
@@ -468,8 +490,7 @@ class FlowSimulator:
                                                BuildingType.BELT_RIGHT, BuildingType.BELT_PORT_SENDER,
                                                BuildingType.BELT_PORT_RECEIVER, BuildingType.LIFT_UP,
                                                BuildingType.LIFT_DOWN):
-                # Could be a machine - check if it's a valid destination
-                # For now, only handle belt-to-belt branching
+                # Could be a machine body cell - skip
                 continue
 
             # Check if the adjacent belt accepts input from our direction
@@ -487,12 +508,12 @@ class FlowSimulator:
 
             # Adjacent belt accepts from us if its input direction matches where we are
             if adj_input_dir == our_direction_from_adj:
-                valid_outputs.append((adj_pos, direction_to_adj))
+                valid_outputs.append((adj_pos, direction_to_adj, False))
 
         # If we have multiple outputs, check they're not 180° apart
         if len(valid_outputs) > 1:
             # Check all pairs for 180° conflict
-            directions = [d for _, d in valid_outputs]
+            directions = [d for _, d, _ in valid_outputs]
             has_conflict = False
             for i in range(len(directions)):
                 for j in range(i + 1, len(directions)):
@@ -504,7 +525,7 @@ class FlowSimulator:
 
             if has_conflict:
                 # Only use primary direction output
-                valid_outputs = [(p, d) for p, d in valid_outputs if d == primary_direction]
+                valid_outputs = [(p, d, m) for p, d, m in valid_outputs if d == primary_direction]
 
         return valid_outputs
 
@@ -582,40 +603,42 @@ class FlowSimulator:
                 # Split throughput among branches
                 branch_throughput = throughput / len(branch_outputs)
 
-                for branch_pos, branch_dir in branch_outputs:
-                    # Check for machine inputs at branch position
-                    fed_machine = False
-                    for origin, machine in self.machines.items():
-                        for port in machine.input_ports:
-                            if port['position'] == branch_pos:
-                                # Update belt at branch position
-                                branch_cell = self.cells.get(branch_pos)
-                                if branch_cell and branch_cell.building_type:
-                                    branch_cell.shape = shape
-                                    branch_cell.throughput += branch_throughput
-                                port['shape'] = shape
-                                port['throughput'] += branch_throughput
-                                port['connected'] = True
-                                fed_machine = True
+                for branch_pos, branch_dir, is_machine_input in branch_outputs:
+                    handled = False
+
+                    # Handle machine input ports directly
+                    if is_machine_input:
+                        for origin, machine in self.machines.items():
+                            for port in machine.input_ports:
+                                if port['position'] == branch_pos:
+                                    # Update belt at branch position if there is one
+                                    branch_cell = self.cells.get(branch_pos)
+                                    if branch_cell and branch_cell.building_type:
+                                        branch_cell.shape = shape
+                                        branch_cell.throughput += branch_throughput
+                                    port['shape'] = shape
+                                    port['throughput'] += branch_throughput
+                                    port['connected'] = True
+                                    handled = True
+                                    break
+                            if handled:
                                 break
-                        if fed_machine:
-                            break
+                        continue
 
                     # Check for edge outputs at branch position
-                    if not fed_machine:
-                        for out in self.outputs:
-                            if out['position'] == branch_pos:
-                                branch_cell = self.cells.get(branch_pos)
-                                if branch_cell and branch_cell.building_type:
-                                    branch_cell.shape = shape
-                                    branch_cell.throughput += branch_throughput
-                                out['actual_shape'] = shape
-                                out['throughput'] += branch_throughput
-                                fed_machine = True
-                                break
+                    for out in self.outputs:
+                        if out['position'] == branch_pos:
+                            branch_cell = self.cells.get(branch_pos)
+                            if branch_cell and branch_cell.building_type:
+                                branch_cell.shape = shape
+                                branch_cell.throughput += branch_throughput
+                            out['actual_shape'] = shape
+                            out['throughput'] += branch_throughput
+                            handled = True
+                            break
 
                     # Continue tracing if it's a belt
-                    if not fed_machine and branch_pos in self.cells:
+                    if not handled and branch_pos in self.cells:
                         branch_path = [] if path is not None else None
                         self._trace_from_position(branch_pos, shape, branch_throughput, visited, branch_path)
                         if path is not None and branch_path:
@@ -791,8 +814,18 @@ class FlowSimulator:
                     branch_outputs = self._find_belt_branch_outputs(pos, primary_dir)
                     if branch_outputs:
                         branch_throughput = throughput / len(branch_outputs)
-                        for branch_pos, _ in branch_outputs:
-                            self._trace_from_position(branch_pos, shape, branch_throughput, visited, path)
+                        for branch_pos, _, is_machine_input in branch_outputs:
+                            if is_machine_input:
+                                # Directly feed machine input port
+                                for origin, machine in self.machines.items():
+                                    for port in machine.input_ports:
+                                        if port['position'] == branch_pos:
+                                            port['shape'] = shape
+                                            port['throughput'] += branch_throughput
+                                            port['connected'] = True
+                                            break
+                            else:
+                                self._trace_from_position(branch_pos, shape, branch_throughput, visited, path)
                     else:
                         # No branches, trace in primary direction
                         dx, dy = direction_delta(primary_dir)
