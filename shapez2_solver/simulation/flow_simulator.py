@@ -490,6 +490,30 @@ class FlowSimulator:
         """Get the opposite direction."""
         return {'E': 'W', 'W': 'E', 'N': 'S', 'S': 'N'}[direction]
 
+    def _get_belt_output_direction(self, building_type: BuildingType, rotation: Rotation) -> Rotation:
+        """Get the direction a belt outputs TO."""
+        if building_type == BuildingType.BELT_FORWARD:
+            return rotation  # Outputs in facing direction
+        elif building_type == BuildingType.BELT_LEFT:
+            # Left turn: EAST->NORTH, SOUTH->EAST, WEST->SOUTH, NORTH->WEST
+            return {
+                Rotation.EAST: Rotation.NORTH,
+                Rotation.SOUTH: Rotation.EAST,
+                Rotation.WEST: Rotation.SOUTH,
+                Rotation.NORTH: Rotation.WEST,
+            }[rotation]
+        elif building_type == BuildingType.BELT_RIGHT:
+            # Right turn: EAST->SOUTH, SOUTH->WEST, WEST->NORTH, NORTH->EAST
+            return {
+                Rotation.EAST: Rotation.SOUTH,
+                Rotation.SOUTH: Rotation.WEST,
+                Rotation.WEST: Rotation.NORTH,
+                Rotation.NORTH: Rotation.EAST,
+            }[rotation]
+        else:
+            # Default: output in facing direction
+            return rotation
+
     def _find_belt_branch_outputs(self, pos: Tuple[int, int, int], primary_direction: Rotation) -> List[Tuple[Tuple[int, int, int], Rotation, bool]]:
         """
         Find all valid output positions for a belt, supporting branching.
@@ -555,7 +579,9 @@ class FlowSimulator:
                     continue
 
                 # Check if the adjacent belt accepts input from our direction
-                adj_input_dir = get_belt_input_direction(adj_cell.building_type, adj_cell.rotation)
+                # Belts can receive from ANY direction EXCEPT their output direction
+                # (you can't feed items against the flow)
+                adj_output_dir = self._get_belt_output_direction(adj_cell.building_type, adj_cell.rotation)
 
                 # From adjacent's perspective, we are in the opposite direction
                 our_direction_from_adj = {
@@ -565,8 +591,9 @@ class FlowSimulator:
                     Rotation.SOUTH: Rotation.NORTH,
                 }[direction_to_adj]
 
-                # Adjacent belt accepts from us if its input direction matches where we are
-                if adj_input_dir == our_direction_from_adj:
+                # Adjacent belt accepts from us if we're NOT coming from its output direction
+                # (i.e., we can merge from sides or feed from behind)
+                if our_direction_from_adj != adj_output_dir:
                     valid_outputs.append((adj_pos, direction_to_adj, False))
 
         # If we have multiple outputs, check they're not 180° apart
