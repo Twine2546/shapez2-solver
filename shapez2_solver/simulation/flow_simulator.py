@@ -516,79 +516,94 @@ class FlowSimulator:
 
     def _find_belt_outputs(self, pos: Tuple[int, int, int], belt_type: BuildingType, rotation: Rotation) -> List[Tuple[Tuple[int, int, int], Rotation, bool]]:
         """
-        Find valid output positions for a belt.
+        Find valid output positions for a belt, supporting splitting.
 
-        Belts output ONLY in their designated direction:
-        - BELT_FORWARD: outputs in facing direction
-        - BELT_LEFT: outputs 90° left of facing
-        - BELT_RIGHT: outputs 90° right of facing
+        A belt can split to multiple adjacent belts/machines as long as:
+        1. The adjacent position accepts input from this belt's direction
+        2. The output directions are not 180° apart (can't go forward AND backward)
 
         Returns list of (position, direction, is_machine_input) tuples.
         """
         x, y, z = pos
         valid_outputs = []
 
-        # Get the belt's single output direction
-        output_dir = self._get_belt_output_direction(belt_type, rotation)
+        # Get the belt's primary output direction
+        primary_dir = self._get_belt_output_direction(belt_type, rotation)
 
-        # Convert to position delta and direction char
-        dir_info = {
-            Rotation.EAST: ((1, 0), 'E'),
-            Rotation.WEST: ((-1, 0), 'W'),
-            Rotation.NORTH: ((0, -1), 'N'),
-            Rotation.SOUTH: ((0, 1), 'S'),
-        }
-        (dx, dy), dir_char = dir_info[output_dir]
-        adj_pos = (x + dx, y + dy, z)
-        adj_cell = self.cells.get(adj_pos)
+        # Check all 4 adjacent positions for potential outputs
+        adjacent = [
+            ((x + 1, y, z), Rotation.EAST, 'E'),
+            ((x - 1, y, z), Rotation.WEST, 'W'),
+            ((x, y + 1, z), Rotation.SOUTH, 'S'),
+            ((x, y - 1, z), Rotation.NORTH, 'N'),
+        ]
 
-        # Direction from adj back to us (opposite)
-        dir_from_adj_to_us = self._opposite_direction(dir_char)
+        for adj_pos, direction_to_adj, dir_char in adjacent:
+            adj_cell = self.cells.get(adj_pos)
 
-        # Check if adjacent position is a machine cell with an input facing us
-        is_machine_input = False
-        for origin, machine in self.machines.items():
-            for port in machine.input_ports:
-                if port['position'] == adj_pos and port.get('direction') == dir_from_adj_to_us:
-                    valid_outputs.append((adj_pos, output_dir, True))
-                    is_machine_input = True
+            # Direction from adj back to us (opposite)
+            dir_from_adj_to_us = self._opposite_direction(dir_char)
+
+            # Check if adjacent position is a machine cell with an input facing us
+            is_machine_input = False
+            for origin, machine in self.machines.items():
+                for port in machine.input_ports:
+                    if port['position'] == adj_pos and port.get('direction') == dir_from_adj_to_us:
+                        valid_outputs.append((adj_pos, direction_to_adj, True))
+                        is_machine_input = True
+                        break
+                if is_machine_input:
                     break
+
             if is_machine_input:
-                break
+                continue
 
-        if is_machine_input:
-            return valid_outputs
+            # Check for edge outputs at adjacent position
+            for out in self.outputs:
+                if out['position'] == adj_pos:
+                    valid_outputs.append((adj_pos, direction_to_adj, False))
+                    break
+            else:
+                # Not an edge output, check for belt connection
+                if not adj_cell or not adj_cell.building_type:
+                    continue
 
-        # Check for edge outputs at adjacent position
-        for out in self.outputs:
-            if out['position'] == adj_pos:
-                valid_outputs.append((adj_pos, output_dir, False))
-                return valid_outputs
+                # Check if adjacent cell is a belt-type building
+                if adj_cell.building_type not in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
+                                                   BuildingType.BELT_RIGHT, BuildingType.BELT_PORT_SENDER,
+                                                   BuildingType.BELT_PORT_RECEIVER, BuildingType.LIFT_UP,
+                                                   BuildingType.LIFT_DOWN):
+                    continue
 
-        # Check for belt connection
-        if not adj_cell or not adj_cell.building_type:
-            return valid_outputs
+                # Check if the adjacent belt accepts input from our direction
+                adj_output_dir = self._get_belt_output_direction(adj_cell.building_type, adj_cell.rotation)
 
-        # Check if adjacent cell is a belt-type building
-        if adj_cell.building_type not in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
-                                           BuildingType.BELT_RIGHT, BuildingType.BELT_PORT_SENDER,
-                                           BuildingType.BELT_PORT_RECEIVER, BuildingType.LIFT_UP,
-                                           BuildingType.LIFT_DOWN):
-            return valid_outputs
+                # Adjacent belt accepts from us if we're NOT coming from its output direction
+                our_direction_from_adj = {
+                    Rotation.EAST: Rotation.WEST,
+                    Rotation.WEST: Rotation.EAST,
+                    Rotation.NORTH: Rotation.SOUTH,
+                    Rotation.SOUTH: Rotation.NORTH,
+                }[direction_to_adj]
 
-        # Check if the adjacent belt accepts input from our direction
-        adj_output_dir = self._get_belt_output_direction(adj_cell.building_type, adj_cell.rotation)
+                if our_direction_from_adj != adj_output_dir:
+                    valid_outputs.append((adj_pos, direction_to_adj, False))
 
-        # Adjacent belt accepts from us if we're NOT coming from its output direction
-        our_direction_from_adj = {
-            Rotation.EAST: Rotation.WEST,
-            Rotation.WEST: Rotation.EAST,
-            Rotation.NORTH: Rotation.SOUTH,
-            Rotation.SOUTH: Rotation.NORTH,
-        }[output_dir]
+        # If any outputs are 180° opposite, keep primary + first of the pair
+        # You can't split to opposite directions (e.g., both NORTH and SOUTH)
+        if len(valid_outputs) > 1:
+            directions = [d for _, d, _ in valid_outputs]
 
-        if our_direction_from_adj != adj_output_dir:
-            valid_outputs.append((adj_pos, output_dir, False))
+            # Find 180° conflicts and mark the second one for removal
+            dirs_to_remove = set()
+            for i in range(len(directions)):
+                for j in range(i + 1, len(directions)):
+                    if are_directions_opposite(directions[i], directions[j]):
+                        # Keep the first one (i), remove the second (j)
+                        dirs_to_remove.add(directions[j])
+
+            if dirs_to_remove:
+                valid_outputs = [(p, d, m) for p, d, m in valid_outputs if d not in dirs_to_remove]
 
         return valid_outputs
 
@@ -637,11 +652,13 @@ class FlowSimulator:
         # Handle different building types
         if cell.building_type in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
                                    BuildingType.BELT_RIGHT):
-            # Find the belt's single output (belts don't branch - only splitters do)
+            # Find all valid outputs (belt can split to multiple adjacent belts)
             belt_outputs = self._find_belt_outputs(start, cell.building_type, cell.rotation)
 
             if belt_outputs:
-                # Belts have exactly one output - full throughput goes to it
+                # Split throughput among all outputs
+                split_throughput = throughput / len(belt_outputs)
+
                 for output_pos, output_dir, is_machine_input in belt_outputs:
                     handled = False
 
@@ -651,7 +668,7 @@ class FlowSimulator:
                             for port in machine.input_ports:
                                 if port['position'] == output_pos:
                                     port['shape'] = shape
-                                    port['throughput'] += throughput
+                                    port['throughput'] += split_throughput
                                     port['connected'] = True
                                     handled = True
                                     break
@@ -663,15 +680,15 @@ class FlowSimulator:
                     for out in self.outputs:
                         if out['position'] == output_pos:
                             out['actual_shape'] = shape
-                            out['throughput'] += throughput
+                            out['throughput'] += split_throughput
                             handled = True
                             break
 
                     # Continue tracing if it's a belt
                     if not handled and output_pos in self.cells:
-                        self._trace_from_position(output_pos, shape, throughput, visited, path)
+                        self._trace_from_position(output_pos, shape, split_throughput, visited, path)
 
-                return  # Belt output handled
+                return  # Belt outputs handled
 
             # No valid output found - belt leads nowhere
             return
@@ -828,22 +845,24 @@ class FlowSimulator:
                 visited.add(pos)  # Mark as visited so trace doesn't double-count
                 path.append(pos)
 
-                # Find belt's single output and trace from there
+                # Find all valid outputs and trace from there (splitting if multiple)
                 if cell.building_type in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
                                           BuildingType.BELT_RIGHT):
                     belt_outputs = self._find_belt_outputs(pos, cell.building_type, cell.rotation)
-                    for output_pos, _, is_machine_input in belt_outputs:
-                        if is_machine_input:
-                            # Directly feed machine input port
-                            for origin, machine in self.machines.items():
-                                for port in machine.input_ports:
-                                    if port['position'] == output_pos:
-                                        port['shape'] = shape
-                                        port['throughput'] += throughput
-                                        port['connected'] = True
-                                        break
-                        else:
-                            self._trace_from_position(output_pos, shape, throughput, visited, path)
+                    if belt_outputs:
+                        split_throughput = throughput / len(belt_outputs)
+                        for output_pos, _, is_machine_input in belt_outputs:
+                            if is_machine_input:
+                                # Directly feed machine input port
+                                for origin, machine in self.machines.items():
+                                    for port in machine.input_ports:
+                                        if port['position'] == output_pos:
+                                            port['shape'] = shape
+                                            port['throughput'] += split_throughput
+                                            port['connected'] = True
+                                            break
+                            else:
+                                self._trace_from_position(output_pos, shape, split_throughput, visited, path)
                 else:
                     # Non-standard belt at input, just trace forward
                     self._trace_from_position(pos, shape, throughput, visited, path)
