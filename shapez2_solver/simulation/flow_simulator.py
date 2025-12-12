@@ -425,6 +425,15 @@ class FlowSimulator:
                 f"Invalid input position {pos}. Must be on external wall at valid port position. "
                 f"Valid positions include: {valid_list}..."
             )
+        # Check for existing input at same position - replace it
+        for i, existing in enumerate(self.inputs):
+            if existing['position'] == pos:
+                self.inputs[i] = {
+                    'position': pos,
+                    'shape': shape,
+                    'throughput': throughput,
+                }
+                return
         self.inputs.append({
             'position': pos,
             'shape': shape,
@@ -440,6 +449,16 @@ class FlowSimulator:
                 f"Invalid output position {pos}. Must be on external wall at valid port position. "
                 f"Valid positions include: {valid_list}..."
             )
+        # Check for existing output at same position - replace it
+        for i, existing in enumerate(self.outputs):
+            if existing['position'] == pos:
+                self.outputs[i] = {
+                    'position': pos,
+                    'expected_shape': expected_shape,
+                    'actual_shape': None,
+                    'throughput': 0.0,
+                }
+                return
         self.outputs.append({
             'position': pos,
             'expected_shape': expected_shape,
@@ -828,8 +847,14 @@ class FlowSimulator:
             if not cell or not cell.building_type:
                 break
 
-            # Add throughput to this cell
-            cell.throughput += throughput
+            # Add throughput to this cell (capped at max)
+            available = cell.max_throughput - cell.throughput
+            actual_added = min(throughput, available)
+            cell.throughput += actual_added
+            throughput = actual_added  # Only propagate what was actually added
+
+            if throughput <= 0:
+                return  # Belt is at capacity, can't propagate more
 
             # Check if this is an output position
             for out in self.outputs:
@@ -918,9 +943,15 @@ class FlowSimulator:
         if not cell or not cell.building_type:
             return
 
-        # Update this cell's flow
+        # Update this cell's flow (capped at max)
         cell.shape = shape
-        cell.throughput += throughput
+        available = cell.max_throughput - cell.throughput
+        actual_added = min(throughput, available)
+        cell.throughput += actual_added
+        throughput = actual_added  # Only propagate what was actually added
+
+        if throughput <= 0:
+            return  # Belt is at capacity, can't propagate more
 
         # Handle different building types
         if cell.building_type in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
@@ -978,11 +1009,16 @@ class FlowSimulator:
             # Belt port - find receiver
             receiver_pos = self._find_belt_port_receiver(start)
             if receiver_pos:
-                # Mark receiver cell with flow too
+                # Mark receiver cell with flow too (capped at max)
                 recv_cell = self.cells.get(receiver_pos)
                 if recv_cell:
                     recv_cell.shape = shape
-                    recv_cell.throughput += throughput
+                    available = recv_cell.max_throughput - recv_cell.throughput
+                    actual_added = min(throughput, available)
+                    recv_cell.throughput += actual_added
+                    throughput = actual_added
+                    if throughput <= 0:
+                        return  # Receiver belt at capacity
                     if path is not None:
                         path.append(receiver_pos)
                 # Continue from after the receiver
@@ -1140,9 +1176,15 @@ class FlowSimulator:
             if check_pos in self.cells:
                 cell = self.cells[check_pos]
                 cell.shape = shape
-                cell.throughput += throughput  # ADD to existing throughput for merging
+                # Cap throughput at belt capacity
+                available = cell.max_throughput - cell.throughput
+                actual_added = min(throughput, available)
+                cell.throughput += actual_added
                 visited.add(check_pos)  # Mark as visited so trace doesn't double-count
                 path.append(check_pos)
+
+                if actual_added <= 0:
+                    continue  # Belt at capacity, can't accept more from this input
 
                 # Find all valid outputs and trace from there (splitting if multiple)
                 if cell.building_type in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
@@ -1152,7 +1194,7 @@ class FlowSimulator:
                     if belt_outputs:
                         belt_outputs = [(p, d, m) for p, d, m in belt_outputs if p not in visited or m]
                     if belt_outputs:
-                        split_throughput = throughput / len(belt_outputs)
+                        split_throughput = actual_added / len(belt_outputs)
                         for output_pos, _, is_machine_input in belt_outputs:
                             if is_machine_input:
                                 # Directly feed machine input port
