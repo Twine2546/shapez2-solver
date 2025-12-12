@@ -1403,6 +1403,42 @@ class FlowViewer:
                     tp_text = self.font_small.render(f"{out['throughput']:.0f}", True, YELLOW)
                     self.screen.blit(tp_text, (px - 8, py + 4))
 
+        # Draw internal I/O indicators (inside grid but in exclusion zone)
+        foundation_spec = FOUNDATION_SPECS[self.current_foundation_name]
+        valid_cells = foundation_spec.get_valid_grid_cells() if foundation_spec.present_cells else None
+
+        if valid_cells:
+            # Draw internal inputs
+            for inp in self.sim.inputs:
+                ix, iy, iz = inp['position']
+                if iz != self.current_floor:
+                    continue
+                # Check if internal position (in grid but not on outer edge and in exclusion zone)
+                if 0 <= ix < self.grid_width and 0 <= iy < self.grid_height:
+                    if (ix, iy) not in valid_cells:
+                        px = offset_x + ix * self.cell_size + self.cell_size // 2
+                        py = offset_y + iy * self.cell_size + self.cell_size // 2
+                        pygame.draw.circle(self.screen, GREEN, (px, py), 10, 3)
+                        text = self.font_small.render("IN", True, GREEN)
+                        self.screen.blit(text, (px - 8, py - 18))
+
+            # Draw internal outputs
+            for out in self.sim.outputs:
+                ox, oy, oz = out['position']
+                if oz != self.current_floor:
+                    continue
+                # Check if internal position
+                if 0 <= ox < self.grid_width and 0 <= oy < self.grid_height:
+                    if (ox, oy) not in valid_cells:
+                        px = offset_x + ox * self.cell_size + self.cell_size // 2
+                        py = offset_y + oy * self.cell_size + self.cell_size // 2
+                        pygame.draw.circle(self.screen, RED, (px, py), 10, 3)
+                        text = self.font_small.render("OUT", True, RED)
+                        self.screen.blit(text, (px - 10, py - 18))
+                        if out.get('throughput', 0) > 0:
+                            tp_text = self.font_small.render(f"{out['throughput']:.0f}", True, YELLOW)
+                            self.screen.blit(tp_text, (px - 8, py + 6))
+
         # Draw flow paths (lines connecting traced paths)
         if hasattr(self.sim, 'traced_paths') and self.sim.traced_paths:
             for path in self.sim.traced_paths:

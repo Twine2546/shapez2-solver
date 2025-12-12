@@ -634,7 +634,7 @@ class FlowSimulator:
 
     def _get_grid_entry_pos(self, external_pos: Tuple[int, int, int]) -> Optional[Tuple[int, int, int]]:
         """
-        Convert an external I/O position to the adjacent grid cell.
+        Convert an external/internal I/O position to the adjacent valid grid cell.
 
         External I/O positions are outside the grid:
         - West wall: x = -1 -> entry at x = 0
@@ -642,11 +642,14 @@ class FlowSimulator:
         - North wall: y = -1 -> entry at y = 0
         - South wall: y = height -> entry at y = height-1
 
-        Returns None if the position is already inside the grid.
+        Internal I/O positions (for irregular foundations) are inside the grid but in exclusion zones.
+        They connect to adjacent valid cells.
+
+        Returns None if the position is a valid grid cell (not an I/O position).
         """
         x, y, z = external_pos
 
-        # Check if outside grid
+        # Check if outside grid (external I/O)
         if x == -1:  # West wall - enters from west
             return (0, y, z)
         elif x == self.width:  # East wall - enters from east
@@ -656,15 +659,32 @@ class FlowSimulator:
         elif y == self.height:  # South wall - enters from south
             return (x, self.height - 1, z)
 
-        # Position is inside the grid
+        # Check if internal I/O position (in exclusion zone for irregular foundations)
+        if self.foundation_spec and self.foundation_spec.present_cells:
+            valid_cells = self.foundation_spec.get_valid_grid_cells()
+            if valid_cells and (x, y) not in valid_cells:
+                # Find adjacent valid cell
+                neighbors = [
+                    (x - 1, y, z),  # West
+                    (x + 1, y, z),  # East
+                    (x, y - 1, z),  # North
+                    (x, y + 1, z),  # South
+                ]
+                for nx, ny, nz in neighbors:
+                    if (nx, ny) in valid_cells:
+                        return (nx, ny, nz)
+
+        # Position is a valid grid cell (not an I/O position)
         return None
 
     def _get_external_output_pos(self, grid_pos: Tuple[int, int, int], direction: Rotation) -> Optional[Tuple[int, int, int]]:
         """
-        Get the external output position if a belt at grid_pos outputs in the given direction
-        and reaches the edge of the grid.
+        Get the external/internal output position if a belt at grid_pos outputs in the given direction
+        and reaches the edge of the grid or an exclusion zone (for irregular foundations).
         """
         x, y, z = grid_pos
+
+        # External edges
         if direction == Rotation.EAST and x == self.width - 1:
             return (self.width, y, z)
         elif direction == Rotation.WEST and x == 0:
@@ -673,6 +693,26 @@ class FlowSimulator:
             return (x, self.height, z)
         elif direction == Rotation.NORTH and y == 0:
             return (x, -1, z)
+
+        # Internal edges (exclusion zones for irregular foundations)
+        if self.foundation_spec and self.foundation_spec.present_cells:
+            valid_cells = self.foundation_spec.get_valid_grid_cells()
+            if valid_cells:
+                # Calculate where the belt would output to
+                deltas = {
+                    Rotation.EAST: (1, 0),
+                    Rotation.WEST: (-1, 0),
+                    Rotation.NORTH: (0, -1),
+                    Rotation.SOUTH: (0, 1),
+                }
+                dx, dy = deltas[direction]
+                next_x, next_y = x + dx, y + dy
+
+                # Check if next position is in exclusion zone (internal I/O)
+                if 0 <= next_x < self.width and 0 <= next_y < self.height:
+                    if (next_x, next_y) not in valid_cells:
+                        return (next_x, next_y, z)
+
         return None
 
     def _opposite_direction(self, direction: str) -> str:
