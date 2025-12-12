@@ -230,37 +230,37 @@ SCENARIO_8 = lambda: create_scenario(
 
 
 # =============================================================================
-# SCENARIO 9: Two cutters, merge all outputs
+# SCENARIO 9: Two cutters, outputs to east
 # =============================================================================
 def setup_two_cutters(sim):
-    """Two cutters in series, all outputs merge."""
-    # First input line at y=5
+    """Two cutters, all outputs going east."""
+    # First cutter input at y=5
     for x in range(4):
         sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
     sim.place_building(BuildingType.CUTTER, 4, 5, 0, Rotation.EAST)
-    # Second input line at y=8
-    for x in range(4):
-        sim.place_building(BuildingType.BELT_FORWARD, x, 8, 0, Rotation.EAST)
-    sim.place_building(BuildingType.CUTTER, 4, 8, 0, Rotation.EAST)
-    # Merge all 4 outputs toward east
+    # Cutter outputs at y=5 and y=6 go east
     for x in range(5, 14):
         sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
         sim.place_building(BuildingType.BELT_FORWARD, x, 6, 0, Rotation.EAST)
-    # Route y=8 and y=9 outputs to valid outputs
-    for x in range(5, 9):
+    # Second cutter input at y=7
+    for x in range(4):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 7, 0, Rotation.EAST)
+    sim.place_building(BuildingType.CUTTER, 4, 7, 0, Rotation.EAST)
+    # Cutter outputs at y=7 and y=8 go east
+    for x in range(5, 14):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 7, 0, Rotation.EAST)
         sim.place_building(BuildingType.BELT_FORWARD, x, 8, 0, Rotation.EAST)
-        sim.place_building(BuildingType.BELT_FORWARD, x, 9, 0, Rotation.EAST)
     sim.set_input(-1, 5, 0, "CuCuCuCu", 90.0)
-    sim.set_input(-1, 8, 0, "RuRuRuRu", 90.0)
+    sim.set_input(-1, 7, 0, "RuRuRuRu", 90.0)
     sim.set_output(14, 5, 0)
     sim.set_output(14, 6, 0)
-    sim.set_output(9, 14, 0)  # Route to south
-    sim.set_output(8, 14, 0)
+    sim.set_output(14, 7, 0)
+    sim.set_output(14, 8, 0)
 
 SCENARIO_9 = lambda: create_scenario(
-    "Two cutters, merge all outputs",
+    "Two cutters, outputs to east",
     "EXPECTED: 4 output streams from 2 cutters. Total 180/min in, 90/min out "
-    "(limited by cutter throughput 45*4=180 but each cutter only does 45).",
+    "(limited by cutter throughput 45 each).",
     setup_two_cutters
 )
 
@@ -291,19 +291,20 @@ SCENARIO_10 = lambda: create_scenario(
 # =============================================================================
 def setup_belt_turns(sim):
     """Test belt turning left and right."""
-    # Start from west
+    # Start from west at y=5 (valid port position)
     for x in range(5):
         sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
     # Turn south (right turn)
     sim.place_building(BuildingType.BELT_RIGHT, 5, 5, 0, Rotation.EAST)
-    for y in range(6, 9):
-        sim.place_building(BuildingType.BELT_FORWARD, 5, y, 0, Rotation.SOUTH)
-    # Turn east (left turn)
-    sim.place_building(BuildingType.BELT_LEFT, 5, 9, 0, Rotation.SOUTH)
+    # Go south one cell
+    sim.place_building(BuildingType.BELT_FORWARD, 5, 6, 0, Rotation.SOUTH)
+    # Turn east (left turn) at y=7
+    sim.place_building(BuildingType.BELT_LEFT, 5, 7, 0, Rotation.SOUTH)
+    # Continue east to output at y=7 (valid port position)
     for x in range(6, 14):
-        sim.place_building(BuildingType.BELT_FORWARD, x, 9, 0, Rotation.EAST)
+        sim.place_building(BuildingType.BELT_FORWARD, x, 7, 0, Rotation.EAST)
     sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
-    sim.set_output(14, 9, 0)
+    sim.set_output(14, 7, 0)
 
 SCENARIO_11 = lambda: create_scenario(
     "Belt turns (left/right)",
@@ -853,18 +854,18 @@ SCENARIO_32 = lambda: create_scenario(
 # =============================================================================
 def setup_cutter_north(sim):
     """Cutter rotated to face NORTH."""
-    # Input from south at x=9 (cutter input after rotation)
-    for y in range(13, 8, -1):
-        sim.place_building(BuildingType.BELT_FORWARD, 9, y, 0, Rotation.NORTH)
-    # Cutter at (8, 8) facing NORTH - occupies (8,8) and (9,8)
-    sim.place_building(BuildingType.CUTTER, 8, 8, 0, Rotation.NORTH)
-    # Outputs go north
-    for y in range(7, -1, -1):
-        sim.place_building(BuildingType.BELT_FORWARD, 8, y, 0, Rotation.NORTH)
-        sim.place_building(BuildingType.BELT_FORWARD, 9, y, 0, Rotation.NORTH)
-    sim.set_input(9, 14, 0, "CuCuCuCu", 180.0)
-    sim.set_output(8, -1, 0)
-    sim.set_output(9, -1, 0)
+    # Input from south at x=6 (valid port position)
+    for y in range(13, 7, -1):
+        sim.place_building(BuildingType.BELT_FORWARD, 6, y, 0, Rotation.NORTH)
+    # Cutter at (5, 7) facing NORTH - occupies (5,7) and (6,7)
+    sim.place_building(BuildingType.CUTTER, 5, 7, 0, Rotation.NORTH)
+    # Outputs go north at x=5 and x=6 (valid port positions)
+    for y in range(6, -1, -1):
+        sim.place_building(BuildingType.BELT_FORWARD, 5, y, 0, Rotation.NORTH)
+        sim.place_building(BuildingType.BELT_FORWARD, 6, y, 0, Rotation.NORTH)
+    sim.set_input(6, 14, 0, "CuCuCuCu", 180.0)
+    sim.set_output(5, -1, 0)
+    sim.set_output(6, -1, 0)
 
 SCENARIO_33 = lambda: create_scenario(
     "Cutter facing NORTH",
@@ -955,12 +956,12 @@ SCENARIO_35 = lambda: create_scenario(
 # SCENARIO 36: 2x2 Foundation - Simple Belt Chain
 # =============================================================================
 def setup_2x2_belt_chain(sim):
-    """Simple belt chain across 2x2 foundation (34x34 grid)."""
+    """Simple belt chain across 2x2 foundation (28x28 grid)."""
     # Belt chain from west to east at y=5
-    for x in range(34):
+    for x in range(28):
         sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
     sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
-    sim.set_output(34, 5, 0)
+    sim.set_output(28, 5, 0)
 
 SCENARIO_36 = lambda: create_scenario(
     "2x2 Foundation - Belt Chain",
@@ -982,14 +983,14 @@ def setup_2x2_cutter(sim):
     # Cutter at (10, 5) - outputs at (10,5) and (10,6) going east
     sim.place_building(BuildingType.CUTTER, 10, 5, 0, Rotation.EAST)
     # Left half continues east at y=5
-    for x in range(11, 34):
+    for x in range(11, 28):
         sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
     # Right half continues east at y=6
-    for x in range(11, 34):
+    for x in range(11, 28):
         sim.place_building(BuildingType.BELT_FORWARD, x, 6, 0, Rotation.EAST)
     sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
-    sim.set_output(34, 5, 0)
-    sim.set_output(34, 6, 0)
+    sim.set_output(28, 5, 0)
+    sim.set_output(28, 6, 0)
 
 SCENARIO_37 = lambda: create_scenario(
     "2x2 Foundation - Cutter",
@@ -1004,17 +1005,17 @@ SCENARIO_37 = lambda: create_scenario(
 # SCENARIO 38: 3x3 Foundation - Long Belt Chain
 # =============================================================================
 def setup_3x3_belt_chain(sim):
-    """Long belt chain across 3x3 foundation (54x54 grid)."""
+    """Long belt chain across 3x3 foundation (42x42 grid)."""
     # Belt chain from west to east at y=5
-    for x in range(54):
+    for x in range(42):
         sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
     sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
-    sim.set_output(54, 5, 0)
+    sim.set_output(42, 5, 0)
 
 SCENARIO_38 = lambda: create_scenario(
     "3x3 Foundation - Belt Chain",
     "EXPECTED: Long belt chain works on 3x3 foundation. "
-    "Full 180/min throughput across 54 cells.",
+    "Full 180/min throughput across 42 cells.",
     setup_3x3_belt_chain,
     foundation="3x3"
 )
@@ -1024,16 +1025,16 @@ SCENARIO_38 = lambda: create_scenario(
 # SCENARIO 39: 2x1 Foundation - Wide Belt Chain
 # =============================================================================
 def setup_2x1_belt_chain(sim):
-    """Belt chain on wide 2x1 foundation (34x14 grid)."""
+    """Belt chain on wide 2x1 foundation (28x14 grid)."""
     # Belt chain from west to east at y=5
-    for x in range(34):
+    for x in range(28):
         sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
     sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
-    sim.set_output(34, 5, 0)
+    sim.set_output(28, 5, 0)
 
 SCENARIO_39 = lambda: create_scenario(
     "2x1 Foundation - Wide",
-    "EXPECTED: Belt chain works on wide 2x1 foundation (34x14). "
+    "EXPECTED: Belt chain works on wide 2x1 foundation (28x14). "
     "Full 180/min throughput.",
     setup_2x1_belt_chain,
     foundation="2x1"
@@ -1044,16 +1045,16 @@ SCENARIO_39 = lambda: create_scenario(
 # SCENARIO 40: 1x2 Foundation - Tall Belt Chain
 # =============================================================================
 def setup_1x2_belt_chain(sim):
-    """Belt chain on tall 1x2 foundation (14x34 grid)."""
+    """Belt chain on tall 1x2 foundation (14x28 grid)."""
     # Belt chain from north to south at x=5
-    for y in range(34):
+    for y in range(28):
         sim.place_building(BuildingType.BELT_FORWARD, 5, y, 0, Rotation.SOUTH)
     sim.set_input(5, -1, 0, "CuCuCuCu", 180.0)
-    sim.set_output(5, 34, 0)
+    sim.set_output(5, 28, 0)
 
 SCENARIO_40 = lambda: create_scenario(
     "1x2 Foundation - Tall",
-    "EXPECTED: Vertical belt chain works on tall 1x2 foundation (14x34). "
+    "EXPECTED: Vertical belt chain works on tall 1x2 foundation (14x28). "
     "Full 180/min throughput.",
     setup_1x2_belt_chain,
     foundation="1x2"
@@ -1066,16 +1067,16 @@ SCENARIO_40 = lambda: create_scenario(
 def setup_2x2_cross_routing(sim):
     """Route from one quadrant to another on 2x2 foundation."""
     # Input from west side, first unit (y=5)
-    for x in range(17):
+    for x in range(14):
         sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
-    # Turn south at x=17
-    for y in range(5, 26):
-        sim.place_building(BuildingType.BELT_FORWARD, 17, y, 0, Rotation.SOUTH)
-    # Turn east again at y=25
-    for x in range(18, 34):
-        sim.place_building(BuildingType.BELT_FORWARD, x, 25, 0, Rotation.EAST)
+    # Turn south at x=14
+    for y in range(5, 20):
+        sim.place_building(BuildingType.BELT_FORWARD, 14, y, 0, Rotation.SOUTH)
+    # Turn east again at y=19 (valid port position in second unit)
+    for x in range(15, 28):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 19, 0, Rotation.EAST)
     sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
-    sim.set_output(34, 25, 0)
+    sim.set_output(28, 19, 0)
 
 SCENARIO_41 = lambda: create_scenario(
     "2x2 Foundation - Cross Routing",
@@ -1097,17 +1098,17 @@ def setup_2x2_multi_machine(sim):
     # Cutter at (5, 5)
     sim.place_building(BuildingType.CUTTER, 5, 5, 0, Rotation.EAST)
     # Left half to rotator, then to east edge
-    for x in range(6, 15):
+    for x in range(6, 12):
         sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
-    sim.place_building(BuildingType.ROTATOR_CW, 15, 5, 0, Rotation.EAST)
-    for x in range(16, 34):
+    sim.place_building(BuildingType.ROTATOR_CW, 12, 5, 0, Rotation.EAST)
+    for x in range(13, 28):
         sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
     # Right half continues east at y=6
-    for x in range(6, 34):
+    for x in range(6, 28):
         sim.place_building(BuildingType.BELT_FORWARD, x, 6, 0, Rotation.EAST)
     sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
-    sim.set_output(34, 5, 0)
-    sim.set_output(34, 6, 0)
+    sim.set_output(28, 5, 0)
+    sim.set_output(28, 6, 0)
 
 SCENARIO_42 = lambda: create_scenario(
     "2x2 Foundation - Multi-Machine",
@@ -1122,14 +1123,14 @@ SCENARIO_42 = lambda: create_scenario(
 # SCENARIO 43: T-Shaped Foundation
 # =============================================================================
 def setup_t_foundation(sim):
-    """Test T-shaped irregular foundation (54x34 grid)."""
+    """Test T-shaped irregular foundation (42x28 grid)."""
     # T foundation: 3 units wide on top row, 1 unit centered below
-    # Grid is 54x34 (3 units wide = 54 cells)
+    # Grid is 42x28 (3 units wide = 42 cells)
     # Simple belt from west to east at y=5
-    for x in range(54):
+    for x in range(42):
         sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
     sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
-    sim.set_output(54, 5, 0)
+    sim.set_output(42, 5, 0)
 
 SCENARIO_43 = lambda: create_scenario(
     "T-Shaped Foundation",
@@ -1143,14 +1144,14 @@ SCENARIO_43 = lambda: create_scenario(
 # SCENARIO 44: L-Shaped Foundation
 # =============================================================================
 def setup_l_foundation(sim):
-    """Test L-shaped irregular foundation (34x34 grid)."""
+    """Test L-shaped irregular foundation (28x28 grid)."""
     # L foundation: 2x2 bounding box with one corner missing
-    # Grid is 34x34
+    # Grid is 28x28
     # Simple belt from west to east at y=5
-    for x in range(34):
+    for x in range(28):
         sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
     sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
-    sim.set_output(34, 5, 0)
+    sim.set_output(28, 5, 0)
 
 SCENARIO_44 = lambda: create_scenario(
     "L-Shaped Foundation",

@@ -863,8 +863,8 @@ class FlowViewer:
             west_units = exposed_west
 
         for ux, uy in west_units:
-            unit_start_y = uy * 20 if uy > 0 else 0
-            unit_start_x = ux * 20 if ux > 0 else 0
+            unit_start_y = uy * 14
+            unit_start_x = ux * 14
             for offset in port_offsets:
                 port_y = unit_start_y + offset
                 if port_y < self.grid_height:
@@ -884,9 +884,8 @@ class FlowViewer:
             east_units = exposed_east
 
         for ux, uy in east_units:
-            unit_start_y = uy * 20 if uy > 0 else 0
-            # East edge of this unit: unit_start_x + 14 (or grid_width if at boundary)
-            unit_start_x = ux * 20 if ux > 0 else 0
+            unit_start_y = uy * 14
+            unit_start_x = ux * 14
             edge_x = unit_start_x + 14  # Right edge of 14-tile unit
             if edge_x > self.grid_width:
                 edge_x = self.grid_width
@@ -909,8 +908,8 @@ class FlowViewer:
             north_units = exposed_north
 
         for ux, uy in north_units:
-            unit_start_x = ux * 20 if ux > 0 else 0
-            unit_start_y = uy * 20 if uy > 0 else 0
+            unit_start_x = ux * 14
+            unit_start_y = uy * 14
             for offset in port_offsets:
                 port_x = unit_start_x + offset
                 if port_x < self.grid_width:
@@ -930,8 +929,8 @@ class FlowViewer:
             south_units = exposed_south
 
         for ux, uy in south_units:
-            unit_start_x = ux * 20 if ux > 0 else 0
-            unit_start_y = uy * 20 if uy > 0 else 0
+            unit_start_x = ux * 14
+            unit_start_y = uy * 14
             edge_y = unit_start_y + 14  # Bottom edge of 14-tile unit
             if edge_y > self.grid_height:
                 edge_y = self.grid_height

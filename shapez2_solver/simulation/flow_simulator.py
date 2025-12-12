@@ -231,36 +231,42 @@ class FlowSimulator:
                     num_ports = spec.ports_per_side[side]
                     for port_idx in range(num_ports):
                         grid_x, grid_y = spec.get_port_grid_position(side, port_idx)
-                        # I/O position is ONE STEP OUTSIDE the grid
+                        # I/O position is ONE STEP OUTSIDE the unit's edge
+                        # For outer boundary: -1 or width/height
+                        # For internal edges: position is inside grid but in exclusion zone
                         if side == Side.WEST:
-                            io_pos = (-1, grid_y, floor)
+                            io_x = grid_x - 1  # One step left of west edge
+                            io_pos = (io_x, grid_y, floor)
                         elif side == Side.EAST:
-                            io_pos = (self.width, grid_y, floor)
+                            io_x = grid_x + 1  # One step right of east edge
+                            io_pos = (io_x, grid_y, floor)
                         elif side == Side.NORTH:
-                            io_pos = (grid_x, -1, floor)
+                            io_y = grid_y - 1  # One step above north edge
+                            io_pos = (grid_x, io_y, floor)
                         else:  # SOUTH
-                            io_pos = (grid_x, self.height, floor)
+                            io_y = grid_y + 1  # One step below south edge
+                            io_pos = (grid_x, io_y, floor)
                         valid.add(io_pos)
         else:
             # Default: calculate for a simple rectangular foundation
-            # Each 14-unit segment has 4 port positions at 5, 6, 7, 8 (or with offsets from center)
+            # Each 14-tile unit has 4 port positions at 5, 6, 7, 8 (center at 7, offsets -2,-1,0,1)
             for floor in range(self.num_floors):
-                # Calculate segments
-                x_segments = max(1, (self.width + 6) // 20 + (1 if self.width <= 14 else 0))
-                y_segments = max(1, (self.height + 6) // 20 + (1 if self.height <= 14 else 0))
+                # Calculate number of units
+                x_units = max(1, self.width // 14)
+                y_units = max(1, self.height // 14)
 
-                # For simple case, use middle 4 of each 14-unit segment
-                for seg in range(x_segments):
-                    center = 7 + seg * 20
-                    for offset in [-2, -1, 1, 2]:
+                # For simple case, use middle 4 of each 14-tile unit
+                for seg in range(x_units):
+                    center = 7 + seg * 14
+                    for offset in [-2, -1, 0, 1]:
                         x = center + offset
                         if 0 <= x < self.width:
                             valid.add((x, -1, floor))  # North
                             valid.add((x, self.height, floor))  # South
 
-                for seg in range(y_segments):
-                    center = 7 + seg * 20
-                    for offset in [-2, -1, 1, 2]:
+                for seg in range(y_units):
+                    center = 7 + seg * 14
+                    for offset in [-2, -1, 0, 1]:
                         y = center + offset
                         if 0 <= y < self.height:
                             valid.add((-1, y, floor))  # West

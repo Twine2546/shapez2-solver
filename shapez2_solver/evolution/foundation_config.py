@@ -55,19 +55,19 @@ class FoundationSpec:
 
     Foundation dimensions in Shapez 2:
     - Each 1x1 unit is 14×14 internal grid tiles
-    - Additional units add 20 tiles per axis (14 + overlap/connection zone)
+    - Grid dimensions are always multiples of 14
     - Each 1x1 unit has 4 ports centered on each of its edges
     - 4 floors per foundation
 
     Internal grid formula:
-    - grid_width = 14 + (units_x - 1) * 20
-    - grid_height = 14 + (units_y - 1) * 20
+    - grid_width = 14 * units_x
+    - grid_height = 14 * units_y
 
     Area verification:
-    - 1x1: 14×14 = 196 ✓
-    - 2x1: 34×14 = 476 ✓
-    - 2x2: 34×34 = 1156 ✓
-    - 3x3: 54×54 = 2916 ✓
+    - 1x1: 14×14 = 196
+    - 2x1: 28×14 = 392
+    - 2x2: 28×28 = 784
+    - 3x3: 42×42 = 1764
     """
     name: str
     units_x: int  # Number of 1x1 units in X dimension
@@ -80,13 +80,13 @@ class FoundationSpec:
 
     @property
     def grid_width(self) -> int:
-        """Internal grid width in tiles."""
-        return 14 + (self.units_x - 1) * 20
+        """Internal grid width in tiles. Each unit is 14 tiles."""
+        return 14 * self.units_x
 
     @property
     def grid_height(self) -> int:
-        """Internal grid height in tiles."""
-        return 14 + (self.units_y - 1) * 20
+        """Internal grid height in tiles. Each unit is 14 tiles."""
+        return 14 * self.units_y
 
     @property
     def total_area(self) -> int:
@@ -122,37 +122,16 @@ class FoundationSpec:
             return None  # All cells are valid
 
         valid_cells = set()
-        cells_set = set(self.present_cells)
 
         for ux, uy in self.present_cells:
-            # Each 1x1 unit is 14x14 tiles
-            # First unit at (0,0), next at (20,0), etc.
-            start_x = ux * 20 if ux > 0 else 0
-            start_y = uy * 20 if uy > 0 else 0
+            # Each 1x1 unit is 14x14 tiles, starting at (ux*14, uy*14)
+            start_x = ux * 14
+            start_y = uy * 14
 
-            # Add the 14x14 core of this unit
+            # Add the 14x14 tiles of this unit
             for dx in range(14):
                 for dy in range(14):
                     valid_cells.add((start_x + dx, start_y + dy))
-
-            # Add connection strips to adjacent units
-            # Horizontal connection (to the right)
-            if (ux + 1, uy) in cells_set:
-                for dy in range(14):
-                    for dx in range(6):
-                        valid_cells.add((start_x + 14 + dx, start_y + dy))
-
-            # Vertical connection (downward)
-            if (ux, uy + 1) in cells_set:
-                for dx in range(14):
-                    for dy in range(6):
-                        valid_cells.add((start_x + dx, start_y + 14 + dy))
-
-            # Diagonal connection area (if both right and down neighbors exist)
-            if (ux + 1, uy) in cells_set and (ux, uy + 1) in cells_set and (ux + 1, uy + 1) in cells_set:
-                for dx in range(6):
-                    for dy in range(6):
-                        valid_cells.add((start_x + 14 + dx, start_y + 14 + dy))
 
         return valid_cells
 
@@ -250,16 +229,29 @@ class FoundationSpec:
             # Get the unit for this port index
             if unit_index < len(exposed_units):
                 unit_x, unit_y = exposed_units[unit_index]
-                unit_center_x = 7 + unit_x * 20
-                unit_center_y = 7 + unit_y * 20
+                unit_center_x = 7 + unit_x * 14
+                unit_center_y = 7 + unit_y * 14
+                # Calculate actual edge positions for this unit
+                unit_north_edge = unit_y * 14  # Top of unit
+                unit_south_edge = (unit_y + 1) * 14 - 1  # Bottom of unit
+                unit_west_edge = unit_x * 14  # Left of unit
+                unit_east_edge = (unit_x + 1) * 14 - 1  # Right of unit
             else:
                 # Fallback if index out of range
-                unit_center_x = 7 + unit_index * 20
-                unit_center_y = 7 + unit_index * 20
+                unit_center_x = 7 + unit_index * 14
+                unit_center_y = 7 + unit_index * 14
+                unit_north_edge = 0
+                unit_south_edge = self.grid_height - 1
+                unit_west_edge = 0
+                unit_east_edge = self.grid_width - 1
         else:
-            # Rectangular foundation
-            unit_center_x = 7 + unit_index * 20
-            unit_center_y = 7 + unit_index * 20
+            # Rectangular foundation - use grid boundaries
+            unit_center_x = 7 + unit_index * 14
+            unit_center_y = 7 + unit_index * 14
+            unit_north_edge = 0
+            unit_south_edge = self.grid_height - 1
+            unit_west_edge = 0
+            unit_east_edge = self.grid_width - 1
 
         # Calculate port position within the unit
         # Ports spread around center: center+offset where offset in {-2, -1, 0, 1}
@@ -268,13 +260,13 @@ class FoundationSpec:
         port_offset = offsets[port_in_unit] if port_in_unit < len(offsets) else 0
 
         if side == Side.NORTH:
-            return (unit_center_x + port_offset, 0)
+            return (unit_center_x + port_offset, unit_north_edge)
         elif side == Side.SOUTH:
-            return (unit_center_x + port_offset, self.grid_height - 1)
+            return (unit_center_x + port_offset, unit_south_edge)
         elif side == Side.WEST:
-            return (0, unit_center_y + port_offset)
+            return (unit_west_edge, unit_center_y + port_offset)
         elif side == Side.EAST:
-            return (self.grid_width - 1, unit_center_y + port_offset)
+            return (unit_east_edge, unit_center_y + port_offset)
         return (0, 0)
 
 
