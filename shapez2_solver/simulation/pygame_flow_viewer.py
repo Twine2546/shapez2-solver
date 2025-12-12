@@ -90,6 +90,7 @@ class FlowViewer:
         self.sidebar_width = 350
         self.toolbar_height = 60
         self.grid_offset_x = 30  # Left margin for west edge I/O
+        self.grid_sidebar_gap = 20  # Gap between grid and sidebar
 
         # Fixed window size - grid scales to fit
         self.screen_width = 1200
@@ -256,7 +257,7 @@ class FlowViewer:
     def update_hover(self):
         """Update hover state based on mouse position."""
         x, y = self.mouse_pos
-        sidebar_x = self.grid_offset_x + self.grid_width * self.cell_size
+        sidebar_x = self.grid_offset_x + self.grid_width * self.cell_size + self.grid_sidebar_gap
 
         self.hovered_palette_idx = -1
 
@@ -352,7 +353,7 @@ class FlowViewer:
                 self.current_rotation = rotations[(idx + 1) % 4]
 
         # Check sidebar clicks
-        sidebar_x = self.grid_offset_x + self.grid_width * self.cell_size
+        sidebar_x = self.grid_offset_x + self.grid_width * self.cell_size + self.grid_sidebar_gap
         if x > sidebar_x:
             rel_x = x - sidebar_x
             rel_y = y - self.toolbar_height
@@ -826,7 +827,8 @@ class FlowViewer:
 
         # Calculate port positions for each side
         # Ports are at fixed offsets within each 14-tile unit section
-        port_offsets = [3, 5, 8, 10]  # Grid positions within each unit
+        # Unit center is at 7, offsets are [-2, -1, 0, 1] giving positions 5, 6, 7, 8
+        port_offsets = [5, 6, 7, 8]  # Grid positions within each unit
 
         # For irregular foundations, need to check which unit cells are present
         cells_set = set(spec.present_cells) if spec.present_cells else None
@@ -1576,7 +1578,7 @@ class FlowViewer:
     
     def draw_sidebar(self):
         """Draw building palette and info."""
-        x = self.grid_offset_x + self.grid_width * self.cell_size + 10
+        x = self.grid_offset_x + self.grid_width * self.cell_size + self.grid_sidebar_gap + 10
         y = self.toolbar_height + 10
 
         # Foundation selector
@@ -1711,7 +1713,7 @@ class FlowViewer:
             msg_color = (100, 255, 100) if "Saved" in self.sample_message or "Loaded" in self.sample_message else (255, 200, 100)
             msg_text = self.font_large.render(self.sample_message, True, msg_color)
             # Position in top-right of grid area
-            self.screen.blit(msg_text, (self.grid_offset_x + self.grid_width * self.cell_size - msg_text.get_width() - 10, self.toolbar_height + 5))
+            self.screen.blit(msg_text, (self.grid_offset_x + self.grid_width * self.cell_size - msg_text.get_width() - 5, self.toolbar_height + 5))
 
         # Show scenario info if in scenario mode
         if self.scenario_mode:
