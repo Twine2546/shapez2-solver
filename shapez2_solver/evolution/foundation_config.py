@@ -262,9 +262,9 @@ class FoundationSpec:
             unit_center_y = 7 + unit_index * 20
 
         # Calculate port position within the unit
-        # Ports spread around center: center+offset where offset in {-1.5, -0.5, 0.5, 1.5}
-        # Approximated as integer offsets: -2, -1, 1, 2 (skip 0 to spread evenly)
-        offsets = [-2, -1, 1, 2]
+        # Ports spread around center: center+offset where offset in {-2, -1, 0, 1}
+        # This gives port positions 5, 6, 7, 8 for a unit centered at 7
+        offsets = [-2, -1, 0, 1]
         port_offset = offsets[port_in_unit] if port_in_unit < len(offsets) else 0
 
         if side == Side.NORTH:

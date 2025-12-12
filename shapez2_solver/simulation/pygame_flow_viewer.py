@@ -89,6 +89,7 @@ class FlowViewer:
         self.cell_size = 40
         self.sidebar_width = 350
         self.toolbar_height = 60
+        self.grid_offset_x = 30  # Left margin for west edge I/O
 
         # Fixed window size - grid scales to fit
         self.screen_width = 1200
@@ -255,7 +256,7 @@ class FlowViewer:
     def update_hover(self):
         """Update hover state based on mouse position."""
         x, y = self.mouse_pos
-        sidebar_x = self.grid_width * self.cell_size
+        sidebar_x = self.grid_offset_x + self.grid_width * self.cell_size
 
         self.hovered_palette_idx = -1
 
@@ -278,7 +279,8 @@ class FlowViewer:
         x, y = pos
 
         # Check if click is on grid (including external I/O positions)
-        grid_x = x // self.cell_size
+        # Account for grid offset
+        grid_x = (x - self.grid_offset_x) // self.cell_size
         grid_y = (y - self.toolbar_height) // self.cell_size
 
         # For I/O mode, allow clicking on external edge positions
@@ -287,8 +289,8 @@ class FlowViewer:
         is_external_io = False
 
         if self.mode in ("input", "output"):
-            # Check for external west edge (x=-1)
-            if x < self.cell_size // 2 and 0 <= grid_y < self.grid_height:
+            # Check for external west edge (x=-1) - click in left margin
+            if x < self.grid_offset_x and 0 <= grid_y < self.grid_height:
                 grid_x = -1
                 is_external_io = True
             # Check for external east edge (x=grid_width)
@@ -350,7 +352,7 @@ class FlowViewer:
                 self.current_rotation = rotations[(idx + 1) % 4]
 
         # Check sidebar clicks
-        sidebar_x = self.grid_width * self.cell_size
+        sidebar_x = self.grid_offset_x + self.grid_width * self.cell_size
         if x > sidebar_x:
             rel_x = x - sidebar_x
             rel_y = y - self.toolbar_height
@@ -768,7 +770,7 @@ class FlowViewer:
     def _draw_blocked_cell(self, x: int, y: int, offset_y: int):
         """Draw a blocked/invalid cell with X pattern - highly visible."""
         rect = pygame.Rect(
-            x * self.cell_size,
+            self.grid_offset_x + x * self.cell_size,
             offset_y + y * self.cell_size,
             self.cell_size - 1,
             self.cell_size - 1
@@ -787,8 +789,9 @@ class FlowViewer:
         spec = FOUNDATION_SPECS[self.current_foundation_name]
 
         # Draw foundation background (slightly lighter than dark gray)
+        offset_x = self.grid_offset_x
         foundation_rect = pygame.Rect(
-            0,
+            offset_x,
             offset_y,
             self.grid_width * self.cell_size,
             self.grid_height * self.cell_size
@@ -864,7 +867,7 @@ class FlowViewer:
                 port_y = unit_start_y + offset
                 if port_y < self.grid_height:
                     rect = pygame.Rect(
-                        unit_start_x,  # x position at left edge of this unit
+                        offset_x + unit_start_x,  # x position at left edge of this unit
                         offset_y + port_y * self.cell_size,
                         self.cell_size // 4,
                         self.cell_size
@@ -889,7 +892,7 @@ class FlowViewer:
                 port_y = unit_start_y + offset
                 if port_y < self.grid_height:
                     rect = pygame.Rect(
-                        edge_x * self.cell_size - self.cell_size // 4,
+                        offset_x + edge_x * self.cell_size - self.cell_size // 4,
                         offset_y + port_y * self.cell_size,
                         self.cell_size // 4,
                         self.cell_size
@@ -910,7 +913,7 @@ class FlowViewer:
                 port_x = unit_start_x + offset
                 if port_x < self.grid_width:
                     rect = pygame.Rect(
-                        port_x * self.cell_size,
+                        offset_x + port_x * self.cell_size,
                         offset_y + unit_start_y * self.cell_size,  # Top edge of this unit
                         self.cell_size,
                         self.cell_size // 4
@@ -934,7 +937,7 @@ class FlowViewer:
                 port_x = unit_start_x + offset
                 if port_x < self.grid_width:
                     rect = pygame.Rect(
-                        port_x * self.cell_size,
+                        offset_x + port_x * self.cell_size,
                         offset_y + edge_y * self.cell_size - self.cell_size // 4,
                         self.cell_size,
                         self.cell_size // 4
@@ -945,10 +948,10 @@ class FlowViewer:
         corner_size = 8
         corner_color = (150, 200, 150)
         corners = [
-            (0, offset_y),  # Top-left
-            (self.grid_width * self.cell_size - corner_size, offset_y),  # Top-right
-            (0, offset_y + self.grid_height * self.cell_size - corner_size),  # Bottom-left
-            (self.grid_width * self.cell_size - corner_size,
+            (offset_x, offset_y),  # Top-left
+            (offset_x + self.grid_width * self.cell_size - corner_size, offset_y),  # Top-right
+            (offset_x, offset_y + self.grid_height * self.cell_size - corner_size),  # Bottom-left
+            (offset_x + self.grid_width * self.cell_size - corner_size,
              offset_y + self.grid_height * self.cell_size - corner_size),  # Bottom-right
         ]
         for cx, cy in corners:
@@ -960,7 +963,8 @@ class FlowViewer:
             return
 
         x, y = self.mouse_pos
-        grid_x = x // self.cell_size
+        offset_x = self.grid_offset_x
+        grid_x = (x - offset_x) // self.cell_size
         grid_y = (y - self.toolbar_height) // self.cell_size
 
         if not (0 <= grid_x < self.grid_width and 0 <= grid_y < self.grid_height):
@@ -995,7 +999,7 @@ class FlowViewer:
                     continue
 
                 rect = pygame.Rect(
-                    cell_x * self.cell_size,
+                    offset_x + cell_x * self.cell_size,
                     offset_y + cell_y * self.cell_size,
                     self.cell_size - 1,
                     self.cell_size - 1
@@ -1017,7 +1021,7 @@ class FlowViewer:
         # Draw multi-floor indicator if building spans floors
         if depth > 1:
             text = self.font_small.render(f"+{depth-1}F", True, YELLOW)
-            self.screen.blit(text, (grid_x * self.cell_size + 2, offset_y + grid_y * self.cell_size + 2))
+            self.screen.blit(text, (offset_x + grid_x * self.cell_size + 2, offset_y + grid_y * self.cell_size + 2))
 
         # Show input/output ports as edge markers ON the machine cells
         # Ports show which edge of the machine belts connect to
@@ -1042,7 +1046,7 @@ class FlowViewer:
                 cell_y = grid_y + rot_y
 
                 if 0 <= cell_x < self.grid_width and 0 <= cell_y < self.grid_height:
-                    cx = cell_x * self.cell_size
+                    cx = offset_x + cell_x * self.cell_size
                     cy = offset_y + cell_y * self.cell_size
                     # Draw bar on the edge indicated by direction
                     bar_rect = self._get_edge_bar_rect(cx, cy, rot_dir, bar_thickness)
@@ -1063,7 +1067,7 @@ class FlowViewer:
                 cell_y = grid_y + rot_y
 
                 if 0 <= cell_x < self.grid_width and 0 <= cell_y < self.grid_height:
-                    cx = cell_x * self.cell_size
+                    cx = offset_x + cell_x * self.cell_size
                     cy = offset_y + cell_y * self.cell_size
                     bar_rect = self._get_edge_bar_rect(cx, cy, rot_dir, bar_thickness)
                     pygame.draw.rect(self.screen, ORANGE, bar_rect)
@@ -1113,6 +1117,7 @@ class FlowViewer:
 
     def draw_port_labels(self):
         """Draw input/output port labels for machines on the machine edges."""
+        offset_x = self.grid_offset_x
         offset_y = self.toolbar_height
 
         # Direction to edge offset mapping
@@ -1135,7 +1140,7 @@ class FlowViewer:
                 port_dir = port.get('direction', 'W')
 
                 # Port is ON the machine cell, draw label on the appropriate edge
-                port_cx = px * self.cell_size + self.cell_size // 2
+                port_cx = offset_x + px * self.cell_size + self.cell_size // 2
                 port_cy = offset_y + py * self.cell_size + self.cell_size // 2
 
                 # Offset label toward the edge based on direction
@@ -1159,7 +1164,7 @@ class FlowViewer:
 
                 port_dir = port.get('direction', 'E')
 
-                port_cx = px * self.cell_size + self.cell_size // 2
+                port_cx = offset_x + px * self.cell_size + self.cell_size // 2
                 port_cy = offset_y + py * self.cell_size + self.cell_size // 2
 
                 dx, dy = dir_to_offset.get(port_dir, (0, 0))
@@ -1231,6 +1236,7 @@ class FlowViewer:
 
     def draw_grid(self):
         """Draw the placement grid."""
+        offset_x = self.grid_offset_x
         offset_y = self.toolbar_height
 
         # Get valid cells for irregular foundations (to skip invalid cells)
@@ -1245,7 +1251,7 @@ class FlowViewer:
                     continue
 
                 rect = pygame.Rect(
-                    x * self.cell_size,
+                    offset_x + x * self.cell_size,
                     offset_y + y * self.cell_size,
                     self.cell_size - 1,
                     self.cell_size - 1
@@ -1313,11 +1319,11 @@ class FlowViewer:
             if ix == -1 or ix == self.grid_width or iy == -1 or iy == self.grid_height:
                 # Calculate pixel position for external I/O
                 if ix == -1:
-                    px = -self.cell_size // 2
+                    px = offset_x // 2  # Center in left margin
                 elif ix == self.grid_width:
-                    px = self.grid_width * self.cell_size + self.cell_size // 4
+                    px = offset_x + self.grid_width * self.cell_size + self.cell_size // 4
                 else:
-                    px = ix * self.cell_size + self.cell_size // 2
+                    px = offset_x + ix * self.cell_size + self.cell_size // 2
 
                 if iy == -1:
                     py = offset_y - self.cell_size // 2
@@ -1339,11 +1345,11 @@ class FlowViewer:
             if ox == -1 or ox == self.grid_width or oy == -1 or oy == self.grid_height:
                 # Calculate pixel position for external I/O
                 if ox == -1:
-                    px = -self.cell_size // 2
+                    px = offset_x // 2  # Center in left margin
                 elif ox == self.grid_width:
-                    px = self.grid_width * self.cell_size + self.cell_size // 4
+                    px = offset_x + self.grid_width * self.cell_size + self.cell_size // 4
                 else:
-                    px = ox * self.cell_size + self.cell_size // 2
+                    px = offset_x + ox * self.cell_size + self.cell_size // 2
 
                 if oy == -1:
                     py = offset_y - self.cell_size // 2
@@ -1370,7 +1376,7 @@ class FlowViewer:
                 path_on_floor = [(p[0], p[1]) for p in path if p[2] == self.current_floor]
                 if len(path_on_floor) >= 2:
                     points = [
-                        (p[0] * self.cell_size + self.cell_size // 2,
+                        (offset_x + p[0] * self.cell_size + self.cell_size // 2,
                          offset_y + p[1] * self.cell_size + self.cell_size // 2)
                         for p in path_on_floor
                     ]
@@ -1380,14 +1386,14 @@ class FlowViewer:
         for x in range(self.grid_width + 1):
             pygame.draw.line(
                 self.screen, GRAY,
-                (x * self.cell_size, offset_y),
-                (x * self.cell_size, offset_y + self.grid_height * self.cell_size)
+                (offset_x + x * self.cell_size, offset_y),
+                (offset_x + x * self.cell_size, offset_y + self.grid_height * self.cell_size)
             )
         for y in range(self.grid_height + 1):
             pygame.draw.line(
                 self.screen, GRAY,
-                (0, offset_y + y * self.cell_size),
-                (self.grid_width * self.cell_size, offset_y + y * self.cell_size)
+                (offset_x, offset_y + y * self.cell_size),
+                (offset_x + self.grid_width * self.cell_size, offset_y + y * self.cell_size)
             )
     
     def draw_building_symbol(self, rect: pygame.Rect, bt: BuildingType, rotation: Rotation):
@@ -1570,7 +1576,7 @@ class FlowViewer:
     
     def draw_sidebar(self):
         """Draw building palette and info."""
-        x = self.grid_width * self.cell_size + 10
+        x = self.grid_offset_x + self.grid_width * self.cell_size + 10
         y = self.toolbar_height + 10
 
         # Foundation selector
@@ -1705,7 +1711,7 @@ class FlowViewer:
             msg_color = (100, 255, 100) if "Saved" in self.sample_message or "Loaded" in self.sample_message else (255, 200, 100)
             msg_text = self.font_large.render(self.sample_message, True, msg_color)
             # Position in top-right of grid area
-            self.screen.blit(msg_text, (self.grid_width * self.cell_size - msg_text.get_width() - 10, self.toolbar_height + 5))
+            self.screen.blit(msg_text, (self.grid_offset_x + self.grid_width * self.cell_size - msg_text.get_width() - 10, self.toolbar_height + 5))
 
         # Show scenario info if in scenario mode
         if self.scenario_mode:
