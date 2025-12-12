@@ -254,6 +254,36 @@ class FlowViewer:
                             return False
         return True
 
+    def _is_internal_edge_io(self, grid_x: int, grid_y: int) -> bool:
+        """Check if position is in exclusion zone but adjacent to valid cell (internal edge I/O)."""
+        foundation_spec = FOUNDATION_SPECS[self.current_foundation_name]
+
+        # Only applies to irregular foundations with exclusion zones
+        if foundation_spec.present_cells is None:
+            return False
+
+        valid_cells = foundation_spec.get_valid_grid_cells()
+        if valid_cells is None:
+            return False
+
+        # Position must be in exclusion zone (not a valid cell)
+        if (grid_x, grid_y) in valid_cells:
+            return False
+
+        # Position must be adjacent to at least one valid cell
+        neighbors = [
+            (grid_x - 1, grid_y),  # West
+            (grid_x + 1, grid_y),  # East
+            (grid_x, grid_y - 1),  # North
+            (grid_x, grid_y + 1),  # South
+        ]
+
+        for nx, ny in neighbors:
+            if (nx, ny) in valid_cells:
+                return True
+
+        return False
+
     def update_hover(self):
         """Update hover state based on mouse position."""
         x, y = self.mouse_pos
@@ -304,6 +334,9 @@ class FlowViewer:
             # Check for external south edge (y=grid_height)
             elif grid_y == self.grid_height and 0 <= grid_x < self.grid_width:
                 is_external_io = True
+            # Check for internal edge (exclusion zone adjacent to valid cell)
+            elif is_in_grid and self._is_internal_edge_io(grid_x, grid_y):
+                is_external_io = True  # Treat as valid I/O position
 
         if is_in_grid or is_external_io:
             if button == 1:  # Left click
