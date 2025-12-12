@@ -1482,13 +1482,15 @@ class FlowReport:
         
         total_in = sum(i['throughput'] for i in self.sim.inputs)
         total_out = sum(o.get('throughput', 0) for o in self.sim.outputs)
-        efficiency = 100 * total_out / total_in if total_in > 0 else 0
+        # Max output capacity = belt throughput (180) per output
+        max_out = BELT_THROUGHPUT * len(self.sim.outputs) if self.sim.outputs else 0
+        efficiency = 100 * total_out / max_out if max_out > 0 else 0
         
         backed_up = sum(1 for m in self.sim.machines.values() 
                        for p in m.output_ports if p['backed_up'])
         
         lines.append(f"   Total Input:     {total_in:.0f} items/min")
-        lines.append(f"   Total Output:    {total_out:.0f} items/min")
+        lines.append(f"   Total Output:    {total_out:.0f}/{max_out:.0f} items/min")
         lines.append(f"   Efficiency:      {efficiency:.1f}%")
         lines.append(f"   Backed Up Ports: {backed_up}")
         lines.append(f"   Errors:          {len(self.sim.errors)}")
