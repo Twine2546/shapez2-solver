@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from shapez2_solver.blueprint.building_types import (
     BuildingType, Rotation, BUILDING_SPECS, BUILDING_PORTS
 )
+from shapez2_solver.evolution.foundation_config import FoundationSpec, FOUNDATION_SPECS, Side
 
 
 # Throughput constants (items per minute)
@@ -166,35 +167,128 @@ class MachineState:
 class FlowSimulator:
     """
     Simulates item flow through a factory layout.
-    
+
     Tracks:
     - Shape at every cell
     - Throughput and utilization
     - Shape transformations through machines
     - Final output shapes
     """
-    
-    def __init__(self, width: int = 14, height: int = 14, num_floors: int = 4):
+
+    def __init__(self, width: int = 14, height: int = 14, num_floors: int = 4,
+                 foundation_spec: Optional[FoundationSpec] = None,
+                 validate_io: bool = True):
         self.width = width
         self.height = height
         self.num_floors = num_floors
-        
+        self.foundation_spec = foundation_spec
+        self.validate_io = validate_io
+
+        # If foundation spec provided, use its dimensions
+        if foundation_spec:
+            self.width = foundation_spec.grid_width
+            self.height = foundation_spec.grid_height
+            self.num_floors = foundation_spec.num_floors
+
+        # Calculate valid I/O positions based on foundation
+        self.valid_io_positions = self._calculate_valid_io_positions()
+
         # Grid of flow cells
         self.cells: Dict[Tuple[int, int, int], FlowCell] = {}
-        
+
         # Buildings by origin position
         self.buildings: Dict[Tuple[int, int, int], Dict] = {}
-        
+
         # Machine states
         self.machines: Dict[Tuple[int, int, int], MachineState] = {}
-        
+
         # Edge I/O
         self.inputs: List[Dict] = []
         self.outputs: List[Dict] = []
-        
+
         # Errors and warnings
         self.errors: List[str] = []
         self.warnings: List[str] = []
+
+    def _calculate_valid_io_positions(self) -> Set[Tuple[int, int, int]]:
+        """
+        Calculate valid I/O positions on the external walls.
+
+        For each 14-unit segment of external wall, the middle 4 positions (5, 6, 7, 8)
+        are valid for I/O on each floor.
+        """
+        valid = set()
+
+        # Calculate number of 14-unit segments on each axis
+        # For width: segments = (width + 6) // 20 + 1 for first segment
+        # Actually simpler: each 1x1 unit contributes 4 ports
+
+        if self.foundation_spec:
+            spec = self.foundation_spec
+            # Use the foundation's port position logic
+            for floor in range(self.num_floors):
+                for side in Side:
+                    num_ports = spec.ports_per_side[side]
+                    for port_idx in range(num_ports):
+                        grid_x, grid_y = spec.get_port_grid_position(side, port_idx)
+                        # I/O position is ONE STEP OUTSIDE the grid
+                        if side == Side.WEST:
+                            io_pos = (-1, grid_y, floor)
+                        elif side == Side.EAST:
+                            io_pos = (self.width, grid_y, floor)
+                        elif side == Side.NORTH:
+                            io_pos = (grid_x, -1, floor)
+                        else:  # SOUTH
+                            io_pos = (grid_x, self.height, floor)
+                        valid.add(io_pos)
+        else:
+            # Default: calculate for a simple rectangular foundation
+            # Each 14-unit segment has 4 port positions at 5, 6, 7, 8 (or with offsets from center)
+            for floor in range(self.num_floors):
+                # Calculate segments
+                x_segments = max(1, (self.width + 6) // 20 + (1 if self.width <= 14 else 0))
+                y_segments = max(1, (self.height + 6) // 20 + (1 if self.height <= 14 else 0))
+
+                # For simple case, use middle 4 of each 14-unit segment
+                for seg in range(x_segments):
+                    center = 7 + seg * 20
+                    for offset in [-2, -1, 1, 2]:
+                        x = center + offset
+                        if 0 <= x < self.width:
+                            valid.add((x, -1, floor))  # North
+                            valid.add((x, self.height, floor))  # South
+
+                for seg in range(y_segments):
+                    center = 7 + seg * 20
+                    for offset in [-2, -1, 1, 2]:
+                        y = center + offset
+                        if 0 <= y < self.height:
+                            valid.add((-1, y, floor))  # West
+                            valid.add((self.width, y, floor))  # East
+
+        return valid
+
+    def get_valid_io_positions_for_side(self, side: Side, floor: int = 0) -> List[Tuple[int, int, int]]:
+        """Get list of valid I/O positions for a specific side and floor."""
+        positions = []
+        for pos in self.valid_io_positions:
+            x, y, z = pos
+            if z != floor:
+                continue
+            if side == Side.WEST and x == -1:
+                positions.append(pos)
+            elif side == Side.EAST and x == self.width:
+                positions.append(pos)
+            elif side == Side.NORTH and y == -1:
+                positions.append(pos)
+            elif side == Side.SOUTH and y == self.height:
+                positions.append(pos)
+        # Sort by position along the wall
+        if side in (Side.NORTH, Side.SOUTH):
+            positions.sort(key=lambda p: p[0])
+        else:
+            positions.sort(key=lambda p: p[1])
+        return positions
     
     def _get_cell(self, x: int, y: int, floor: int) -> FlowCell:
         """Get or create a flow cell."""
@@ -317,17 +411,31 @@ class FlowSimulator:
         }[direction]
     
     def set_input(self, x: int, y: int, floor: int, shape: str, throughput: float = 180.0):
-        """Set an input source."""
+        """Set an input source at a valid I/O position."""
+        pos = (x, y, floor)
+        if self.validate_io and pos not in self.valid_io_positions:
+            valid_list = sorted(self.valid_io_positions)[:10]
+            raise ValueError(
+                f"Invalid input position {pos}. Must be on external wall at valid port position. "
+                f"Valid positions include: {valid_list}..."
+            )
         self.inputs.append({
-            'position': (x, y, floor),
+            'position': pos,
             'shape': shape,
             'throughput': throughput,
         })
-    
+
     def set_output(self, x: int, y: int, floor: int, expected_shape: Optional[str] = None):
-        """Set an output sink."""
+        """Set an output sink at a valid I/O position."""
+        pos = (x, y, floor)
+        if self.validate_io and pos not in self.valid_io_positions:
+            valid_list = sorted(self.valid_io_positions)[:10]
+            raise ValueError(
+                f"Invalid output position {pos}. Must be on external wall at valid port position. "
+                f"Valid positions include: {valid_list}..."
+            )
         self.outputs.append({
-            'position': (x, y, floor),
+            'position': pos,
             'expected_shape': expected_shape,
             'actual_shape': None,
             'throughput': 0.0,
@@ -499,6 +607,49 @@ class FlowSimulator:
         dx, dy = deltas[direction]
         return (x + dx, y + dy, z)
 
+    def _get_grid_entry_pos(self, external_pos: Tuple[int, int, int]) -> Optional[Tuple[int, int, int]]:
+        """
+        Convert an external I/O position to the adjacent grid cell.
+
+        External I/O positions are outside the grid:
+        - West wall: x = -1 -> entry at x = 0
+        - East wall: x = width -> entry at x = width-1
+        - North wall: y = -1 -> entry at y = 0
+        - South wall: y = height -> entry at y = height-1
+
+        Returns None if the position is already inside the grid.
+        """
+        x, y, z = external_pos
+
+        # Check if outside grid
+        if x == -1:  # West wall - enters from west
+            return (0, y, z)
+        elif x == self.width:  # East wall - enters from east
+            return (self.width - 1, y, z)
+        elif y == -1:  # North wall - enters from north
+            return (x, 0, z)
+        elif y == self.height:  # South wall - enters from south
+            return (x, self.height - 1, z)
+
+        # Position is inside the grid
+        return None
+
+    def _get_external_output_pos(self, grid_pos: Tuple[int, int, int], direction: Rotation) -> Optional[Tuple[int, int, int]]:
+        """
+        Get the external output position if a belt at grid_pos outputs in the given direction
+        and reaches the edge of the grid.
+        """
+        x, y, z = grid_pos
+        if direction == Rotation.EAST and x == self.width - 1:
+            return (self.width, y, z)
+        elif direction == Rotation.WEST and x == 0:
+            return (-1, y, z)
+        elif direction == Rotation.SOUTH and y == self.height - 1:
+            return (x, self.height, z)
+        elif direction == Rotation.NORTH and y == 0:
+            return (x, -1, z)
+        return None
+
     def _opposite_direction(self, direction: str) -> str:
         """Get the opposite direction."""
         return {'E': 'W', 'W': 'E', 'N': 'S', 'S': 'N'}[direction]
@@ -552,6 +703,14 @@ class FlowSimulator:
             Rotation.SOUTH: Rotation.NORTH,
         }[primary_dir]
 
+        # Check for external output at grid edge (primary direction only)
+        external_out_pos = self._get_external_output_pos(pos, primary_dir)
+        if external_out_pos:
+            for out in self.outputs:
+                if out['position'] == external_out_pos:
+                    valid_outputs.append((external_out_pos, primary_dir, False))
+                    break
+
         # Check all 4 adjacent positions for potential outputs
         adjacent = [
             ((x + 1, y, z), Rotation.EAST, 'E'),
@@ -584,7 +743,7 @@ class FlowSimulator:
             if is_machine_input:
                 continue
 
-            # Check for edge outputs at adjacent position
+            # Check for edge outputs at adjacent position (internal grid outputs - legacy support)
             for out in self.outputs:
                 if out['position'] == adj_pos:
                     valid_outputs.append((adj_pos, direction_to_adj, False))
@@ -608,6 +767,11 @@ class FlowSimulator:
                 # Don't split to belts going in the OPPOSITE direction of us
                 # (e.g., belt going EAST shouldn't split to belt going WEST)
                 if adj_output_dir == opposite_dir:
+                    continue
+
+                # Don't side-split to parallel belts (same direction)
+                # This prevents cascading splits between adjacent parallel belts
+                if direction_to_adj != primary_dir and adj_output_dir == primary_dir:
                     continue
 
                 # From the adjacent cell's perspective, what direction are we?
@@ -791,6 +955,17 @@ class FlowSimulator:
                 out['throughput'] += throughput
                 return
 
+        # Check for external output at grid edge
+        if cell:
+            out_dir = self._get_belt_output_direction(cell.building_type, cell.rotation)
+            external_out = self._get_external_output_pos(start, out_dir)
+            if external_out:
+                for out in self.outputs:
+                    if out['position'] == external_out:
+                        out['actual_shape'] = shape
+                        out['throughput'] += throughput
+                        return
+
         # Continue tracing if there's a belt at next position
         if next_pos in self.cells:
             self._trace_from_position(next_pos, shape, throughput, visited, path)
@@ -876,18 +1051,23 @@ class FlowSimulator:
 
             path = []
 
-            # Check if input position has a belt
-            if pos in self.cells:
-                cell = self.cells[pos]
+            # For external I/O positions, find the adjacent grid cell
+            # External inputs feed INTO the grid from outside
+            grid_pos = self._get_grid_entry_pos(pos)
+
+            # Check if input position has a belt (or the grid entry position for external I/O)
+            check_pos = grid_pos if grid_pos else pos
+            if check_pos in self.cells:
+                cell = self.cells[check_pos]
                 cell.shape = shape
                 cell.throughput += throughput  # ADD to existing throughput for merging
-                visited.add(pos)  # Mark as visited so trace doesn't double-count
-                path.append(pos)
+                visited.add(check_pos)  # Mark as visited so trace doesn't double-count
+                path.append(check_pos)
 
                 # Find all valid outputs and trace from there (splitting if multiple)
                 if cell.building_type in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
                                           BuildingType.BELT_RIGHT):
-                    belt_outputs = self._find_belt_outputs(pos, cell.building_type, cell.rotation)
+                    belt_outputs = self._find_belt_outputs(check_pos, cell.building_type, cell.rotation)
                     # Filter out already-visited positions
                     if belt_outputs:
                         belt_outputs = [(p, d, m) for p, d, m in belt_outputs if p not in visited or m]
@@ -907,7 +1087,7 @@ class FlowSimulator:
                                 self._trace_from_position(output_pos, shape, split_throughput, visited, path)
                 else:
                     # Non-standard belt at input, just trace forward
-                    self._trace_from_position(pos, shape, throughput, visited, path)
+                    self._trace_from_position(check_pos, shape, throughput, visited, path)
             else:
                 # Check if directly feeding a machine input
                 for origin, machine in self.machines.items():

@@ -268,13 +268,34 @@ class FlowViewer:
         """Handle mouse click."""
         x, y = pos
 
-        # Check if click is on grid
+        # Check if click is on grid (including external I/O positions)
         grid_x = x // self.cell_size
         grid_y = (y - self.toolbar_height) // self.cell_size
 
-        if 0 <= grid_x < self.grid_width and 0 <= grid_y < self.grid_height:
+        # For I/O mode, allow clicking on external edge positions
+        # External positions: x=-1 (west), x=grid_width (east), y=-1 (north), y=grid_height (south)
+        is_in_grid = 0 <= grid_x < self.grid_width and 0 <= grid_y < self.grid_height
+        is_external_io = False
+
+        if self.mode in ("input", "output"):
+            # Check for external west edge (x=-1)
+            if x < self.cell_size // 2 and 0 <= grid_y < self.grid_height:
+                grid_x = -1
+                is_external_io = True
+            # Check for external east edge (x=grid_width)
+            elif grid_x == self.grid_width and 0 <= grid_y < self.grid_height:
+                is_external_io = True
+            # Check for external north edge (y=-1)
+            elif y - self.toolbar_height < self.cell_size // 2 and 0 <= grid_x < self.grid_width:
+                grid_y = -1
+                is_external_io = True
+            # Check for external south edge (y=grid_height)
+            elif grid_y == self.grid_height and 0 <= grid_x < self.grid_width:
+                is_external_io = True
+
+        if is_in_grid or is_external_io:
             if button == 1:  # Left click
-                if self.mode == "place":
+                if self.mode == "place" and is_in_grid:
                     # Check if cells are already occupied
                     if not self._can_place_building(grid_x, grid_y, self.current_floor):
                         return  # Cell occupied, don't place
@@ -284,11 +305,17 @@ class FlowViewer:
                         self.current_rotation
                     )
                 elif self.mode == "input":
-                    self.sim.set_input(grid_x, grid_y, self.current_floor, self.input_shape, 180.0)
+                    try:
+                        self.sim.set_input(grid_x, grid_y, self.current_floor, self.input_shape, 180.0)
+                    except ValueError as e:
+                        print(f"Invalid input position: {e}")
                 elif self.mode == "output":
-                    self.sim.set_output(grid_x, grid_y, self.current_floor)
-                elif self.mode == "delete":
-                    # Remove building at position
+                    try:
+                        self.sim.set_output(grid_x, grid_y, self.current_floor)
+                    except ValueError as e:
+                        print(f"Invalid output position: {e}")
+                elif self.mode == "delete" and is_in_grid:
+                    # Remove building at position (only for grid positions)
                     pos_key = (grid_x, grid_y, self.current_floor)
                     if pos_key in self.sim.cells:
                         del self.sim.cells[pos_key]
@@ -297,6 +324,11 @@ class FlowViewer:
                     if pos_key in self.sim.buildings:
                         del self.sim.buildings[pos_key]
                     # Also remove any inputs/outputs at this position
+                    self.sim.inputs = [i for i in self.sim.inputs if i['position'] != pos_key]
+                    self.sim.outputs = [o for o in self.sim.outputs if o['position'] != pos_key]
+                elif self.mode == "delete" and is_external_io:
+                    # Remove external I/O at position
+                    pos_key = (grid_x, grid_y, self.current_floor)
                     self.sim.inputs = [i for i in self.sim.inputs if i['position'] != pos_key]
                     self.sim.outputs = [o for o in self.sim.outputs if o['position'] != pos_key]
 
@@ -1101,6 +1133,63 @@ class FlowViewer:
                             self.draw_shape_mini(rect, out['actual_shape'])
                         text = self.font_small.render("OUT", True, RED)
                         self.screen.blit(text, (rect.centerx - 10, rect.y + 2))
+
+        # Draw external I/O indicators (outside the grid)
+        for inp in self.sim.inputs:
+            ix, iy, iz = inp['position']
+            if iz != self.current_floor:
+                continue
+            # Check if external position
+            if ix == -1 or ix == self.grid_width or iy == -1 or iy == self.grid_height:
+                # Calculate pixel position for external I/O
+                if ix == -1:
+                    px = -self.cell_size // 2
+                elif ix == self.grid_width:
+                    px = self.grid_width * self.cell_size + self.cell_size // 4
+                else:
+                    px = ix * self.cell_size + self.cell_size // 2
+
+                if iy == -1:
+                    py = offset_y - self.cell_size // 2
+                elif iy == self.grid_height:
+                    py = offset_y + self.grid_height * self.cell_size + self.cell_size // 4
+                else:
+                    py = offset_y + iy * self.cell_size + self.cell_size // 2
+
+                # Draw input marker (green arrow pointing into grid)
+                pygame.draw.circle(self.screen, GREEN, (px, py), 8, 2)
+                text = self.font_small.render("IN", True, GREEN)
+                self.screen.blit(text, (px - 8, py - 16))
+
+        for out in self.sim.outputs:
+            ox, oy, oz = out['position']
+            if oz != self.current_floor:
+                continue
+            # Check if external position
+            if ox == -1 or ox == self.grid_width or oy == -1 or oy == self.grid_height:
+                # Calculate pixel position for external I/O
+                if ox == -1:
+                    px = -self.cell_size // 2
+                elif ox == self.grid_width:
+                    px = self.grid_width * self.cell_size + self.cell_size // 4
+                else:
+                    px = ox * self.cell_size + self.cell_size // 2
+
+                if oy == -1:
+                    py = offset_y - self.cell_size // 2
+                elif oy == self.grid_height:
+                    py = offset_y + self.grid_height * self.cell_size + self.cell_size // 4
+                else:
+                    py = offset_y + oy * self.cell_size + self.cell_size // 2
+
+                # Draw output marker (red)
+                pygame.draw.circle(self.screen, RED, (px, py), 8, 2)
+                text = self.font_small.render("OUT", True, RED)
+                self.screen.blit(text, (px - 10, py - 16))
+                # Show throughput if available
+                if out.get('throughput', 0) > 0:
+                    tp_text = self.font_small.render(f"{out['throughput']:.0f}", True, YELLOW)
+                    self.screen.blit(tp_text, (px - 8, py + 4))
 
         # Draw flow paths (lines connecting traced paths)
         if hasattr(self.sim, 'traced_paths') and self.sim.traced_paths:
