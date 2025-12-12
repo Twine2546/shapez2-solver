@@ -622,16 +622,21 @@ def setup_painter_mirrored(sim):
     # Shape input from west at y=8
     for x in range(4):
         sim.place_building(BuildingType.BELT_FORWARD, x, 8, 0, Rotation.EAST)
-    # Color input from south
-    for y in range(13, 8, -1):
-        sim.place_building(BuildingType.BELT_FORWARD, 4, y, 0, Rotation.NORTH)
-    # Painter mirrored
+    # Color input from south - route from x=5 (valid port) to x=4 (painter paint port)
+    # Vertical belts at x=5 from y=13 to y=11, going NORTH
+    for y in range(13, 10, -1):  # y=13, 12, 11
+        sim.place_building(BuildingType.BELT_FORWARD, 5, y, 0, Rotation.NORTH)
+    # Turn west at y=10: belt at (5,10) going WEST outputs to (4,10)
+    sim.place_building(BuildingType.BELT_FORWARD, 5, 10, 0, Rotation.WEST)
+    # Final belt going NORTH into painter paint port
+    sim.place_building(BuildingType.BELT_FORWARD, 4, 10, 0, Rotation.NORTH)
+    # Painter mirrored at (4, 8) - occupies (4, 8) and (4, 9), paint port at (4, 9) receives from S
     sim.place_building(BuildingType.PAINTER_MIRRORED, 4, 8, 0, Rotation.EAST)
     # Output
     for x in range(5, 14):
         sim.place_building(BuildingType.BELT_FORWARD, x, 8, 0, Rotation.EAST)
     sim.set_input(-1, 8, 0, "CuCuCuCu", 45.0)
-    sim.set_input(5, 14, 0, "GrGrGrGr", 45.0)  # Color (south input)
+    sim.set_input(5, 14, 0, "GrGrGrGr", 45.0)  # Color (south input at valid port x=5)
     sim.set_output(14, 8, 0)
 
 SCENARIO_24 = lambda: create_scenario(

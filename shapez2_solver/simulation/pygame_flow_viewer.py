@@ -393,6 +393,20 @@ class FlowViewer:
     
     def handle_key(self, key: int):
         """Handle keyboard input."""
+        # Check modifiers FIRST before bare key checks
+        mods = pygame.key.get_mods()
+
+        # Ctrl+number to quick load sample slot
+        if mods & pygame.KMOD_CTRL and pygame.K_0 <= key <= pygame.K_9:
+            slot = key - pygame.K_0
+            self.load_sample(slot)
+            return
+        # Shift+number to quick save to sample slot
+        if mods & pygame.KMOD_SHIFT and pygame.K_0 <= key <= pygame.K_9:
+            slot = key - pygame.K_0
+            self.save_sample(slot)
+            return
+
         if key == pygame.K_1:
             self.mode = "place"
         elif key == pygame.K_2:
@@ -478,16 +492,6 @@ class FlowViewer:
             self.current_sample_slot = (self.current_sample_slot + 1) % 10
             self.sample_message = f"Slot {self.current_sample_slot}"
             self.sample_message_time = pygame.time.get_ticks()
-        # Ctrl+number to quick load sample slot
-        elif pygame.key.get_mods() & pygame.KMOD_CTRL:
-            if pygame.K_0 <= key <= pygame.K_9:
-                slot = key - pygame.K_0
-                self.load_sample(slot)
-        # Shift+number to quick save to sample slot
-        elif pygame.key.get_mods() & pygame.KMOD_SHIFT:
-            if pygame.K_0 <= key <= pygame.K_9:
-                slot = key - pygame.K_0
-                self.save_sample(slot)
 
     def cycle_foundation(self):
         """Switch to next foundation size."""

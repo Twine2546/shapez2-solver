@@ -1,0 +1,241 @@
+{
+  "name": "Sample 0",
+  "created": "2025-12-12T12:11:10.826943",
+  "foundation": "1x1",
+  "buildings": [
+    {
+      "type": "BELT_FORWARD",
+      "x": 0,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 1,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 2,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 3,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 4,
+      "y": 13,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 4,
+      "y": 12,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 4,
+      "y": 11,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 4,
+      "y": 10,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 4,
+      "y": 9,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "PAINTER_MIRRORED",
+      "x": 4,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 5,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 6,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 7,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 8,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 9,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 10,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 11,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 12,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 13,
+      "y": 8,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 7,
+      "y": 7,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 7,
+      "y": 6,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 7,
+      "y": 5,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 8,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 9,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 9,
+      "y": 6,
+      "floor": 0,
+      "rotation": "SOUTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 10,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 11,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 11,
+      "y": 6,
+      "floor": 0,
+      "rotation": "SOUTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 11,
+      "y": 7,
+      "floor": 0,
+      "rotation": "SOUTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 9,
+      "y": 7,
+      "floor": 0,
+      "rotation": "SOUTH"
+    }
+  ],
+  "inputs": [
+    {
+      "x": -1,
+      "y": 8,
+      "floor": 0,
+      "shape": "CuCuCuCu",
+      "throughput": 45.0
+    },
+    {
+      "x": 5,
+      "y": 14,
+      "floor": 0,
+      "shape": "GrGrGrGr",
+      "throughput": 45.0
+    }
+  ],
+  "outputs": [
+    {
+      "x": 14,
+      "y": 8,
+      "floor": 0,
+      "expected_shape": null
+    }
+  ]
+}

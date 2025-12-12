@@ -232,9 +232,9 @@ BUILDING_PORTS: Dict[BuildingType, Dict[str, List[Tuple[int, int, int, str]]]] =
         'inputs': [(0, 0, 0, 'W'), (0, 0, 0, 'N')],
         'outputs': [(0, 0, 0, 'E')],
     },
-    # Painter Mirrored: color from south
+    # Painter Mirrored: color from south (at bottom cell of 1x2 building)
     BuildingType.PAINTER_MIRRORED: {
-        'inputs': [(0, 0, 0, 'W'), (0, 0, 0, 'S')],
+        'inputs': [(0, 0, 0, 'W'), (0, 1, 0, 'S')],
         'outputs': [(0, 0, 0, 'E')],
     },
     BuildingType.TRASH: {

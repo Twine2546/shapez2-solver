@@ -804,6 +804,76 @@ class FlowSimulator:
 
         return valid_outputs
 
+    def _propagate_merge_throughput(self, start: Tuple[int, int, int], throughput: float,
+                                     visited: Set):
+        """
+        Propagate additional throughput from a merge point downstream.
+
+        When flow merges into an already-visited cell, we need to add the merge
+        throughput to that cell and all downstream cells until we reach outputs.
+        """
+        pos = start
+        merge_visited = set()  # Track positions in this merge propagation
+
+        while pos and pos not in merge_visited:
+            merge_visited.add(pos)
+
+            cell = self.cells.get(pos)
+            if not cell or not cell.building_type:
+                break
+
+            # Add throughput to this cell
+            cell.throughput += throughput
+
+            # Check if this is an output position
+            for out in self.outputs:
+                if out['position'] == pos:
+                    out['throughput'] += throughput
+                    return  # Reached output, done
+
+            # For belts, find the next position(s)
+            if cell.building_type in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
+                                       BuildingType.BELT_RIGHT):
+                belt_outputs = self._find_belt_outputs(pos, cell.building_type, cell.rotation)
+
+                if not belt_outputs:
+                    break
+
+                if len(belt_outputs) == 1:
+                    # Single output - continue propagating
+                    next_pos = belt_outputs[0][0]
+                    # Check if next is output
+                    for out in self.outputs:
+                        if out['position'] == next_pos:
+                            out['throughput'] += throughput
+                            return
+                    pos = next_pos
+                else:
+                    # Multiple outputs - split and propagate each branch
+                    split_tp = throughput / len(belt_outputs)
+                    for next_pos, _, is_machine in belt_outputs:
+                        if is_machine:
+                            # Add to machine input port
+                            for origin, machine in self.machines.items():
+                                for port in machine.input_ports:
+                                    if port['position'] == next_pos:
+                                        port['throughput'] += split_tp
+                                        break
+                        else:
+                            # Check for output
+                            handled = False
+                            for out in self.outputs:
+                                if out['position'] == next_pos:
+                                    out['throughput'] += split_tp
+                                    handled = True
+                                    break
+                            if not handled:
+                                self._propagate_merge_throughput(next_pos, split_tp, visited)
+                    return
+            else:
+                # Non-belt building (machine etc) - stop propagation
+                break
+
     def _find_belt_port_receiver(self, sender_pos: Tuple[int, int, int]) -> Optional[Tuple[int, int, int]]:
         """Find the receiver position for a belt port sender."""
         # Belt ports can jump up to 4 cells in their facing direction
@@ -853,11 +923,7 @@ class FlowSimulator:
             belt_outputs = self._find_belt_outputs(start, cell.building_type, cell.rotation)
 
             if belt_outputs:
-                # Filter out already-visited positions to avoid counting them in split
-                belt_outputs = [(p, d, m) for p, d, m in belt_outputs if p not in visited or m]
-
-            if belt_outputs:
-                # Split throughput among all valid outputs
+                # Split throughput among all valid outputs (include visited for merge calculation)
                 split_throughput = throughput / len(belt_outputs)
 
                 for output_pos, output_dir, is_machine_input in belt_outputs:
@@ -885,8 +951,16 @@ class FlowSimulator:
                             handled = True
                             break
 
+                    if handled:
+                        continue
+
+                    # For already-visited positions (merge point), add throughput and propagate downstream
+                    if output_pos in visited:
+                        self._propagate_merge_throughput(output_pos, split_throughput, visited)
+                        continue
+
                     # Continue tracing if it's a belt
-                    if not handled and output_pos in self.cells:
+                    if output_pos in self.cells:
                         self._trace_from_position(output_pos, shape, split_throughput, visited, path)
 
                 return  # Belt outputs handled
