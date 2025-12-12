@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 from shapez2_solver.simulation.flow_simulator import FlowSimulator, MACHINE_THROUGHPUT, BELT_THROUGHPUT
 from shapez2_solver.blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS, BUILDING_PORTS
 from shapez2_solver.evolution.foundation_config import FOUNDATION_SPECS
+from shapez2_solver.simulation.test_scenarios import ALL_SCENARIOS, get_scenario_count, get_scenario
 
 
 # Colors
@@ -164,6 +165,13 @@ class FlowViewer:
         self.show_shapes = True
         # Toggle for showing port labels
         self.show_ports = True
+
+        # Test scenario navigation
+        self.scenario_mode = False
+        self.current_scenario_idx = -1
+        self.scenario_name = ""
+        self.scenario_description = ""
+        self.total_scenarios = get_scenario_count()
 
         self.clock = pygame.time.Clock()
     
@@ -391,11 +399,80 @@ class FlowViewer:
         elif key == pygame.K_f:
             # Cycle through foundations
             self.cycle_foundation()
+        elif key == pygame.K_t:
+            # Enter test scenario mode - load first scenario
+            if not self.scenario_mode:
+                self.load_scenario(0)
+            else:
+                self.exit_scenario_mode()
+        elif key == pygame.K_LEFTBRACKET or key == pygame.K_COMMA:
+            # Previous scenario
+            if self.scenario_mode:
+                self.prev_scenario()
+            else:
+                self.load_scenario(self.total_scenarios - 1)  # Start from last
+        elif key == pygame.K_RIGHTBRACKET or key == pygame.K_PERIOD:
+            # Next scenario
+            if self.scenario_mode:
+                self.next_scenario()
+            else:
+                self.load_scenario(0)  # Start from first
+        elif key == pygame.K_ESCAPE:
+            # Exit scenario mode
+            if self.scenario_mode:
+                self.exit_scenario_mode()
 
     def cycle_foundation(self):
         """Switch to next foundation size."""
         self.current_foundation_idx = (self.current_foundation_idx + 1) % len(self.foundation_names)
         self.set_foundation(self.foundation_names[self.current_foundation_idx])
+
+    def load_scenario(self, index: int):
+        """Load a test scenario by index."""
+        if index < 0:
+            index = self.total_scenarios - 1
+        elif index >= self.total_scenarios:
+            index = 0
+
+        self.current_scenario_idx = index
+        scenario = get_scenario(index)
+        if scenario:
+            self.scenario_mode = True
+            self.scenario_name = scenario['name']
+            self.scenario_description = scenario['description']
+            self.sim = scenario['sim']
+            self.grid_width = self.sim.width
+            self.grid_height = self.sim.height
+            self.num_floors = self.sim.num_floors
+
+            # Recalculate cell size
+            available_width = self.screen_width - self.sidebar_width - 20
+            available_height = self.screen_height - self.toolbar_height - 240
+            cell_size_for_width = available_width // self.grid_width
+            cell_size_for_height = available_height // self.grid_height
+            self.cell_size = max(8, min(cell_size_for_width, cell_size_for_height, 40))
+
+            # Run simulation
+            self.last_report = self.sim.simulate()
+            pygame.display.set_caption(f"Flow Simulator - Test {index + 1}/{self.total_scenarios}: {self.scenario_name}")
+
+    def next_scenario(self):
+        """Load the next test scenario."""
+        self.load_scenario(self.current_scenario_idx + 1)
+
+    def prev_scenario(self):
+        """Load the previous test scenario."""
+        self.load_scenario(self.current_scenario_idx - 1)
+
+    def exit_scenario_mode(self):
+        """Exit scenario mode and return to normal editing."""
+        self.scenario_mode = False
+        self.current_scenario_idx = -1
+        self.scenario_name = ""
+        self.scenario_description = ""
+        # Reset to default foundation
+        self.set_foundation("1x1")
+        pygame.display.set_caption("Flow Simulator - Interactive")
 
     def set_foundation(self, name: str):
         """Set foundation by name and scale grid to fit window."""
@@ -1336,6 +1413,12 @@ class FlowViewer:
             "F: Next foundation",
             "V: Shapes " + ("ON" if self.show_shapes else "OFF"),
             "P: Ports " + ("ON" if self.show_ports else "OFF"),
+            "─── TESTS ───",
+            "T: Toggle tests",
+            ",/[: Prev test",
+            "./]: Next test",
+            "Esc: Exit tests",
+            "─── OTHER ───",
             "Scroll: Building list",
             "Space: Simulate",
             "C: Clear all",
@@ -1349,13 +1432,37 @@ class FlowViewer:
         """Draw simulation results."""
         y = self.toolbar_height + self.grid_height * self.cell_size + 10
         x = 10
-        
+
         pygame.draw.rect(self.screen, (30, 30, 30), (0, y - 5, self.screen_width, 200))
-        
-        title = self.font_large.render("Simulation Results", True, WHITE)
-        self.screen.blit(title, (x, y))
-        y += 25
-        
+
+        # Show scenario info if in scenario mode
+        if self.scenario_mode:
+            scenario_title = self.font_large.render(
+                f"Test {self.current_scenario_idx + 1}/{self.total_scenarios}: {self.scenario_name}",
+                True, CYAN
+            )
+            self.screen.blit(scenario_title, (x, y))
+            y += 22
+            # Wrap description if too long
+            desc = self.scenario_description
+            max_chars = 100
+            while desc:
+                line = desc[:max_chars]
+                if len(desc) > max_chars:
+                    # Find last space to break at
+                    space_idx = line.rfind(' ')
+                    if space_idx > 0:
+                        line = line[:space_idx]
+                desc_text = self.font_small.render(line, True, LIGHT_GRAY)
+                self.screen.blit(desc_text, (x, y))
+                y += 14
+                desc = desc[len(line):].lstrip()
+            y += 5
+        else:
+            title = self.font_large.render("Simulation Results", True, WHITE)
+            self.screen.blit(title, (x, y))
+            y += 25
+
         if self.last_report:
             # Summary
             total_in = sum(i['throughput'] for i in self.sim.inputs)

@@ -39,6 +39,8 @@ MACHINE_THROUGHPUT = {
     BuildingType.PAINTER: 45.0,
     BuildingType.PAINTER_MIRRORED: 45.0,
     BuildingType.SPLITTER: 180.0,
+    BuildingType.SPLITTER_LEFT: 180.0,
+    BuildingType.SPLITTER_RIGHT: 180.0,
     BuildingType.MERGER: 180.0,
 }
 
@@ -752,12 +754,14 @@ class FlowSimulator:
             next_pos = (start[0] + dx, start[1] + dy, start[2])
 
         elif cell.building_type == BuildingType.LIFT_UP:
-            # Move to next floor up
-            next_pos = (start[0], start[1], start[2] + 1)
+            # Move to next floor up and continue in facing direction (output is on upper floor)
+            dx, dy = direction_delta(cell.rotation)
+            next_pos = (start[0] + dx, start[1] + dy, start[2] + 1)
 
         elif cell.building_type == BuildingType.LIFT_DOWN:
-            # Move to floor below
-            next_pos = (start[0], start[1], start[2] - 1)
+            # Move to floor below and continue in facing direction (output is on lower floor)
+            dx, dy = direction_delta(cell.rotation)
+            next_pos = (start[0] + dx, start[1] + dy, start[2] - 1)
 
         else:
             # Non-belt building - stop tracing
