@@ -129,8 +129,9 @@ class FlowViewer:
         self.current_foundation_idx = 0
         self.current_foundation_name = "1x1"
 
-        # Simulator
-        self.sim = FlowSimulator(width, height, num_floors)
+        # Simulator (with foundation spec for proper I/O position calculation)
+        spec = FOUNDATION_SPECS[self.current_foundation_name]
+        self.sim = FlowSimulator(width, height, num_floors, foundation_spec=spec)
         self.last_report = None
 
         # Building palette - expanded with all useful building types
@@ -464,8 +465,9 @@ class FlowViewer:
             # Run simulation
             self.last_report = self.sim.simulate()
         elif key == pygame.K_c:
-            # Clear all
-            self.sim = FlowSimulator(self.grid_width, self.grid_height, self.num_floors)
+            # Clear all (preserve foundation spec for internal I/O positions)
+            spec = FOUNDATION_SPECS[self.current_foundation_name]
+            self.sim = FlowSimulator(self.grid_width, self.grid_height, self.num_floors, foundation_spec=spec)
             self.last_report = None
         elif key == pygame.K_s:
             # Cycle through shapes
@@ -723,8 +725,8 @@ class FlowViewer:
         self.grid_height = spec.grid_height
         self.num_floors = spec.num_floors
 
-        # Recreate simulator with new dimensions
-        self.sim = FlowSimulator(self.grid_width, self.grid_height, self.num_floors)
+        # Recreate simulator with new dimensions and foundation spec (for internal I/O positions)
+        self.sim = FlowSimulator(self.grid_width, self.grid_height, self.num_floors, foundation_spec=spec)
         self.last_report = None
 
         # Calculate cell size to fit grid in fixed window area
