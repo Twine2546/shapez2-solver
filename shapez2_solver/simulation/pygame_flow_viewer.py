@@ -10,7 +10,9 @@ Interactive interface to:
 
 import pygame
 import sys
+import json
 from pathlib import Path
+from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from typing import Dict, List, Optional, Tuple
@@ -172,6 +174,13 @@ class FlowViewer:
         self.scenario_name = ""
         self.scenario_description = ""
         self.total_scenarios = get_scenario_count()
+
+        # Sample save/load
+        self.samples_dir = Path(__file__).parent / "samples"
+        self.samples_dir.mkdir(exist_ok=True)
+        self.current_sample_slot = 0  # 0-9 slots
+        self.sample_message = ""  # Status message for save/load
+        self.sample_message_time = 0  # Time when message was set
 
         self.clock = pygame.time.Clock()
     
@@ -453,6 +462,32 @@ class FlowViewer:
             # Exit scenario mode
             if self.scenario_mode:
                 self.exit_scenario_mode()
+        elif key == pygame.K_F5:
+            # Save to current slot
+            self.save_sample(self.current_sample_slot)
+        elif key == pygame.K_F6:
+            # Load from current slot
+            self.load_sample(self.current_sample_slot)
+        elif key == pygame.K_F7:
+            # Previous sample slot
+            self.current_sample_slot = (self.current_sample_slot - 1) % 10
+            self.sample_message = f"Slot {self.current_sample_slot}"
+            self.sample_message_time = pygame.time.get_ticks()
+        elif key == pygame.K_F8:
+            # Next sample slot
+            self.current_sample_slot = (self.current_sample_slot + 1) % 10
+            self.sample_message = f"Slot {self.current_sample_slot}"
+            self.sample_message_time = pygame.time.get_ticks()
+        # Ctrl+number to quick load sample slot
+        elif pygame.key.get_mods() & pygame.KMOD_CTRL:
+            if pygame.K_0 <= key <= pygame.K_9:
+                slot = key - pygame.K_0
+                self.load_sample(slot)
+        # Shift+number to quick save to sample slot
+        elif pygame.key.get_mods() & pygame.KMOD_SHIFT:
+            if pygame.K_0 <= key <= pygame.K_9:
+                slot = key - pygame.K_0
+                self.save_sample(slot)
 
     def cycle_foundation(self):
         """Switch to next foundation size."""
@@ -505,6 +540,137 @@ class FlowViewer:
         # Reset to default foundation
         self.set_foundation("1x1")
         pygame.display.set_caption("Flow Simulator - Interactive")
+
+    def save_sample(self, slot: int = None, name: str = None):
+        """Save current layout to a sample file."""
+        if slot is None:
+            slot = self.current_sample_slot
+
+        # Build sample data
+        sample_data = {
+            "name": name or f"Sample {slot}",
+            "created": datetime.now().isoformat(),
+            "foundation": self.current_foundation_name,
+            "buildings": [],
+            "inputs": [],
+            "outputs": []
+        }
+
+        # Save buildings
+        for pos, bld in self.sim.buildings.items():
+            sample_data["buildings"].append({
+                "type": bld["type"].name,
+                "x": pos[0],
+                "y": pos[1],
+                "floor": pos[2],
+                "rotation": bld["rotation"].name
+            })
+
+        # Save inputs
+        for inp in self.sim.inputs:
+            sample_data["inputs"].append({
+                "x": inp["position"][0],
+                "y": inp["position"][1],
+                "floor": inp["position"][2],
+                "shape": inp["shape"],
+                "throughput": inp["throughput"]
+            })
+
+        # Save outputs
+        for out in self.sim.outputs:
+            sample_data["outputs"].append({
+                "x": out["position"][0],
+                "y": out["position"][1],
+                "floor": out["position"][2],
+                "expected_shape": out.get("expected_shape")
+            })
+
+        # Write to file
+        filename = self.samples_dir / f"sample_{slot:02d}.json"
+        with open(filename, "w") as f:
+            json.dump(sample_data, f, indent=2)
+
+        self.sample_message = f"Saved to slot {slot}"
+        self.sample_message_time = pygame.time.get_ticks()
+        print(f"Saved sample to {filename}")
+
+    def load_sample(self, slot: int = None):
+        """Load a sample from file."""
+        if slot is None:
+            slot = self.current_sample_slot
+
+        filename = self.samples_dir / f"sample_{slot:02d}.json"
+        if not filename.exists():
+            self.sample_message = f"Slot {slot} empty"
+            self.sample_message_time = pygame.time.get_ticks()
+            print(f"No sample at slot {slot}")
+            return False
+
+        try:
+            with open(filename, "r") as f:
+                sample_data = json.load(f)
+
+            # Set foundation first
+            foundation = sample_data.get("foundation", "1x1")
+            self.set_foundation(foundation)
+
+            # Clear and rebuild
+            spec = FOUNDATION_SPECS.get(foundation)
+            self.sim = FlowSimulator(foundation_spec=spec, validate_io=True)
+
+            # Place buildings
+            for bld in sample_data.get("buildings", []):
+                building_type = BuildingType[bld["type"]]
+                rotation = Rotation[bld["rotation"]]
+                self.sim.place_building(building_type, bld["x"], bld["y"], bld["floor"], rotation)
+
+            # Set inputs
+            for inp in sample_data.get("inputs", []):
+                try:
+                    self.sim.set_input(inp["x"], inp["y"], inp["floor"], inp["shape"], inp["throughput"])
+                except ValueError as e:
+                    print(f"Warning: Could not set input: {e}")
+
+            # Set outputs
+            for out in sample_data.get("outputs", []):
+                try:
+                    self.sim.set_output(out["x"], out["y"], out["floor"], out.get("expected_shape"))
+                except ValueError as e:
+                    print(f"Warning: Could not set output: {e}")
+
+            # Run simulation
+            self.last_report = self.sim.simulate()
+
+            # Exit scenario mode if we were in it
+            self.scenario_mode = False
+            self.scenario_name = sample_data.get("name", f"Sample {slot}")
+            self.scenario_description = f"Loaded from slot {slot}"
+
+            self.sample_message = f"Loaded slot {slot}"
+            self.sample_message_time = pygame.time.get_ticks()
+            pygame.display.set_caption(f"Flow Simulator - {self.scenario_name}")
+            print(f"Loaded sample from {filename}")
+            return True
+
+        except Exception as e:
+            self.sample_message = f"Load error: {e}"
+            self.sample_message_time = pygame.time.get_ticks()
+            print(f"Error loading sample: {e}")
+            return False
+
+    def list_samples(self) -> List[Tuple[int, str]]:
+        """List all available samples."""
+        samples = []
+        for i in range(10):
+            filename = self.samples_dir / f"sample_{i:02d}.json"
+            if filename.exists():
+                try:
+                    with open(filename, "r") as f:
+                        data = json.load(f)
+                    samples.append((i, data.get("name", f"Sample {i}")))
+                except:
+                    samples.append((i, f"Sample {i} (corrupt)"))
+        return samples
 
     def set_foundation(self, name: str):
         """Set foundation by name and scale grid to fit window."""
@@ -1504,11 +1670,15 @@ class FlowViewer:
             "P: Ports " + ("ON" if self.show_ports else "OFF"),
             "─── TESTS ───",
             "T: Toggle tests",
-            ",/[: Prev test",
-            "./]: Next test",
+            ",/.: Prev/Next test",
             "Esc: Exit tests",
+            "─── SAMPLES ───",
+            f"Slot: {self.current_sample_slot}",
+            "F5: Save  F6: Load",
+            "F7/F8: Prev/Next slot",
+            "Ctrl+0-9: Quick load",
+            "Shift+0-9: Quick save",
             "─── OTHER ───",
-            "Scroll: Building list",
             "Space: Simulate",
             "C: Clear all",
         ]
@@ -1523,6 +1693,15 @@ class FlowViewer:
         x = 10
 
         pygame.draw.rect(self.screen, (30, 30, 30), (0, y - 5, self.screen_width, 200))
+
+        # Show sample save/load message (fades after 3 seconds)
+        if self.sample_message and pygame.time.get_ticks() - self.sample_message_time < 3000:
+            elapsed = pygame.time.get_ticks() - self.sample_message_time
+            alpha = max(0, 255 - int(elapsed / 3000 * 255)) if elapsed > 2000 else 255
+            msg_color = (100, 255, 100) if "Saved" in self.sample_message or "Loaded" in self.sample_message else (255, 200, 100)
+            msg_text = self.font_large.render(self.sample_message, True, msg_color)
+            # Position in top-right of grid area
+            self.screen.blit(msg_text, (self.grid_width * self.cell_size - msg_text.get_width() - 10, self.toolbar_height + 5))
 
         # Show scenario info if in scenario mode
         if self.scenario_mode:
