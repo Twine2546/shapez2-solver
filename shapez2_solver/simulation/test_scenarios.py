@@ -952,6 +952,215 @@ SCENARIO_35 = lambda: create_scenario(
 
 
 # =============================================================================
+# SCENARIO 36: 2x2 Foundation - Simple Belt Chain
+# =============================================================================
+def setup_2x2_belt_chain(sim):
+    """Simple belt chain across 2x2 foundation (34x34 grid)."""
+    # Belt chain from west to east at y=5
+    for x in range(34):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
+    sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
+    sim.set_output(34, 5, 0)
+
+SCENARIO_36 = lambda: create_scenario(
+    "2x2 Foundation - Belt Chain",
+    "EXPECTED: Simple belt chain works on larger 2x2 foundation. "
+    "Full 180/min throughput.",
+    setup_2x2_belt_chain,
+    foundation="2x2"
+)
+
+
+# =============================================================================
+# SCENARIO 37: 2x2 Foundation - Cutter with Routing
+# =============================================================================
+def setup_2x2_cutter(sim):
+    """Cutter on 2x2 foundation with both outputs going east."""
+    # Input belt from west at y=5
+    for x in range(10):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
+    # Cutter at (10, 5) - outputs at (10,5) and (10,6) going east
+    sim.place_building(BuildingType.CUTTER, 10, 5, 0, Rotation.EAST)
+    # Left half continues east at y=5
+    for x in range(11, 34):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
+    # Right half continues east at y=6
+    for x in range(11, 34):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 6, 0, Rotation.EAST)
+    sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
+    sim.set_output(34, 5, 0)
+    sim.set_output(34, 6, 0)
+
+SCENARIO_37 = lambda: create_scenario(
+    "2x2 Foundation - Cutter",
+    "EXPECTED: Cutter works on 2x2 foundation. "
+    "Each output gets 45/min.",
+    setup_2x2_cutter,
+    foundation="2x2"
+)
+
+
+# =============================================================================
+# SCENARIO 38: 3x3 Foundation - Long Belt Chain
+# =============================================================================
+def setup_3x3_belt_chain(sim):
+    """Long belt chain across 3x3 foundation (54x54 grid)."""
+    # Belt chain from west to east at y=5
+    for x in range(54):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
+    sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
+    sim.set_output(54, 5, 0)
+
+SCENARIO_38 = lambda: create_scenario(
+    "3x3 Foundation - Belt Chain",
+    "EXPECTED: Long belt chain works on 3x3 foundation. "
+    "Full 180/min throughput across 54 cells.",
+    setup_3x3_belt_chain,
+    foundation="3x3"
+)
+
+
+# =============================================================================
+# SCENARIO 39: 2x1 Foundation - Wide Belt Chain
+# =============================================================================
+def setup_2x1_belt_chain(sim):
+    """Belt chain on wide 2x1 foundation (34x14 grid)."""
+    # Belt chain from west to east at y=5
+    for x in range(34):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
+    sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
+    sim.set_output(34, 5, 0)
+
+SCENARIO_39 = lambda: create_scenario(
+    "2x1 Foundation - Wide",
+    "EXPECTED: Belt chain works on wide 2x1 foundation (34x14). "
+    "Full 180/min throughput.",
+    setup_2x1_belt_chain,
+    foundation="2x1"
+)
+
+
+# =============================================================================
+# SCENARIO 40: 1x2 Foundation - Tall Belt Chain
+# =============================================================================
+def setup_1x2_belt_chain(sim):
+    """Belt chain on tall 1x2 foundation (14x34 grid)."""
+    # Belt chain from north to south at x=5
+    for y in range(34):
+        sim.place_building(BuildingType.BELT_FORWARD, 5, y, 0, Rotation.SOUTH)
+    sim.set_input(5, -1, 0, "CuCuCuCu", 180.0)
+    sim.set_output(5, 34, 0)
+
+SCENARIO_40 = lambda: create_scenario(
+    "1x2 Foundation - Tall",
+    "EXPECTED: Vertical belt chain works on tall 1x2 foundation (14x34). "
+    "Full 180/min throughput.",
+    setup_1x2_belt_chain,
+    foundation="1x2"
+)
+
+
+# =============================================================================
+# SCENARIO 41: 2x2 Foundation - Cross-Foundation Routing
+# =============================================================================
+def setup_2x2_cross_routing(sim):
+    """Route from one quadrant to another on 2x2 foundation."""
+    # Input from west side, first unit (y=5)
+    for x in range(17):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
+    # Turn south at x=17
+    for y in range(5, 26):
+        sim.place_building(BuildingType.BELT_FORWARD, 17, y, 0, Rotation.SOUTH)
+    # Turn east again at y=25
+    for x in range(18, 34):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 25, 0, Rotation.EAST)
+    sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
+    sim.set_output(34, 25, 0)
+
+SCENARIO_41 = lambda: create_scenario(
+    "2x2 Foundation - Cross Routing",
+    "EXPECTED: Route from top-left to bottom-right quadrant. "
+    "Full 180/min throughput after turns.",
+    setup_2x2_cross_routing,
+    foundation="2x2"
+)
+
+
+# =============================================================================
+# SCENARIO 42: 2x2 Foundation - Multi-Machine
+# =============================================================================
+def setup_2x2_multi_machine(sim):
+    """Cutter + Rotator chain on 2x2 foundation."""
+    # Input belt to cutter
+    for x in range(5):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
+    # Cutter at (5, 5)
+    sim.place_building(BuildingType.CUTTER, 5, 5, 0, Rotation.EAST)
+    # Left half to rotator, then to east edge
+    for x in range(6, 15):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
+    sim.place_building(BuildingType.ROTATOR_CW, 15, 5, 0, Rotation.EAST)
+    for x in range(16, 34):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
+    # Right half continues east at y=6
+    for x in range(6, 34):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 6, 0, Rotation.EAST)
+    sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
+    sim.set_output(34, 5, 0)
+    sim.set_output(34, 6, 0)
+
+SCENARIO_42 = lambda: create_scenario(
+    "2x2 Foundation - Multi-Machine",
+    "EXPECTED: Cutter + Rotator chain on 2x2 foundation. "
+    "Both outputs receive flow.",
+    setup_2x2_multi_machine,
+    foundation="2x2"
+)
+
+
+# =============================================================================
+# SCENARIO 43: T-Shaped Foundation
+# =============================================================================
+def setup_t_foundation(sim):
+    """Test T-shaped irregular foundation (54x34 grid)."""
+    # T foundation: 3 units wide on top row, 1 unit centered below
+    # Grid is 54x34 (3 units wide = 54 cells)
+    # Simple belt from west to east at y=5
+    for x in range(54):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
+    sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
+    sim.set_output(54, 5, 0)
+
+SCENARIO_43 = lambda: create_scenario(
+    "T-Shaped Foundation",
+    "EXPECTED: Belt chain works on T-shaped irregular foundation.",
+    setup_t_foundation,
+    foundation="T"
+)
+
+
+# =============================================================================
+# SCENARIO 44: L-Shaped Foundation
+# =============================================================================
+def setup_l_foundation(sim):
+    """Test L-shaped irregular foundation (34x34 grid)."""
+    # L foundation: 2x2 bounding box with one corner missing
+    # Grid is 34x34
+    # Simple belt from west to east at y=5
+    for x in range(34):
+        sim.place_building(BuildingType.BELT_FORWARD, x, 5, 0, Rotation.EAST)
+    sim.set_input(-1, 5, 0, "CuCuCuCu", 180.0)
+    sim.set_output(34, 5, 0)
+
+SCENARIO_44 = lambda: create_scenario(
+    "L-Shaped Foundation",
+    "EXPECTED: Belt chain works on L-shaped irregular foundation.",
+    setup_l_foundation,
+    foundation="L"
+)
+
+
+# =============================================================================
 # ALL SCENARIOS
 # =============================================================================
 ALL_SCENARIOS = [
@@ -962,6 +1171,8 @@ ALL_SCENARIOS = [
     SCENARIO_21, SCENARIO_22, SCENARIO_23, SCENARIO_24, SCENARIO_25,
     SCENARIO_26, SCENARIO_27, SCENARIO_28, SCENARIO_29, SCENARIO_30,
     SCENARIO_31, SCENARIO_32, SCENARIO_33, SCENARIO_34, SCENARIO_35,
+    SCENARIO_36, SCENARIO_37, SCENARIO_38, SCENARIO_39, SCENARIO_40,
+    SCENARIO_41, SCENARIO_42, SCENARIO_43, SCENARIO_44,
 ]
 
 
