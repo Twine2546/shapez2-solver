@@ -529,10 +529,9 @@ class FlowSimulator:
         """
         Find valid output positions for a belt, supporting splitting.
 
-        A belt can split to multiple adjacent belts/machines as long as:
-        1. WE are outputting in that direction (primary direction only for BELT_FORWARD)
-        2. The adjacent position accepts input from this belt's direction
-        3. The output directions are not 180° apart (can't go forward AND backward)
+        A belt can output to:
+        1. Its primary direction (always)
+        2. ONE perpendicular side branch (but not both sides - no 180° split)
 
         Returns list of (position, direction, is_machine_input) tuples.
         """
@@ -542,10 +541,14 @@ class FlowSimulator:
         # Get the belt's primary output direction
         primary_dir = self._get_belt_output_direction(belt_type, rotation)
 
-        # Determine which directions we can output to
-        # BELT_FORWARD only outputs in primary direction
-        # BELT_LEFT/RIGHT could potentially split, but for now treat same as forward
-        allowed_output_dirs = {primary_dir}
+        # A belt can output in primary direction + perpendicular sides
+        # (but NOT backwards - opposite of primary)
+        opposite_dir = {
+            Rotation.EAST: Rotation.WEST,
+            Rotation.WEST: Rotation.EAST,
+            Rotation.NORTH: Rotation.SOUTH,
+            Rotation.SOUTH: Rotation.NORTH,
+        }[primary_dir]
 
         # Check all 4 adjacent positions for potential outputs
         adjacent = [
@@ -556,8 +559,8 @@ class FlowSimulator:
         ]
 
         for adj_pos, direction_to_adj, dir_char in adjacent:
-            # Skip directions we're not outputting to
-            if direction_to_adj not in allowed_output_dirs:
+            # Never output backwards (opposite of primary direction)
+            if direction_to_adj == opposite_dir:
                 continue
 
             adj_cell = self.cells.get(adj_pos)
@@ -600,6 +603,11 @@ class FlowSimulator:
                 # A belt can accept input from ANY direction EXCEPT its output direction
                 adj_output_dir = self._get_belt_output_direction(adj_cell.building_type, adj_cell.rotation)
 
+                # Don't split to belts going in the OPPOSITE direction of us
+                # (e.g., belt going EAST shouldn't split to belt going WEST)
+                if adj_output_dir == opposite_dir:
+                    continue
+
                 # From the adjacent cell's perspective, what direction are we?
                 our_direction_from_adj = {
                     Rotation.EAST: Rotation.WEST,   # We went east to reach them, so we're to their west
@@ -613,21 +621,20 @@ class FlowSimulator:
                 if our_direction_from_adj != adj_output_dir:
                     valid_outputs.append((adj_pos, direction_to_adj, False))
 
-        # If any outputs are 180° opposite, keep primary + first of the pair
-        # You can't split to opposite directions (e.g., both NORTH and SOUTH)
+        # Filter outputs: primary direction + at most ONE side branch
+        # Can't split to both perpendicular sides (only one side branch allowed)
         if len(valid_outputs) > 1:
-            directions = [d for _, d, _ in valid_outputs]
+            # Separate primary and side outputs
+            primary_outputs = [(p, d, m) for p, d, m in valid_outputs if d == primary_dir]
+            side_outputs = [(p, d, m) for p, d, m in valid_outputs if d != primary_dir]
 
-            # Find 180° conflicts and mark the second one for removal
-            dirs_to_remove = set()
-            for i in range(len(directions)):
-                for j in range(i + 1, len(directions)):
-                    if are_directions_opposite(directions[i], directions[j]):
-                        # Keep the first one (i), remove the second (j)
-                        dirs_to_remove.add(directions[j])
+            # Keep all primary outputs + at most one side output
+            if len(side_outputs) > 1:
+                # If both perpendicular sides have outputs, only keep the first one
+                # (this handles the 180° conflict case too)
+                side_outputs = [side_outputs[0]]
 
-            if dirs_to_remove:
-                valid_outputs = [(p, d, m) for p, d, m in valid_outputs if d not in dirs_to_remove]
+            valid_outputs = primary_outputs + side_outputs
 
         return valid_outputs
 
@@ -680,7 +687,11 @@ class FlowSimulator:
             belt_outputs = self._find_belt_outputs(start, cell.building_type, cell.rotation)
 
             if belt_outputs:
-                # Split throughput among all outputs
+                # Filter out already-visited positions to avoid counting them in split
+                belt_outputs = [(p, d, m) for p, d, m in belt_outputs if p not in visited or m]
+
+            if belt_outputs:
+                # Split throughput among all valid outputs
                 split_throughput = throughput / len(belt_outputs)
 
                 for output_pos, output_dir, is_machine_input in belt_outputs:
@@ -873,6 +884,9 @@ class FlowSimulator:
                 if cell.building_type in (BuildingType.BELT_FORWARD, BuildingType.BELT_LEFT,
                                           BuildingType.BELT_RIGHT):
                     belt_outputs = self._find_belt_outputs(pos, cell.building_type, cell.rotation)
+                    # Filter out already-visited positions
+                    if belt_outputs:
+                        belt_outputs = [(p, d, m) for p, d, m in belt_outputs if p not in visited or m]
                     if belt_outputs:
                         split_throughput = throughput / len(belt_outputs)
                         for output_pos, _, is_machine_input in belt_outputs:

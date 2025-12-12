@@ -116,14 +116,14 @@ def test_belt_merge_two_inputs():
     return output['throughput'] == 90.0
 
 
-def test_belt_split_to_two():
-    """Test: BELT_FORWARD only outputs forward, no side splitting."""
+def test_belt_split_one_side():
+    """Test: Belt can split to ONE perpendicular side branch."""
     print("\n" + "="*60)
-    print("TEST: BELT_FORWARD only outputs in primary direction")
-    print("         → (no input - belt doesn't split sideways)")
-    print("  45 →→→→→ 45")
-    print("         → (no input)")
-    print("Expected: Flow goes straight, perpendicular belts get nothing")
+    print("TEST: Belt splits to primary + ONE side branch")
+    print("         → 22.5 (accepts from south)")
+    print("  45 →→→→→ 22.5")
+    print("         → (second side - should NOT get flow)")
+    print("Expected: Split between primary and first side branch only")
     print("="*60)
 
     sim = FlowSimulator(8, 5, 1)
@@ -131,13 +131,16 @@ def test_belt_split_to_two():
     # Input belt line going EAST
     sim.place_building(BuildingType.BELT_FORWARD, 1, 2, 0, Rotation.EAST)
     sim.place_building(BuildingType.BELT_FORWARD, 2, 2, 0, Rotation.EAST)
-    sim.place_building(BuildingType.BELT_FORWARD, 3, 2, 0, Rotation.EAST)
-    sim.place_building(BuildingType.BELT_FORWARD, 4, 2, 0, Rotation.EAST)
+    sim.place_building(BuildingType.BELT_FORWARD, 3, 2, 0, Rotation.EAST)  # This one will split
+    sim.place_building(BuildingType.BELT_FORWARD, 4, 2, 0, Rotation.EAST)  # Primary continues
 
-    # Perpendicular belts that COULD accept from south/north but shouldn't get flow
-    # because BELT_FORWARD only outputs in its primary direction
+    # Top branch - accepts from south (where main belt is)
     sim.place_building(BuildingType.BELT_FORWARD, 3, 1, 0, Rotation.EAST)
+    sim.place_building(BuildingType.BELT_FORWARD, 4, 1, 0, Rotation.EAST)
+
+    # Bottom branch - also could accept from north, but only ONE side branch allowed
     sim.place_building(BuildingType.BELT_FORWARD, 3, 3, 0, Rotation.EAST)
+    sim.place_building(BuildingType.BELT_FORWARD, 4, 3, 0, Rotation.EAST)
 
     sim.set_input(1, 2, 0, "CuCuCuCu", 45.0)
     sim.set_output(4, 1, 0)
@@ -151,16 +154,20 @@ def test_belt_split_to_two():
     for i, out in enumerate(sim.outputs):
         print(f"  Output {i} at {out['position']}: {out['throughput']}")
 
-    # Main output should get all 45, perpendicular outputs should get 0
+    # Should split to primary + ONE side (first found)
     main_output = sim.outputs[1]['throughput']  # (4,2)
     top_output = sim.outputs[0]['throughput']   # (4,1)
     bot_output = sim.outputs[2]['throughput']   # (4,3)
 
-    print(f"\nMain (4,2): {main_output} (expected: 45)")
-    print(f"Top (4,1): {top_output} (expected: 0)")
-    print(f"Bottom (4,3): {bot_output} (expected: 0)")
+    total = main_output + top_output + bot_output
+    print(f"\nMain (4,2): {main_output}")
+    print(f"Top (4,1): {top_output}")
+    print(f"Bottom (4,3): {bot_output}")
+    print(f"Total: {total} (expected: 45)")
 
-    return main_output == 45.0 and top_output == 0.0 and bot_output == 0.0
+    # Should have exactly 2 outputs (primary + one side), total should be 45
+    num_outputs = (1 if main_output > 0 else 0) + (1 if top_output > 0 else 0) + (1 if bot_output > 0 else 0)
+    return abs(total - 45.0) < 0.1 and num_outputs == 2
 
 
 def test_straight_belt_no_split():
@@ -288,7 +295,7 @@ def run_all_tests():
     tests = [
         ("Simple belt line", test_simple_belt_line),
         ("Belt merge two inputs", test_belt_merge_two_inputs),
-        ("Belt split to two", test_belt_split_to_two),
+        ("Belt split one side", test_belt_split_one_side),
         ("Straight belt no split", test_straight_belt_no_split),
         ("T-junction merge", test_t_junction_merge),
         ("180-degree conflict", test_180_conflict),
