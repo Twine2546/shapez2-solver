@@ -129,23 +129,110 @@ def get_machine_occupied_cells(
 def get_machine_port_positions(
     bt: BuildingType, x: int, y: int, floor: int, rot: Rotation
 ) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
-    """Get world positions of input and output ports for a placed machine.
+    """Get world positions of adjacent cells for input and output ports.
 
     Returns (input_positions, output_positions) as lists of (x, y, floor) tuples.
+
+    These are the cells where belts should connect TO/FROM the machine,
+    not the machine cells themselves. The direction in BUILDING_PORTS tells us
+    which adjacent cell to use:
+    - Input with direction 'W': belt comes from west, so use cell to the west
+    - Output with direction 'E': belt goes east, so use cell to the east
+
+    Note: BUILDING_PORTS uses 4-value tuples (x, y, z, direction).
     """
-    ports = BUILDING_PORTS.get(bt, {'inputs': [(-1, 0, 0)], 'outputs': [(1, 0, 0)]})
+    ports = BUILDING_PORTS.get(bt, {'inputs': [(0, 0, 0, 'W')], 'outputs': [(0, 0, 0, 'E')]})
+
+    # Direction offsets: the offset to get the adjacent cell in that direction
+    direction_offsets = {
+        'W': (-1, 0),  # West: adjacent cell is to the left (x-1)
+        'E': (1, 0),   # East: adjacent cell is to the right (x+1)
+        'N': (0, -1),  # North: adjacent cell is above (y-1)
+        'S': (0, 1),   # South: adjacent cell is below (y+1)
+    }
 
     input_positions = []
-    for rel_x, rel_y, rel_z in ports.get('inputs', [(-1, 0, 0)]):
+    for port in ports.get('inputs', [(0, 0, 0, 'W')]):
+        if len(port) == 4:
+            rel_x, rel_y, rel_z, direction = port
+        else:
+            rel_x, rel_y, rel_z = port
+            direction = 'W'  # Default input from west
+
+        # First rotate the internal cell position
         rot_x, rot_y = rotate_offset(rel_x, rel_y, rot)
-        input_positions.append((x + rot_x, y + rot_y, floor + rel_z))
+
+        # Then rotate the direction and get the adjacent cell offset
+        rotated_direction = _rotate_direction_str(direction, rot)
+        dx, dy = direction_offsets.get(rotated_direction, (-1, 0))
+
+        # The input position is the adjacent cell (where belt ends)
+        input_positions.append((x + rot_x + dx, y + rot_y + dy, floor + rel_z))
 
     output_positions = []
-    for rel_x, rel_y, rel_z in ports.get('outputs', [(1, 0, 0)]):
+    for port in ports.get('outputs', [(0, 0, 0, 'E')]):
+        if len(port) == 4:
+            rel_x, rel_y, rel_z, direction = port
+        else:
+            rel_x, rel_y, rel_z = port
+            direction = 'E'  # Default output to east
+
+        # First rotate the internal cell position
         rot_x, rot_y = rotate_offset(rel_x, rel_y, rot)
-        output_positions.append((x + rot_x, y + rot_y, floor + rel_z))
+
+        # Then rotate the direction and get the adjacent cell offset
+        rotated_direction = _rotate_direction_str(direction, rot)
+        dx, dy = direction_offsets.get(rotated_direction, (1, 0))
+
+        # The output position is the adjacent cell (where belt starts)
+        output_positions.append((x + rot_x + dx, y + rot_y + dy, floor + rel_z))
 
     return input_positions, output_positions
+
+
+def get_machine_output_cells(
+    bt: BuildingType, x: int, y: int, floor: int, rot: Rotation
+) -> List[Tuple[int, int, int]]:
+    """Get the machine cells that feed each output port.
+
+    Returns list of (x, y, floor) tuples - the machine cell positions (not adjacent cells).
+    These are useful for input_hints when routing from machine outputs.
+    """
+    ports = BUILDING_PORTS.get(bt, {'inputs': [(0, 0, 0, 'W')], 'outputs': [(0, 0, 0, 'E')]})
+
+    output_cells = []
+    for port in ports.get('outputs', [(0, 0, 0, 'E')]):
+        if len(port) == 4:
+            rel_x, rel_y, rel_z, direction = port
+        else:
+            rel_x, rel_y, rel_z = port
+
+        # Rotate the internal cell position to get the machine cell
+        rot_x, rot_y = rotate_offset(rel_x, rel_y, rot)
+
+        # The machine cell is at (x + rot_x, y + rot_y) - NOT the adjacent cell
+        output_cells.append((x + rot_x, y + rot_y, floor + rel_z))
+
+    return output_cells
+
+
+def _rotate_direction_str(direction: str, rotation: Rotation) -> str:
+    """Rotate a direction string by the given rotation.
+
+    Rotations are clockwise: EAST(0°) -> SOUTH(90°) -> WEST(180°) -> NORTH(270°)
+    """
+    directions = ['E', 'S', 'W', 'N']
+    rotations_map = {
+        Rotation.EAST: 0,   # No rotation
+        Rotation.SOUTH: 1,  # 90° CW
+        Rotation.WEST: 2,   # 180°
+        Rotation.NORTH: 3,  # 270° CW
+    }
+
+    idx = directions.index(direction[0].upper())  # Take first char in case of full names
+    rot_amount = rotations_map.get(rotation, 0)
+    new_idx = (idx + rot_amount) % 4
+    return directions[new_idx]
 
 
 @dataclass
@@ -1232,19 +1319,26 @@ class CPSATFullSolver:
 
         # Ensure at least one machine per input (each input needs its own processing)
         # A cutter/splitter has 1 input, so we need at least num_inputs machines
+        # EXCEPTION: For pure passthrough (1:1 mapping, same shape), no machines needed!
         machines_added = 0
-        while len(machines) < num_inputs:
-            if needs_shape_transformation:
-                machines.append(BuildingType.CUTTER)
-            else:
-                machines.append(BuildingType.SPLITTER)
-            machines_added += 1
+        is_pure_passthrough = (outputs_per_input == 1 and not needs_shape_transformation
+                               and num_inputs == num_outputs)
+
+        if not is_pure_passthrough:
+            while len(machines) < num_inputs:
+                if needs_shape_transformation:
+                    machines.append(BuildingType.CUTTER)
+                else:
+                    machines.append(BuildingType.SPLITTER)
+                machines_added += 1
 
         if verbose and machines_added > 0:
             print(f"  │ Added {machines_added} extra machines (1 per input minimum)")
+        if verbose and is_pure_passthrough:
+            print(f"  │ Pure passthrough - no machines needed")
 
-        # Default: at least one machine for basic operations
-        if not machines:
+        # Default: at least one machine for basic operations (but not for pure passthrough)
+        if not machines and not is_pure_passthrough:
             if verbose:
                 print(f"  │ Default: adding 1 cutter")
             machines.append(BuildingType.CUTTER)
@@ -1488,7 +1582,12 @@ class CPSATFullSolver:
                 h_j = spec_j.height if spec_j else 1
 
                 # For each port of machine i, ensure it's not inside machine j's body
-                for port_idx, (rel_x, rel_y, rel_z) in enumerate(all_ports_i):
+                for port_idx, port_tuple in enumerate(all_ports_i):
+                    # Handle both 3-value (x, y, z) and 4-value (x, y, z, direction) formats
+                    if len(port_tuple) == 4:
+                        rel_x, rel_y, rel_z, _ = port_tuple
+                    else:
+                        rel_x, rel_y, rel_z = port_tuple
                     # Port position depends on rotation - for simplicity, handle EAST rotation (rot=0)
                     # For EAST: port is at (x + rel_x, y + rel_y)
                     # Create constraint: if both on same floor with rot=0, port must be outside j's body
@@ -2007,9 +2106,11 @@ class CPSATFullSolver:
         machine_inputs = []  # List of (x, y, floor) for each machine's first input
         machine_outputs = []  # List of (x, y, floor) for each machine's first output
         all_machine_outputs = []  # List of lists: machine_outputs[machine_idx][output_idx] = (x, y, floor)
+        all_output_cells = []  # List of lists: output_cells[machine_idx][output_idx] = (x, y, floor) machine cell
 
         for bt, mx, my, mfloor, rot in machines:
             input_positions, output_positions = get_machine_port_positions(bt, mx, my, mfloor, rot)
+            output_cells = get_machine_output_cells(bt, mx, my, mfloor, rot)
 
             # First input/output for simple routing
             machine_inputs.append(input_positions[0] if input_positions else (mx - 1, my, mfloor))
@@ -2017,6 +2118,7 @@ class CPSATFullSolver:
 
             # All outputs for multi-output machines
             all_machine_outputs.append(output_positions)
+            all_output_cells.append(output_cells)
 
         # Determine tree structure
         # With N inputs, M outputs, and K machines:
@@ -2028,7 +2130,122 @@ class CPSATFullSolver:
         num_inputs = len(self.input_positions)
         num_outputs_needed = len(self.output_positions)
 
-        if num_inputs == 0 or num_machines == 0:
+        if num_inputs == 0:
+            return all_belts, all_success
+
+        # Handle pure passthrough (no machines needed)
+        if num_machines == 0:
+            if verbose:
+                print(f"\n  Pure passthrough routing:")
+                print(f"    {num_inputs} inputs -> {num_outputs_needed} outputs\n")
+
+            # Route directly from each input to corresponding output
+            for inp_idx in range(min(num_inputs, num_outputs_needed)):
+                inp_x, inp_y, inp_floor, inp_side = self.input_positions[inp_idx]
+                out_x, out_y, out_floor, out_side = self.output_positions[inp_idx]
+
+                # Get start position (one cell inside from input edge)
+                if inp_side == Side.WEST:
+                    start = (1, inp_y, inp_floor)
+                elif inp_side == Side.EAST:
+                    start = (self.grid_width - 2, inp_y, inp_floor)
+                elif inp_side == Side.NORTH:
+                    start = (inp_x, 1, inp_floor)
+                else:  # SOUTH
+                    start = (inp_x, self.grid_height - 2, inp_floor)
+
+                # Get goal position (one cell inside from output edge)
+                if out_side == Side.EAST:
+                    goal = (self.grid_width - 2, out_y, out_floor)
+                elif out_side == Side.WEST:
+                    goal = (1, out_y, out_floor)
+                elif out_side == Side.SOUTH:
+                    goal = (out_x, self.grid_height - 2, out_floor)
+                else:  # NORTH
+                    goal = (out_x, 1, out_floor)
+
+                if verbose:
+                    print(f"    Input {inp_idx} ({inp_side.name}) -> Output {inp_idx} ({out_side.name})")
+                    print(f"      Start: {start}, Goal: {goal}")
+
+                # Check if start == goal (direct connection at corner)
+                if start == goal:
+                    # Determine belt direction based on output side
+                    if out_side == Side.EAST:
+                        belt_rot = Rotation.EAST
+                    elif out_side == Side.WEST:
+                        belt_rot = Rotation.WEST
+                    elif out_side == Side.SOUTH:
+                        belt_rot = Rotation.SOUTH
+                    else:  # NORTH
+                        belt_rot = Rotation.NORTH
+
+                    all_belts.append((start[0], start[1], start[2], BuildingType.BELT_FORWARD, belt_rot))
+                    router.add_occupied(start[0], start[1], start[2])
+                    if verbose:
+                        print(f"      Direct: 1 connecting belt at {start}")
+                else:
+                    path = router.find_path(start, goal, allow_belt_ports=True)
+                    if path:
+                        # Add edge position as output hint so final belt faces the edge
+                        path.append((out_x, out_y, out_floor, 'output_hint'))
+                        belts = router.path_to_belts(path)
+                        all_belts.extend(belts)
+                        for bx, by, bf, _, _ in belts:
+                            router.add_occupied(bx, by, bf)
+                        if verbose:
+                            print(f"      Success: {len(belts)} belts")
+                    else:
+                        all_success = False
+                        if verbose:
+                            print(f"      FAILED")
+
+            # Add edge connection belts for passthrough
+            if all_success:
+                belt_positions = {(bx, by, bf) for bx, by, bf, _, _ in all_belts}
+
+                # Add input edge belts
+                for inp_idx in range(min(num_inputs, num_outputs_needed)):
+                    inp_x, inp_y, inp_floor, inp_side = self.input_positions[inp_idx]
+
+                    if inp_side == Side.WEST:
+                        edge_pos = (0, inp_y, inp_floor)
+                        belt_rot = Rotation.EAST
+                    elif inp_side == Side.EAST:
+                        edge_pos = (self.grid_width - 1, inp_y, inp_floor)
+                        belt_rot = Rotation.WEST
+                    elif inp_side == Side.NORTH:
+                        edge_pos = (inp_x, 0, inp_floor)
+                        belt_rot = Rotation.SOUTH
+                    else:  # SOUTH
+                        edge_pos = (inp_x, self.grid_height - 1, inp_floor)
+                        belt_rot = Rotation.NORTH
+
+                    if edge_pos not in belt_positions:
+                        all_belts.append((edge_pos[0], edge_pos[1], edge_pos[2], BuildingType.BELT_FORWARD, belt_rot))
+                        belt_positions.add(edge_pos)
+
+                # Add output edge belts
+                for inp_idx in range(min(num_inputs, num_outputs_needed)):
+                    out_x, out_y, out_floor, out_side = self.output_positions[inp_idx]
+
+                    if out_side == Side.EAST:
+                        edge_pos = (self.grid_width - 1, out_y, out_floor)
+                        belt_rot = Rotation.EAST
+                    elif out_side == Side.WEST:
+                        edge_pos = (0, out_y, out_floor)
+                        belt_rot = Rotation.WEST
+                    elif out_side == Side.SOUTH:
+                        edge_pos = (out_x, self.grid_height - 1, out_floor)
+                        belt_rot = Rotation.SOUTH
+                    else:  # NORTH
+                        edge_pos = (out_x, 0, out_floor)
+                        belt_rot = Rotation.NORTH
+
+                    if edge_pos not in belt_positions:
+                        all_belts.append((edge_pos[0], edge_pos[1], edge_pos[2], BuildingType.BELT_FORWARD, belt_rot))
+                        belt_positions.add(edge_pos)
+
             return all_belts, all_success
 
         # Calculate outputs per input (even distribution)
@@ -2106,23 +2323,52 @@ class CPSATFullSolver:
                     else:  # SOUTH
                         start = (inp_x, self.grid_height - 2, inp_floor)
 
-                    path = router.find_path(start, goal, allow_belt_ports=True)
-                    if path:
-                        belts = router.path_to_belts(path)
-                        all_belts.extend(belts)
-                        for bx, by, bf, _, _ in belts:
-                            router.add_occupied(bx, by, bf)
+                    # When start equals goal (machine input is right at the edge), we still need
+                    # a belt at that position to receive from the edge belt and output to machine
+                    if start == goal:
+                        # Determine belt direction: from edge to machine
+                        # The belt receives from the edge and outputs towards the machine body
+                        bt, mx, my, mfloor, rot = machines[root_machine]
+                        dx = mx - goal[0]
+                        dy = my - goal[1]
+                        if dx > 0:
+                            belt_rot = Rotation.EAST
+                        elif dx < 0:
+                            belt_rot = Rotation.WEST
+                        elif dy > 0:
+                            belt_rot = Rotation.SOUTH
+                        else:
+                            belt_rot = Rotation.NORTH
+
+                        all_belts.append((start[0], start[1], start[2], BuildingType.BELT_FORWARD, belt_rot))
+                        router.add_occupied(start[0], start[1], start[2])
                         if verbose:
-                            print(f"      Success: {len(belts)} belts")
+                            print(f"      Direct: 1 connecting belt at {start}")
                     else:
-                        all_success = False
-                        if verbose:
-                            print(f"      FAILED")
+                        path = router.find_path(start, goal, allow_belt_ports=True)
+                        if path:
+                            # If path ends with a belt_port, add machine position as hint
+                            # so receiver knows where to output
+                            bt, mx, my, mfloor, rot = machines[root_machine]
+                            if len(path) >= 2 and path[-1][3] == 'belt_port':
+                                # Add machine center as output hint
+                                path.append((mx, my, mfloor, 'output_hint'))
+                            belts = router.path_to_belts(path)
+                            all_belts.extend(belts)
+                            for bx, by, bf, _, _ in belts:
+                                router.add_occupied(bx, by, bf)
+                            if verbose:
+                                print(f"      Success: {len(belts)} belts")
+                        else:
+                            all_success = False
+                            if verbose:
+                                print(f"      FAILED")
 
             # Route tree internals and outputs
             if len(tree_machines) == 1:
                 # Single machine in tree: route outputs directly to this tree's output ports
                 machine_idx = tree_machines[0]
+                bt, mx, my, mfloor, rot = machines[machine_idx]
                 machine_outputs_list = all_machine_outputs[machine_idx]
 
                 # Smart matching: match machine outputs to foundation outputs by proximity
@@ -2130,7 +2376,10 @@ class CPSATFullSolver:
                     machine_outputs_list, tree_outputs, verbose=False
                 )
 
-                for start, output_idx in matched_outputs:
+                # Get output cells for this machine (the machine cells feeding each output)
+                machine_output_cells = all_output_cells[machine_idx]
+
+                for start, output_idx, m_out_idx in matched_outputs:
                     out_x, out_y, out_floor, out_side = self.output_positions[output_idx]
 
                     if out_side == Side.EAST:
@@ -2147,6 +2396,12 @@ class CPSATFullSolver:
 
                     path = router.find_path(start, goal, allow_belt_ports=True)
                     if path:
+                        # Add input hint at the start so sender knows where items come from
+                        # Use the actual machine output cell, not machine origin
+                        hint = machine_output_cells[m_out_idx] if m_out_idx < len(machine_output_cells) else (mx, my, mfloor)
+                        path.insert(0, (hint[0], hint[1], hint[2], 'input_hint'))
+                        # Add edge position as output hint so final belt faces the edge
+                        path.append((out_x, out_y, out_floor, 'output_hint'))
                         belts = router.path_to_belts(path)
                         all_belts.extend(belts)
                         for bx, by, bf, _, _ in belts:
@@ -2162,6 +2417,7 @@ class CPSATFullSolver:
                 # Multiple machines: binary tree topology
                 # Root machine (tree_machines[0]) → children (tree_machines[1:])
                 root_machine = tree_machines[0]
+                bt_root, mx_root, my_root, mfloor_root, _ = machines[root_machine]
                 root_outputs = all_machine_outputs[root_machine]
 
                 # Route root to child machines
@@ -2177,6 +2433,12 @@ class CPSATFullSolver:
 
                     path = router.find_path(start, goal, allow_belt_ports=True)
                     if path:
+                        # Add input hint at start so sender knows where items come from
+                        path.insert(0, (mx_root, my_root, mfloor_root, 'input_hint'))
+                        # If path ends with belt_port, add child machine position as hint
+                        if len(path) >= 2 and path[-1][3] == 'belt_port':
+                            bt_c, mx_c, my_c, mfloor_c, _ = machines[child_idx]
+                            path.append((mx_c, my_c, mfloor_c, 'output_hint'))
                         belts = router.path_to_belts(path)
                         all_belts.extend(belts)
                         for bx, by, bf, _, _ in belts:
@@ -2189,19 +2451,29 @@ class CPSATFullSolver:
                             print(f"      FAILED")
 
                 # Route child machines to output ports using smart matching
-                # Collect all child output ports
-                all_child_outputs = []
+                # Collect all child output ports with their machine positions
+                all_child_outputs = []  # List of (output_pos, machine_pos)
                 for child_machine_idx in tree_machines[1:]:
+                    bt_c, mx_c, my_c, mfloor_c, _ = machines[child_machine_idx]
                     child_outputs = all_machine_outputs[child_machine_idx]
-                    all_child_outputs.extend(child_outputs)
+                    for out_pos in child_outputs:
+                        all_child_outputs.append((out_pos, (mx_c, my_c, mfloor_c)))
 
                 # Match all child outputs to foundation outputs
+                output_positions_only = [pos for pos, _ in all_child_outputs]
                 matched_outputs = self._match_machine_to_foundation_outputs(
-                    all_child_outputs, tree_outputs, verbose=False
+                    output_positions_only, tree_outputs, verbose=False
                 )
 
-                for child_output_pos, port_idx in matched_outputs:
+                for child_output_pos, port_idx, _ in matched_outputs:
                     out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
+
+                    # Find the machine position for this output
+                    machine_pos = None
+                    for out_pos, m_pos in all_child_outputs:
+                        if out_pos == child_output_pos:
+                            machine_pos = m_pos
+                            break
 
                     if out_side == Side.EAST:
                         goal = (self.grid_width - 2, out_y, out_floor)
@@ -2217,6 +2489,11 @@ class CPSATFullSolver:
 
                     path = router.find_path(child_output_pos, goal, allow_belt_ports=True)
                     if path:
+                        # Add input hint at start so sender knows where items come from
+                        if machine_pos:
+                            path.insert(0, (machine_pos[0], machine_pos[1], machine_pos[2], 'input_hint'))
+                        # Add edge position as output hint so final belt faces the edge
+                        path.append((out_x, out_y, out_floor, 'output_hint'))
                         belts = router.path_to_belts(path)
                         all_belts.extend(belts)
                         for bx, by, bf, _, _ in belts:
@@ -2325,8 +2602,14 @@ class CPSATFullSolver:
         num_inputs = len(self.input_positions)
         num_outputs_needed = len(self.output_positions)
 
-        if num_inputs == 0 or num_machines == 0:
+        if num_inputs == 0:
             return all_belts, True
+
+        # Handle passthrough (no machines) - fall back to A* routing for simplicity
+        if num_machines == 0:
+            if verbose:
+                print(f"\n  Pure passthrough - using A* for direct routing")
+            return self._route_all_connections(machines, verbose)
 
         outputs_per_input = num_outputs_needed / num_inputs if num_inputs > 0 else num_outputs_needed
         machines_per_input = num_machines / num_inputs if num_inputs > 0 else num_machines
@@ -2389,7 +2672,7 @@ class CPSATFullSolver:
                     machine_outputs_list, tree_outputs, verbose=False
                 )
 
-                for start, output_idx in matched_outputs:
+                for start, output_idx, _ in matched_outputs:
                     out_x, out_y, out_floor, out_side = self.output_positions[output_idx]
 
                     if out_side == Side.EAST:
@@ -2440,7 +2723,7 @@ class CPSATFullSolver:
                     all_child_outputs, tree_outputs, verbose=False
                 )
 
-                for child_output_pos, port_idx in matched_outputs:
+                for child_output_pos, port_idx, _ in matched_outputs:
                     out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
 
                     if out_side == Side.EAST:
@@ -2552,8 +2835,14 @@ class CPSATFullSolver:
         num_inputs = len(self.input_positions)
         num_outputs_needed = len(self.output_positions)
 
-        if num_inputs == 0 or num_machines == 0:
+        if num_inputs == 0:
             return [], True
+
+        # Handle passthrough (no machines) - fall back to A* routing for simplicity
+        if num_machines == 0:
+            if verbose:
+                print(f"\n  Pure passthrough - using A* for direct routing")
+            return self._route_all_connections(machines, verbose)
 
         outputs_per_input = num_outputs_needed / num_inputs if num_inputs > 0 else num_outputs_needed
         machines_per_input = num_machines / num_inputs if num_inputs > 0 else num_machines
@@ -2612,7 +2901,7 @@ class CPSATFullSolver:
                     machine_outputs_list, tree_outputs, verbose=False
                 )
 
-                for start, output_idx in matched_outputs:
+                for start, output_idx, _ in matched_outputs:
                     out_x, out_y, out_floor, out_side = self.output_positions[output_idx]
 
                     if out_side == Side.EAST:
@@ -2649,7 +2938,7 @@ class CPSATFullSolver:
                     all_child_outputs, tree_outputs, verbose=False
                 )
 
-                for child_output_pos, port_idx in matched_outputs:
+                for child_output_pos, port_idx, _ in matched_outputs:
                     out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
 
                     if out_side == Side.EAST:
@@ -2742,8 +3031,14 @@ class CPSATFullSolver:
         num_inputs = len(self.input_positions)
         num_outputs_needed = len(self.output_positions)
 
-        if num_inputs == 0 or num_machines == 0:
+        if num_inputs == 0:
             return [], True
+
+        # Handle passthrough (no machines) - fall back to A* routing for simplicity
+        if num_machines == 0:
+            if verbose:
+                print(f"\n  Pure passthrough - using A* for direct routing")
+            return self._route_all_connections(machines, verbose)
 
         outputs_per_input = num_outputs_needed / num_inputs if num_inputs > 0 else num_outputs_needed
         machines_per_input = num_machines / num_inputs if num_inputs > 0 else num_machines
@@ -2818,7 +3113,7 @@ class CPSATFullSolver:
                     machine_outputs_list, tree_outputs, verbose
                 )
 
-                for machine_out_pos, output_idx in matched_outputs:
+                for machine_out_pos, output_idx, _ in matched_outputs:
                     out_x, out_y, out_floor, out_side = self.output_positions[output_idx]
 
                     if out_side == Side.EAST:
@@ -2856,7 +3151,7 @@ class CPSATFullSolver:
                     all_child_outputs, tree_outputs, verbose
                 )
 
-                for machine_out_pos, port_idx in matched_outputs:
+                for machine_out_pos, port_idx, _ in matched_outputs:
                     out_x, out_y, out_floor, out_side = self.output_positions[port_idx]
 
                     if out_side == Side.EAST:
@@ -3092,7 +3387,7 @@ class CPSATFullSolver:
         machine_outputs: List[Tuple[int, int, int]],
         foundation_output_indices: List[int],
         verbose: bool = False
-    ) -> List[Tuple[Tuple[int, int, int], int]]:
+    ) -> List[Tuple[Tuple[int, int, int], int, int]]:
         """
         Match machine output ports to foundation outputs based on direction/proximity.
 
@@ -3100,7 +3395,8 @@ class CPSATFullSolver:
         of routing direction. This prevents situations where a machine output on
         the east side of the foundation is routed to a north output.
 
-        Returns list of (machine_output_pos, foundation_output_idx) pairs.
+        Returns list of (machine_output_pos, foundation_output_idx, machine_output_idx) tuples.
+        The machine_output_idx is the index into machine_outputs list.
         """
         if not machine_outputs or not foundation_output_indices:
             return []
@@ -3154,7 +3450,7 @@ class CPSATFullSolver:
 
         for dist, m_idx, f_idx, m_pos, out_idx in distances:
             if m_idx not in used_machine and f_idx not in used_foundation:
-                matched.append((m_pos, out_idx))
+                matched.append((m_pos, out_idx, m_idx))
                 used_machine.add(m_idx)
                 used_foundation.add(f_idx)
 

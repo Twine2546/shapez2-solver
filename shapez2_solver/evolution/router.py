@@ -268,10 +268,17 @@ class BeltRouter:
                 neighbors.append((nx, ny, nf, direction, 'belt'))
 
         # Floor changes (lifts)
-        if floor < self.num_floors - 1 and self.is_valid(x, y, floor + 1, shape_code, throughput):
-            neighbors.append((x, y, floor + 1, Rotation.EAST, 'lift_up'))
-        if floor > 0 and self.is_valid(x, y, floor - 1, shape_code, throughput):
-            neighbors.append((x, y, floor - 1, Rotation.EAST, 'lift_down'))
+        # LIFT_UP: occupies (x, y, floor) and (x, y, floor+1), outputs EAST on upper floor
+        # So the destination is (x+1, y, floor+1) - one step east on the upper floor
+        # LIFT_DOWN: occupies (x, y, floor) and (x, y, floor-1), outputs EAST on lower floor
+        # So the destination is (x+1, y, floor-1)
+        if floor < self.num_floors - 1 and self.is_valid(x + 1, y, floor + 1, shape_code, throughput):
+            # Check that the lift positions are also valid (lift occupies both floors)
+            if self.is_valid(x, y, floor, shape_code, throughput) and self.is_valid(x, y, floor + 1, shape_code, throughput):
+                neighbors.append((x + 1, y, floor + 1, Rotation.EAST, 'lift_up'))
+        if floor > 0 and self.is_valid(x + 1, y, floor - 1, shape_code, throughput):
+            if self.is_valid(x, y, floor, shape_code, throughput) and self.is_valid(x, y, floor - 1, shape_code, throughput):
+                neighbors.append((x + 1, y, floor - 1, Rotation.EAST, 'lift_down'))
 
         # Belt port jumps (teleporters) - only if enabled and we have ports available
         # Constraints: max 4 squares, straight line only (no diagonal), same floor
@@ -966,6 +973,8 @@ class BeltRouter:
         belts = []
         # Track positions that have belt port receivers (to avoid overwriting them)
         receiver_positions = set()
+        # Track positions that already have belts
+        belt_positions = set()
 
         # First pass: identify all belt port receiver positions
         for i in range(len(path) - 1):
@@ -977,7 +986,12 @@ class BeltRouter:
         for i in range(len(path) - 1):
             curr = path[i]
             next_pos = path[i + 1]
+            curr_type = curr[3] if len(curr) > 3 else None
             move_type = next_pos[3]  # How we got to next_pos
+
+            # Skip input_hint and output_hint - they're just for direction calculation
+            if curr_type in ('input_hint', 'output_hint'):
+                continue
 
             curr_pos = (curr[0], curr[1], curr[2])
             next_xyz = (next_pos[0], next_pos[1], next_pos[2])
@@ -992,26 +1006,411 @@ class BeltRouter:
 
             # Handle belt port teleportation
             if move_type == 'belt_port':
-                # Determine direction of the jump (straight line only)
+                # Sender rotation determines teleport direction - where the receiver is
+                # The flow simulator looks for receivers in the sender's facing direction
                 if dx > 0:
-                    rotation = Rotation.EAST
+                    sender_rotation = Rotation.EAST
                 elif dx < 0:
-                    rotation = Rotation.WEST
+                    sender_rotation = Rotation.WEST
                 elif dy > 0:
-                    rotation = Rotation.SOUTH
+                    sender_rotation = Rotation.SOUTH
                 else:
-                    rotation = Rotation.NORTH
+                    sender_rotation = Rotation.NORTH
 
-                # Place sender at current position (input from behind, output into teleport)
-                belts.append((curr_pos[0], curr_pos[1], curr_pos[2],
-                             BuildingType.BELT_PORT_SENDER, rotation))
-                # Place receiver at next position (receives teleport, outputs forward)
-                belts.append((next_xyz[0], next_xyz[1], next_xyz[2],
-                             BuildingType.BELT_PORT_RECEIVER, rotation))
-                # Track the pair
-                self.belt_port_pairs.append((curr_pos, next_xyz))
-                self.belt_ports_used += 1
-                continue
+                # Check if there's an input_hint that would be blocked by this sender
+                # A sender facing direction D cannot receive from direction D
+                # If the input_hint is in the same direction as teleport, we need an intermediate belt
+                need_intermediate_belt = False
+                if i > 0:
+                    prev = path[i - 1]
+                    prev_type = prev[3] if len(prev) > 3 else None
+                    if prev_type == 'input_hint':
+                        hint_x, hint_y = prev[0], prev[1]
+                        # Direction from sender to input_hint
+                        hint_dx = hint_x - curr_pos[0]
+                        hint_dy = hint_y - curr_pos[1]
+                        # Check if input direction matches teleport direction
+                        # (sender would block input from machine)
+                        if (sender_rotation == Rotation.EAST and hint_dx > 0) or \
+                           (sender_rotation == Rotation.WEST and hint_dx < 0) or \
+                           (sender_rotation == Rotation.SOUTH and hint_dy > 0) or \
+                           (sender_rotation == Rotation.NORTH and hint_dy < 0):
+                            need_intermediate_belt = True
+
+                # If input is blocked, we need to place a turn belt first to redirect flow
+                # before using the belt_port
+                if need_intermediate_belt:
+                    # The sender would block input from the machine
+                    # We need to:
+                    # 1. Place a turn belt at curr_pos that receives from machine and outputs perpendicular
+                    # 2. Place sender at adjacent perpendicular cell
+                    # 3. Receiver stays at next_pos
+
+                    # Determine input direction from machine (hint)
+                    prev = path[i - 1]  # input_hint
+                    hint_x, hint_y = prev[0], prev[1]
+                    hint_dx = hint_x - curr_pos[0]
+                    hint_dy = hint_y - curr_pos[1]
+
+                    # Machine is in direction of hint, belt receives from opposite
+                    # hint_dy > 0 means machine is SOUTH, belt receives from SOUTH (faces NORTH)
+                    # hint_dy < 0 means machine is NORTH, belt receives from NORTH (faces SOUTH)
+                    # etc.
+
+                    # Find a valid perpendicular direction for the turn belt output
+                    # The turn belt outputs perpendicular to the machine direction
+                    perpendicular_candidates = []
+                    if hint_dx != 0:  # Machine is E/W, perpendicular is N/S
+                        perpendicular_candidates = [
+                            ((curr_pos[0], curr_pos[1] - 1, curr_pos[2]), Rotation.NORTH),  # Output north
+                            ((curr_pos[0], curr_pos[1] + 1, curr_pos[2]), Rotation.SOUTH),  # Output south
+                        ]
+                    else:  # Machine is N/S, perpendicular is E/W
+                        perpendicular_candidates = [
+                            ((curr_pos[0] + 1, curr_pos[1], curr_pos[2]), Rotation.EAST),   # Output east
+                            ((curr_pos[0] - 1, curr_pos[1], curr_pos[2]), Rotation.WEST),   # Output west
+                        ]
+
+                    # Find a valid perpendicular neighbor that's:
+                    # 1. In bounds
+                    # 2. Not occupied
+                    # 3. Aligned with the teleport destination (same x or same y as next_pos)
+                    perp_pos = None
+                    perp_dir = None
+                    for (px, py, pz), pdir in perpendicular_candidates:
+                        if not self.is_valid(px, py, pz):
+                            continue
+                        # Check alignment with receiver for teleport
+                        if px == next_xyz[0] or py == next_xyz[1]:
+                            perp_pos = (px, py, pz)
+                            perp_dir = pdir
+                            break
+
+                    if perp_pos is not None:
+                        # Determine turn belt rotation: faces toward perpendicular output
+                        # This also determines input (opposite side)
+                        # For turn belt: rotation = input direction, belt_left/right based on output
+                        if hint_dy > 0:  # Machine SOUTH of us, receive from SOUTH, face NORTH
+                            input_rot = Rotation.NORTH
+                        elif hint_dy < 0:  # Machine NORTH of us, receive from NORTH, face SOUTH
+                            input_rot = Rotation.SOUTH
+                        elif hint_dx > 0:  # Machine EAST of us, receive from EAST, face WEST
+                            input_rot = Rotation.WEST
+                        else:  # Machine WEST of us, receive from WEST, face EAST
+                            input_rot = Rotation.EAST
+
+                        # Determine turn direction (left or right from input to output)
+                        # Turn belt rotation = input direction (where items come FROM)
+                        # BELT_LEFT outputs 90° CCW from input, BELT_RIGHT outputs 90° CW
+                        input_dirs = [Rotation.EAST, Rotation.SOUTH, Rotation.WEST, Rotation.NORTH]
+                        input_idx = input_dirs.index(input_rot)
+                        output_idx = input_dirs.index(perp_dir)
+                        turn = (output_idx - input_idx) % 4
+
+                        if turn == 1:  # 90° CW = right turn
+                            turn_belt_type = BuildingType.BELT_RIGHT
+                        elif turn == 3:  # 90° CCW = left turn
+                            turn_belt_type = BuildingType.BELT_LEFT
+                        else:
+                            # Shouldn't happen for perpendicular
+                            turn_belt_type = BuildingType.BELT_FORWARD
+
+                        # Place turn belt at curr_pos
+                        belts.append((curr_pos[0], curr_pos[1], curr_pos[2],
+                                     turn_belt_type, input_rot))
+
+                        # Now place sender at perpendicular position, facing toward receiver
+                        pdx = next_xyz[0] - perp_pos[0]
+                        pdy = next_xyz[1] - perp_pos[1]
+                        if pdx > 0:
+                            new_sender_rot = Rotation.EAST
+                        elif pdx < 0:
+                            new_sender_rot = Rotation.WEST
+                        elif pdy > 0:
+                            new_sender_rot = Rotation.SOUTH
+                        else:
+                            new_sender_rot = Rotation.NORTH
+
+                        # Place sender at perpendicular position
+                        belts.append((perp_pos[0], perp_pos[1], perp_pos[2],
+                                     BuildingType.BELT_PORT_SENDER, new_sender_rot))
+
+                        # Determine receiver rotation
+                        receiver_rotation = new_sender_rot
+                        if i + 2 < len(path):
+                            after_receiver = path[i + 2]
+                            after_xyz = (after_receiver[0], after_receiver[1], after_receiver[2])
+                            dx_next = after_xyz[0] - next_xyz[0]
+                            dy_next = after_xyz[1] - next_xyz[1]
+                            if dx_next > 0:
+                                receiver_rotation = Rotation.EAST
+                            elif dx_next < 0:
+                                receiver_rotation = Rotation.WEST
+                            elif dy_next > 0:
+                                receiver_rotation = Rotation.SOUTH
+                            elif dy_next < 0:
+                                receiver_rotation = Rotation.NORTH
+
+                        # Place receiver at original destination
+                        belts.append((next_xyz[0], next_xyz[1], next_xyz[2],
+                                     BuildingType.BELT_PORT_RECEIVER, receiver_rotation))
+
+                        # Track the pair and mark perpendicular as occupied
+                        self.belt_port_pairs.append((perp_pos, next_xyz))
+                        self.belt_ports_used += 1
+                        self.occupied.add(perp_pos)
+                        receiver_positions.add(next_xyz)
+                        continue
+                    else:
+                        # No aligned perpendicular found - need to redirect with turn belts
+                        # and use regular belts instead of teleport
+                        # This happens when start is at grid edge and teleport direction
+                        # would require receiving from off-grid
+
+                        # Determine input direction from machine
+                        if hint_dy > 0:  # Machine SOUTH
+                            input_rot = Rotation.NORTH  # Face north to receive from south
+                        elif hint_dy < 0:  # Machine NORTH
+                            input_rot = Rotation.SOUTH
+                        elif hint_dx > 0:  # Machine EAST
+                            input_rot = Rotation.WEST
+                        else:  # Machine WEST
+                            input_rot = Rotation.EAST
+
+                        # Find any valid perpendicular direction (not aligned requirement)
+                        perp_pos_any = None
+                        perp_dir_any = None
+                        for (px, py, pz), pdir in perpendicular_candidates:
+                            if self.is_valid(px, py, pz):
+                                perp_pos_any = (px, py, pz)
+                                perp_dir_any = pdir
+                                break
+
+                        if perp_pos_any is not None:
+                            # Determine turn belt type
+                            input_dirs = [Rotation.EAST, Rotation.SOUTH, Rotation.WEST, Rotation.NORTH]
+                            input_idx = input_dirs.index(input_rot)
+                            output_idx = input_dirs.index(perp_dir_any)
+                            turn = (output_idx - input_idx) % 4
+
+                            if turn == 1:
+                                turn_belt_type = BuildingType.BELT_RIGHT
+                            elif turn == 3:
+                                turn_belt_type = BuildingType.BELT_LEFT
+                            else:
+                                turn_belt_type = BuildingType.BELT_FORWARD
+
+                            # Place turn belt at curr_pos
+                            belts.append((curr_pos[0], curr_pos[1], curr_pos[2],
+                                         turn_belt_type, input_rot))
+                            self.occupied.add(curr_pos)
+
+                            # Now we need to route from perp_pos_any to next_xyz using regular belts
+                            # For simplicity, place a series of belts along the path
+                            # This is a simplified approach - ideally we'd re-route
+
+                            # Place second turn belt at perp_pos to redirect toward destination
+                            # perp_pos receives from curr_pos direction
+                            # Belt rotation = facing direction = opposite of input direction
+                            perp_x, perp_y, perp_z = perp_pos_any
+                            # Items came from curr_pos in direction perp_dir_any
+                            # So belt faces perp_dir_any to receive from opposite
+                            if perp_dir_any == Rotation.EAST:
+                                perp_belt_facing = Rotation.EAST  # Faces EAST, receives from WEST
+                            elif perp_dir_any == Rotation.WEST:
+                                perp_belt_facing = Rotation.WEST  # Faces WEST, receives from EAST
+                            elif perp_dir_any == Rotation.SOUTH:
+                                perp_belt_facing = Rotation.SOUTH  # Faces SOUTH, receives from NORTH
+                            else:
+                                perp_belt_facing = Rotation.NORTH  # Faces NORTH, receives from SOUTH
+
+                            # Determine direction toward teleport destination
+                            dest_dx = next_xyz[0] - perp_x
+                            dest_dy = next_xyz[1] - perp_y
+                            if abs(dest_dy) >= abs(dest_dx):
+                                # Go vertically toward destination
+                                if dest_dy > 0:
+                                    dest_dir = Rotation.SOUTH
+                                else:
+                                    dest_dir = Rotation.NORTH
+                            else:
+                                # Go horizontally toward destination
+                                if dest_dx > 0:
+                                    dest_dir = Rotation.EAST
+                                else:
+                                    dest_dir = Rotation.WEST
+
+                            # Determine turn belt type at perp_pos
+                            # Belt faces perp_belt_facing, outputs toward dest_dir
+                            facing_idx = input_dirs.index(perp_belt_facing)
+                            dest_idx = input_dirs.index(dest_dir)
+                            perp_turn = (dest_idx - facing_idx) % 4
+
+                            if perp_turn == 0:
+                                perp_belt_type = BuildingType.BELT_FORWARD
+                            elif perp_turn == 1:
+                                perp_belt_type = BuildingType.BELT_RIGHT
+                            elif perp_turn == 3:
+                                perp_belt_type = BuildingType.BELT_LEFT
+                            else:  # 180 degree turn, shouldn't happen
+                                perp_belt_type = BuildingType.BELT_FORWARD
+
+                            belts.append((perp_x, perp_y, perp_z, perp_belt_type, perp_belt_facing))
+                            self.occupied.add(perp_pos_any)
+
+                            # Now place belts from perp_pos + 1 step toward destination
+                            # until we reach the teleport receiver position (next_xyz)
+                            cur_x, cur_y, cur_z = perp_x, perp_y, perp_z
+                            if dest_dir == Rotation.SOUTH:
+                                cur_y += 1
+                            elif dest_dir == Rotation.NORTH:
+                                cur_y -= 1
+                            elif dest_dir == Rotation.EAST:
+                                cur_x += 1
+                            else:
+                                cur_x -= 1
+
+                            # Place regular belts until we reach the column/row of destination
+                            # then turn toward it
+                            steps = 0
+                            max_steps = 20  # Safety limit
+                            while steps < max_steps:
+                                if (cur_x, cur_y, cur_z) == next_xyz:
+                                    # Reached destination - place receiver-like belt
+                                    # (actually just a forward belt since we're not teleporting)
+                                    receiver_rotation = dest_dir
+                                    if i + 2 < len(path):
+                                        after_receiver = path[i + 2]
+                                        after_xyz = (after_receiver[0], after_receiver[1], after_receiver[2])
+                                        dx_next = after_xyz[0] - next_xyz[0]
+                                        dy_next = after_xyz[1] - next_xyz[1]
+                                        if dx_next > 0:
+                                            receiver_rotation = Rotation.EAST
+                                        elif dx_next < 0:
+                                            receiver_rotation = Rotation.WEST
+                                        elif dy_next > 0:
+                                            receiver_rotation = Rotation.SOUTH
+                                        elif dy_next < 0:
+                                            receiver_rotation = Rotation.NORTH
+
+                                    # Determine belt type (might need turn)
+                                    cur_input_idx = input_dirs.index(dest_dir)
+                                    out_idx = input_dirs.index(receiver_rotation)
+                                    belt_turn = (out_idx - cur_input_idx) % 4
+                                    if belt_turn == 0:
+                                        final_belt_type = BuildingType.BELT_FORWARD
+                                    elif belt_turn == 1:
+                                        final_belt_type = BuildingType.BELT_RIGHT
+                                    elif belt_turn == 3:
+                                        final_belt_type = BuildingType.BELT_LEFT
+                                    else:
+                                        final_belt_type = BuildingType.BELT_FORWARD
+
+                                    belts.append((cur_x, cur_y, cur_z, final_belt_type, dest_dir))
+                                    self.occupied.add((cur_x, cur_y, cur_z))
+                                    break
+
+                                if not self.is_valid(cur_x, cur_y, cur_z):
+                                    self._debug(f"Hit invalid cell at ({cur_x}, {cur_y}, {cur_z})")
+                                    break
+
+                                # Check if we need to turn toward destination
+                                dx_to_dest = next_xyz[0] - cur_x
+                                dy_to_dest = next_xyz[1] - cur_y
+
+                                need_turn = False
+                                new_dir = dest_dir
+                                if dest_dir in (Rotation.NORTH, Rotation.SOUTH):
+                                    # Moving vertically, check if we're at destination column
+                                    if cur_x == next_xyz[0]:
+                                        # Just continue straight
+                                        pass
+                                    elif dy_to_dest == 0:
+                                        # Same row, turn toward dest column
+                                        need_turn = True
+                                        new_dir = Rotation.EAST if dx_to_dest > 0 else Rotation.WEST
+                                else:
+                                    # Moving horizontally
+                                    if cur_y == next_xyz[1]:
+                                        pass
+                                    elif dx_to_dest == 0:
+                                        need_turn = True
+                                        new_dir = Rotation.SOUTH if dy_to_dest > 0 else Rotation.NORTH
+
+                                if need_turn:
+                                    # Turn belts: rotation = facing direction = direction we came FROM
+                                    # Items traveling in dest_dir direction came from opposite of dest_dir
+                                    # Belt faces dest_dir (old direction) to receive from that opposite
+                                    old_dir = dest_dir  # Direction items were traveling
+                                    old_idx = input_dirs.index(old_dir)
+                                    new_idx = input_dirs.index(new_dir)
+                                    belt_turn = (new_idx - old_idx) % 4
+                                    if belt_turn == 1:
+                                        belt_type = BuildingType.BELT_RIGHT
+                                    elif belt_turn == 3:
+                                        belt_type = BuildingType.BELT_LEFT
+                                    else:
+                                        belt_type = BuildingType.BELT_FORWARD
+                                    # Turn belt faces the OLD direction (to receive from its opposite)
+                                    belt_rotation = old_dir
+                                    dest_dir = new_dir  # Update for next cells
+                                else:
+                                    belt_type = BuildingType.BELT_FORWARD
+                                    belt_rotation = dest_dir  # Forward belt faces output direction
+
+                                belts.append((cur_x, cur_y, cur_z, belt_type, belt_rotation))
+                                self.occupied.add((cur_x, cur_y, cur_z))
+
+                                # Move to next cell
+                                if dest_dir == Rotation.SOUTH:
+                                    cur_y += 1
+                                elif dest_dir == Rotation.NORTH:
+                                    cur_y -= 1
+                                elif dest_dir == Rotation.EAST:
+                                    cur_x += 1
+                                else:
+                                    cur_x -= 1
+                                steps += 1
+
+                            # Skip the belt_port processing for the receiver
+                            receiver_positions.add(next_xyz)
+                            continue
+                        else:
+                            # Completely stuck - no valid perpendicular at all
+                            self._debug(f"No valid perpendicular for blocked belt_port at {curr_pos}")
+                            # Fall through to regular belt handling (will likely fail)
+                            pass
+                else:
+                    # Determine receiver rotation based on the NEXT step in the path
+                    # The receiver should point toward where the path continues
+                    receiver_rotation = sender_rotation  # Default to same as sender
+                    if i + 2 < len(path):
+                        # There's a next step after the receiver
+                        after_receiver = path[i + 2]
+                        after_xyz = (after_receiver[0], after_receiver[1], after_receiver[2])
+                        dx_next = after_xyz[0] - next_xyz[0]
+                        dy_next = after_xyz[1] - next_xyz[1]
+
+                        if dx_next > 0:
+                            receiver_rotation = Rotation.EAST
+                        elif dx_next < 0:
+                            receiver_rotation = Rotation.WEST
+                        elif dy_next > 0:
+                            receiver_rotation = Rotation.SOUTH
+                        elif dy_next < 0:
+                            receiver_rotation = Rotation.NORTH
+                        # else: dz change (lift) - keep default
+
+                    # Place sender at current position (input from behind, output into teleport)
+                    belts.append((curr_pos[0], curr_pos[1], curr_pos[2],
+                                 BuildingType.BELT_PORT_SENDER, sender_rotation))
+                    # Place receiver at next position (receives teleport, outputs in direction of path continuation)
+                    belts.append((next_xyz[0], next_xyz[1], next_xyz[2],
+                                 BuildingType.BELT_PORT_RECEIVER, receiver_rotation))
+                    # Track the pair
+                    self.belt_port_pairs.append((curr_pos, next_xyz))
+                    self.belt_ports_used += 1
+                    continue
 
             # Determine belt type and rotation for regular moves
             if move_type == 'lift_up' or dz > 0:
@@ -1040,18 +1439,98 @@ class BeltRouter:
                 prev_dy = curr_pos[1] - prev[1]
 
                 # If direction changed, might need a turn belt
+                # Turn belts: rotation = input direction (opposite of where flow comes from)
+                # The belt receives from the opposite of rotation
                 if (prev_dx != 0 and dy != 0) or (prev_dy != 0 and dx != 0):
-                    # Determine turn direction
-                    if (prev_dx > 0 and dy > 0) or (prev_dy < 0 and dx > 0):
-                        belt_type = BuildingType.BELT_RIGHT
-                    elif (prev_dx > 0 and dy < 0) or (prev_dy > 0 and dx > 0):
+                    # Determine input direction (from prev to curr)
+                    # prev_dx > 0 means came from WEST, prev_dx < 0 means came from EAST
+                    # prev_dy > 0 means came from NORTH, prev_dy < 0 means came from SOUTH
+
+                    # Set rotation based on input (belts receive from opposite of rotation)
+                    if prev_dx > 0:  # Came from WEST, so rotation = EAST to receive from WEST
+                        rotation = Rotation.EAST
+                    elif prev_dx < 0:  # Came from EAST, so rotation = WEST to receive from EAST
+                        rotation = Rotation.WEST
+                    elif prev_dy > 0:  # Came from NORTH, so rotation = SOUTH to receive from NORTH
+                        rotation = Rotation.SOUTH
+                    else:  # prev_dy < 0, came from SOUTH, so rotation = NORTH to receive from SOUTH
+                        rotation = Rotation.NORTH
+
+                    # Determine turn type based on input and output directions
+                    # LEFT turn: EAST->NORTH, SOUTH->EAST, WEST->SOUTH, NORTH->WEST
+                    # RIGHT turn: EAST->SOUTH, SOUTH->WEST, WEST->NORTH, NORTH->EAST
+                    if (prev_dx > 0 and dy < 0) or (prev_dx < 0 and dy > 0) or \
+                       (prev_dy > 0 and dx > 0) or (prev_dy < 0 and dx < 0):
                         belt_type = BuildingType.BELT_LEFT
-                    elif (prev_dx < 0 and dy > 0) or (prev_dy < 0 and dx < 0):
-                        belt_type = BuildingType.BELT_LEFT
-                    elif (prev_dx < 0 and dy < 0) or (prev_dy > 0 and dx < 0):
+                    else:
                         belt_type = BuildingType.BELT_RIGHT
 
             belts.append((curr_pos[0], curr_pos[1], curr_pos[2], belt_type, rotation))
+            belt_positions.add(curr_pos)
+
+        # Final position handling: always add a belt at the final position if it doesn't have one.
+        # The final position is the goal (e.g., one cell inside from the edge), and there's
+        # usually an edge belt at the actual edge. We need a belt at the final position to
+        # connect to the edge belt.
+        # If path ends with 'output_hint', use the second-to-last as final position
+        # and determine direction from final->hint (not prev->final)
+        if len(path) >= 2:
+            if path[-1][3] == 'output_hint':
+                # Final position is second-to-last, direction is towards the hint
+                if len(path) >= 2:
+                    final_pos = path[-2]
+                    hint_pos = path[-1]
+                    final_xyz = (final_pos[0], final_pos[1], final_pos[2])
+                    hint_xyz = (hint_pos[0], hint_pos[1], hint_pos[2])
+
+                    # Add belt at final position if it doesn't already have one
+                    if final_xyz not in belt_positions and final_xyz not in receiver_positions:
+                        # Direction from final to hint
+                        dx = hint_xyz[0] - final_xyz[0]
+                        dy = hint_xyz[1] - final_xyz[1]
+
+                        if dx > 0:
+                            rotation = Rotation.EAST
+                        elif dx < 0:
+                            rotation = Rotation.WEST
+                        elif dy > 0:
+                            rotation = Rotation.SOUTH
+                        elif dy < 0:
+                            rotation = Rotation.NORTH
+                        else:
+                            # Same position (shouldn't happen), default to EAST
+                            rotation = Rotation.EAST
+
+                        belts.append((final_xyz[0], final_xyz[1], final_xyz[2],
+                                     BuildingType.BELT_FORWARD, rotation))
+                        belt_positions.add(final_xyz)
+            else:
+                # No hint, use prev->final direction (original behavior)
+                final_pos = path[-1]
+                final_xyz = (final_pos[0], final_pos[1], final_pos[2])
+                prev_pos = path[-2]
+                prev_xyz = (prev_pos[0], prev_pos[1], prev_pos[2])
+
+                # Add belt at final position if it doesn't already have one
+                if final_xyz not in belt_positions and final_xyz not in receiver_positions:
+                    dx = final_xyz[0] - prev_xyz[0]
+                    dy = final_xyz[1] - prev_xyz[1]
+
+                    if dx > 0:
+                        rotation = Rotation.EAST
+                    elif dx < 0:
+                        rotation = Rotation.WEST
+                    elif dy > 0:
+                        rotation = Rotation.SOUTH
+                    elif dy < 0:
+                        rotation = Rotation.NORTH
+                    else:
+                        # Same position (shouldn't happen), default to EAST
+                        rotation = Rotation.EAST
+
+                    belts.append((final_xyz[0], final_xyz[1], final_xyz[2],
+                                 BuildingType.BELT_FORWARD, rotation))
+                    belt_positions.add(final_xyz)
 
         return belts
 
