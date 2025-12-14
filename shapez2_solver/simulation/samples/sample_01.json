@@ -1,0 +1,763 @@
+{
+  "name": "T 3x2 Corner Splitter",
+  "created": "2025-12-15T07:25:43.648808",
+  "foundation": "T",
+  "buildings": [
+    {
+      "type": "CUTTER",
+      "x": 19,
+      "y": 25,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "CUTTER",
+      "x": 22,
+      "y": 14,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "CUTTER",
+      "x": 3,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 19,
+      "y": 26,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_PORT_SENDER",
+      "x": 19,
+      "y": 24,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_PORT_RECEIVER",
+      "x": 19,
+      "y": 20,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_PORT_SENDER",
+      "x": 19,
+      "y": 19,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_PORT_RECEIVER",
+      "x": 19,
+      "y": 15,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_RIGHT",
+      "x": 19,
+      "y": 14,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 20,
+      "y": 14,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 21,
+      "y": 14,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 20,
+      "y": 24,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 20,
+      "y": 23,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 19,
+      "y": 23,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 18,
+      "y": 23,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 17,
+      "y": 23,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 16,
+      "y": 23,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_RIGHT",
+      "x": 16,
+      "y": 24,
+      "floor": 0,
+      "rotation": "SOUTH"
+    },
+    {
+      "type": "BELT_PORT_SENDER",
+      "x": 15,
+      "y": 24,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_PORT_RECEIVER",
+      "x": 15,
+      "y": 20,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_PORT_SENDER",
+      "x": 14,
+      "y": 20,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_PORT_RECEIVER",
+      "x": 14,
+      "y": 16,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_PORT_SENDER",
+      "x": 14,
+      "y": 15,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_PORT_RECEIVER",
+      "x": 14,
+      "y": 11,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_PORT_SENDER",
+      "x": 13,
+      "y": 11,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_PORT_RECEIVER",
+      "x": 9,
+      "y": 11,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_PORT_SENDER",
+      "x": 8,
+      "y": 11,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_PORT_RECEIVER",
+      "x": 4,
+      "y": 11,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_PORT_SENDER",
+      "x": 3,
+      "y": 11,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_PORT_RECEIVER",
+      "x": 3,
+      "y": 7,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_RIGHT",
+      "x": 2,
+      "y": 7,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 2,
+      "y": 6,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 2,
+      "y": 5,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 4,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 4,
+      "y": 4,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 3,
+      "y": 4,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 2,
+      "y": 4,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 1,
+      "y": 4,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_RIGHT",
+      "x": 1,
+      "y": 5,
+      "floor": 0,
+      "rotation": "SOUTH"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 4,
+      "y": 6,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 5,
+      "y": 6,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 5,
+      "y": 5,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 5,
+      "y": 4,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 5,
+      "y": 3,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 5,
+      "y": 2,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 5,
+      "y": 1,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 23,
+      "y": 14,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 23,
+      "y": 13,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 23,
+      "y": 12,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 23,
+      "y": 11,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 23,
+      "y": 10,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 23,
+      "y": 9,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 23,
+      "y": 8,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 23,
+      "y": 7,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 23,
+      "y": 6,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_RIGHT",
+      "x": 23,
+      "y": 5,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 24,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 25,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 26,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 27,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 28,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 29,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 30,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 31,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 32,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 33,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 34,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 35,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 36,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 37,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 38,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 39,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 40,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 23,
+      "y": 15,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 24,
+      "y": 15,
+      "floor": 1,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 24,
+      "y": 14,
+      "floor": 1,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 24,
+      "y": 13,
+      "floor": 1,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 24,
+      "y": 12,
+      "floor": 1,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 24,
+      "y": 11,
+      "floor": 1,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 24,
+      "y": 10,
+      "floor": 1,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 24,
+      "y": 9,
+      "floor": 1,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 24,
+      "y": 8,
+      "floor": 1,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 24,
+      "y": 7,
+      "floor": 1,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 24,
+      "y": 6,
+      "floor": 1,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 24,
+      "y": 5,
+      "floor": 1,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_RIGHT",
+      "x": 24,
+      "y": 4,
+      "floor": 1,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 25,
+      "y": 4,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 25,
+      "y": 3,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 25,
+      "y": 2,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_RIGHT",
+      "x": 25,
+      "y": 1,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 26,
+      "y": 1,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 27,
+      "y": 1,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 28,
+      "y": 1,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 29,
+      "y": 1,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 30,
+      "y": 1,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 31,
+      "y": 1,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 32,
+      "y": 1,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 33,
+      "y": 1,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 19,
+      "y": 27,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 0,
+      "y": 5,
+      "floor": 0,
+      "rotation": "WEST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 5,
+      "y": 0,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 41,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 33,
+      "y": 0,
+      "floor": 0,
+      "rotation": "NORTH"
+    }
+  ],
+  "inputs": [
+    {
+      "x": 19,
+      "y": 28,
+      "floor": 0,
+      "shape": "CuCuCuCu",
+      "throughput": 45.0
+    }
+  ],
+  "outputs": [
+    {
+      "x": -1,
+      "y": 5,
+      "floor": 0,
+      "expected_shape": "Cu------"
+    },
+    {
+      "x": 5,
+      "y": -1,
+      "floor": 0,
+      "expected_shape": "--Cu----"
+    },
+    {
+      "x": 42,
+      "y": 5,
+      "floor": 0,
+      "expected_shape": "----Cu--"
+    },
+    {
+      "x": 33,
+      "y": -1,
+      "floor": 0,
+      "expected_shape": "------Cu"
+    }
+  ]
+}
