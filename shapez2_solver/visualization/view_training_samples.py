@@ -227,8 +227,11 @@ class TrainingSampleViewer:
         if foundation_name not in FOUNDATION_SPECS:
             foundation_name = '2x2'  # Default fallback
 
-        # Create minimal config (we don't have full port info but that's ok for viewing)
-        config = FoundationConfig(foundation_name)
+        # Get the actual spec object
+        spec = FOUNDATION_SPECS[foundation_name]
+
+        # Create minimal config with spec object (not string)
+        config = FoundationConfig(spec=spec)
 
         # Create evolution object
         evolution = FoundationEvolution(
