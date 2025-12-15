@@ -31,6 +31,15 @@ except ImportError:
         print("Error: Pygame layout viewer requires pygame which is not installed.")
         print("Install pygame with: pip install pygame-ce")
 
+# Training sample viewer (requires pygame)
+try:
+    from .view_training_samples import TrainingSampleViewer
+    _HAS_SAMPLE_VIEWER = True
+except ImportError:
+    TrainingSampleViewer = None
+    _HAS_SAMPLE_VIEWER = False
+
+
 __all__ = [
     "ShapeRenderer",
     "EvolutionVisualizer",
@@ -42,4 +51,5 @@ __all__ = [
     "show_layout",
     "PygameLayoutViewer",
     "show_layout_pygame",
+    "TrainingSampleViewer",
 ]
