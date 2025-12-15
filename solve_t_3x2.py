@@ -8,18 +8,17 @@ sys.path.insert(0, '/config/projects/programming/games/shape2')
 
 from shapez2_solver.evolution.cpsat_solver import solve_with_cpsat
 
-# T 3x2 foundation problem - MINIMAL test: 1 input, 4 outputs
-# Just testing with 1 full copper input split into 4 quarters
+# T 3x2 foundation problem - MINIMAL test: 1 input, 2 outputs
+# Testing with cutters only: full shape split into left/right halves
+# NOTE: Cutters only produce halves (2 quadrants each), not individual quarters
 input_specs = [
     ("S", 4, 0, "CuCuCuCu"),  # Single input
 ]
 
-# 4 quarter outputs - one to each direction
+# 2 half outputs - achievable with 1 cutter
 output_specs = [
-    ("W", 0, 0, "Cu------"),    # Top-left quarter to West
-    ("N", 0, 0, "--Cu----"),    # Top-right quarter to North
-    ("E", 0, 0, "----Cu--"),    # Bottom-left quarter to East
-    ("N", 8, 0, "------Cu"),    # Bottom-right quarter to North
+    ("W", 0, 0, "Cu--Cu--"),    # Left half (TL+BL) to West
+    ("E", 0, 0, "--Cu--Cu"),    # Right half (TR+BR) to East
 ]
 
 print(f"Inputs: {len(input_specs)}")

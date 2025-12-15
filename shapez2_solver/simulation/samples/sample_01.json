@@ -1,26 +1,12 @@
 {
   "name": "T 3x2 Corner Splitter",
-  "created": "2025-12-15T07:25:43.648808",
+  "created": "2025-12-15T08:34:22.997944",
   "foundation": "T",
   "buildings": [
     {
       "type": "CUTTER",
       "x": 19,
-      "y": 25,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "CUTTER",
-      "x": 22,
-      "y": 14,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "CUTTER",
-      "x": 3,
-      "y": 5,
+      "y": 24,
       "floor": 0,
       "rotation": "EAST"
     },
@@ -29,63 +15,35 @@
       "x": 19,
       "y": 26,
       "floor": 0,
-      "rotation": "NORTH"
+      "rotation": "WEST"
     },
     {
-      "type": "BELT_PORT_SENDER",
-      "x": 19,
-      "y": 24,
+      "type": "BELT_RIGHT",
+      "x": 18,
+      "y": 26,
       "floor": 0,
-      "rotation": "NORTH"
+      "rotation": "WEST"
     },
     {
-      "type": "BELT_PORT_RECEIVER",
-      "x": 19,
-      "y": 20,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_PORT_SENDER",
-      "x": 19,
-      "y": 19,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_PORT_RECEIVER",
-      "x": 19,
-      "y": 15,
+      "type": "BELT_FORWARD",
+      "x": 18,
+      "y": 25,
       "floor": 0,
       "rotation": "NORTH"
     },
     {
       "type": "BELT_RIGHT",
-      "x": 19,
-      "y": 14,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 20,
-      "y": 14,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 21,
-      "y": 14,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 20,
+      "x": 18,
       "y": 24,
       "floor": 0,
       "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 20,
+      "y": 24,
+      "floor": 0,
+      "rotation": "EAST"
     },
     {
       "type": "BELT_LEFT",
@@ -214,186 +172,200 @@
       "rotation": "WEST"
     },
     {
-      "type": "BELT_RIGHT",
+      "type": "BELT_FORWARD",
       "x": 2,
       "y": 7,
       "floor": 0,
       "rotation": "WEST"
     },
     {
-      "type": "BELT_FORWARD",
-      "x": 2,
-      "y": 6,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 2,
-      "y": 5,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_LEFT",
-      "x": 4,
-      "y": 5,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_LEFT",
-      "x": 4,
-      "y": 4,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 3,
-      "y": 4,
-      "floor": 0,
-      "rotation": "WEST"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 2,
-      "y": 4,
-      "floor": 0,
-      "rotation": "WEST"
-    },
-    {
-      "type": "BELT_LEFT",
-      "x": 1,
-      "y": 4,
-      "floor": 0,
-      "rotation": "WEST"
-    },
-    {
       "type": "BELT_RIGHT",
       "x": 1,
-      "y": 5,
+      "y": 7,
       "floor": 0,
-      "rotation": "SOUTH"
-    },
-    {
-      "type": "BELT_LEFT",
-      "x": 4,
-      "y": 6,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_LEFT",
-      "x": 5,
-      "y": 6,
-      "floor": 0,
-      "rotation": "EAST"
+      "rotation": "WEST"
     },
     {
       "type": "BELT_FORWARD",
-      "x": 5,
+      "x": 1,
+      "y": 6,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_LEFT",
+      "x": 1,
       "y": 5,
       "floor": 0,
       "rotation": "NORTH"
     },
     {
       "type": "BELT_FORWARD",
-      "x": 5,
-      "y": 4,
+      "x": 20,
+      "y": 25,
       "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 5,
-      "y": 3,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 5,
-      "y": 2,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 5,
-      "y": 1,
-      "floor": 0,
-      "rotation": "NORTH"
+      "rotation": "EAST"
     },
     {
       "type": "BELT_LEFT",
-      "x": 23,
+      "x": 21,
+      "y": 25,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 21,
+      "y": 24,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 21,
+      "y": 23,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 21,
+      "y": 22,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 21,
+      "y": 21,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 21,
+      "y": 20,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 21,
+      "y": 19,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 21,
+      "y": 18,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 21,
+      "y": 17,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 21,
+      "y": 16,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 21,
+      "y": 15,
+      "floor": 0,
+      "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 21,
       "y": 14,
       "floor": 0,
-      "rotation": "EAST"
+      "rotation": "NORTH"
     },
     {
       "type": "BELT_FORWARD",
-      "x": 23,
+      "x": 21,
       "y": 13,
       "floor": 0,
       "rotation": "NORTH"
     },
     {
       "type": "BELT_FORWARD",
-      "x": 23,
+      "x": 21,
       "y": 12,
       "floor": 0,
       "rotation": "NORTH"
     },
     {
       "type": "BELT_FORWARD",
-      "x": 23,
+      "x": 21,
       "y": 11,
       "floor": 0,
       "rotation": "NORTH"
     },
     {
       "type": "BELT_FORWARD",
-      "x": 23,
+      "x": 21,
       "y": 10,
       "floor": 0,
       "rotation": "NORTH"
     },
     {
       "type": "BELT_FORWARD",
-      "x": 23,
+      "x": 21,
       "y": 9,
       "floor": 0,
       "rotation": "NORTH"
     },
     {
       "type": "BELT_FORWARD",
-      "x": 23,
+      "x": 21,
       "y": 8,
       "floor": 0,
       "rotation": "NORTH"
     },
     {
       "type": "BELT_FORWARD",
-      "x": 23,
+      "x": 21,
       "y": 7,
       "floor": 0,
       "rotation": "NORTH"
     },
     {
       "type": "BELT_FORWARD",
-      "x": 23,
+      "x": 21,
       "y": 6,
       "floor": 0,
       "rotation": "NORTH"
     },
     {
       "type": "BELT_RIGHT",
-      "x": 23,
+      "x": 21,
       "y": 5,
       "floor": 0,
       "rotation": "NORTH"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 22,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
+    },
+    {
+      "type": "BELT_FORWARD",
+      "x": 23,
+      "y": 5,
+      "floor": 0,
+      "rotation": "EAST"
     },
     {
       "type": "BELT_FORWARD",
@@ -515,181 +487,6 @@
       "rotation": "EAST"
     },
     {
-      "type": "BELT_LEFT",
-      "x": 23,
-      "y": 15,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_LEFT",
-      "x": 24,
-      "y": 15,
-      "floor": 1,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 24,
-      "y": 14,
-      "floor": 1,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 24,
-      "y": 13,
-      "floor": 1,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 24,
-      "y": 12,
-      "floor": 1,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 24,
-      "y": 11,
-      "floor": 1,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 24,
-      "y": 10,
-      "floor": 1,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 24,
-      "y": 9,
-      "floor": 1,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 24,
-      "y": 8,
-      "floor": 1,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 24,
-      "y": 7,
-      "floor": 1,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 24,
-      "y": 6,
-      "floor": 1,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 24,
-      "y": 5,
-      "floor": 1,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_RIGHT",
-      "x": 24,
-      "y": 4,
-      "floor": 1,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_LEFT",
-      "x": 25,
-      "y": 4,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 25,
-      "y": 3,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 25,
-      "y": 2,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_RIGHT",
-      "x": 25,
-      "y": 1,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 26,
-      "y": 1,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 27,
-      "y": 1,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 28,
-      "y": 1,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 29,
-      "y": 1,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 30,
-      "y": 1,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 31,
-      "y": 1,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 32,
-      "y": 1,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
-      "type": "BELT_LEFT",
-      "x": 33,
-      "y": 1,
-      "floor": 0,
-      "rotation": "EAST"
-    },
-    {
       "type": "BELT_FORWARD",
       "x": 19,
       "y": 27,
@@ -705,24 +502,10 @@
     },
     {
       "type": "BELT_FORWARD",
-      "x": 5,
-      "y": 0,
-      "floor": 0,
-      "rotation": "NORTH"
-    },
-    {
-      "type": "BELT_FORWARD",
       "x": 41,
       "y": 5,
       "floor": 0,
       "rotation": "EAST"
-    },
-    {
-      "type": "BELT_FORWARD",
-      "x": 33,
-      "y": 0,
-      "floor": 0,
-      "rotation": "NORTH"
     }
   ],
   "inputs": [
@@ -739,25 +522,13 @@
       "x": -1,
       "y": 5,
       "floor": 0,
-      "expected_shape": "Cu------"
-    },
-    {
-      "x": 5,
-      "y": -1,
-      "floor": 0,
-      "expected_shape": "--Cu----"
+      "expected_shape": "Cu--Cu--"
     },
     {
       "x": 42,
       "y": 5,
       "floor": 0,
-      "expected_shape": "----Cu--"
-    },
-    {
-      "x": 33,
-      "y": -1,
-      "floor": 0,
-      "expected_shape": "------Cu"
+      "expected_shape": "--Cu--Cu"
     }
   ]
 }

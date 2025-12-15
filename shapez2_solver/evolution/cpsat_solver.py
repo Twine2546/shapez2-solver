@@ -77,8 +77,15 @@ MIRRORED_VARIANTS = {
 }
 
 
-def rotate_offset(dx: int, dy: int, rotation: Rotation) -> Tuple[int, int]:
+def rotate_offset(dx: int, dy: int, rotation: Rotation, width: int = 1, height: int = 1) -> Tuple[int, int]:
     """Rotate a relative offset (dx, dy) based on machine rotation.
+
+    Args:
+        dx, dy: Relative offset within original bounding box
+        rotation: Target rotation
+        width, height: Original building dimensions (before rotation)
+
+    Returns adjusted offset that stays within the rotated bounding box.
 
     EAST (default): no rotation
     SOUTH: 90° clockwise
@@ -88,11 +95,14 @@ def rotate_offset(dx: int, dy: int, rotation: Rotation) -> Tuple[int, int]:
     if rotation == Rotation.EAST:
         return (dx, dy)
     elif rotation == Rotation.SOUTH:
-        return (-dy, dx)
+        # 90° CW: map (x, y) to (y, width-1-x)
+        return (dy, width - 1 - dx)
     elif rotation == Rotation.WEST:
-        return (-dx, -dy)
+        # 180°: map (x, y) to (width-1-x, height-1-y)
+        return (width - 1 - dx, height - 1 - dy)
     elif rotation == Rotation.NORTH:
-        return (dy, -dx)
+        # 270° CW: map (x, y) to (height-1-y, x)
+        return (height - 1 - dy, dx)
     return (dx, dy)
 
 
@@ -143,6 +153,11 @@ def get_machine_port_positions(
     """
     ports = BUILDING_PORTS.get(bt, {'inputs': [(0, 0, 0, 'W')], 'outputs': [(0, 0, 0, 'E')]})
 
+    # Get building dimensions for proper rotation
+    spec = BUILDING_SPECS.get(bt)
+    base_w = spec.width if spec else 1
+    base_h = spec.height if spec else 1
+
     # Direction offsets: the offset to get the adjacent cell in that direction
     direction_offsets = {
         'W': (-1, 0),  # West: adjacent cell is to the left (x-1)
@@ -159,8 +174,8 @@ def get_machine_port_positions(
             rel_x, rel_y, rel_z = port
             direction = 'W'  # Default input from west
 
-        # First rotate the internal cell position
-        rot_x, rot_y = rotate_offset(rel_x, rel_y, rot)
+        # First rotate the internal cell position (accounting for building size)
+        rot_x, rot_y = rotate_offset(rel_x, rel_y, rot, base_w, base_h)
 
         # Then rotate the direction and get the adjacent cell offset
         rotated_direction = _rotate_direction_str(direction, rot)
@@ -177,8 +192,8 @@ def get_machine_port_positions(
             rel_x, rel_y, rel_z = port
             direction = 'E'  # Default output to east
 
-        # First rotate the internal cell position
-        rot_x, rot_y = rotate_offset(rel_x, rel_y, rot)
+        # First rotate the internal cell position (accounting for building size)
+        rot_x, rot_y = rotate_offset(rel_x, rel_y, rot, base_w, base_h)
 
         # Then rotate the direction and get the adjacent cell offset
         rotated_direction = _rotate_direction_str(direction, rot)
@@ -200,6 +215,11 @@ def get_machine_output_cells(
     """
     ports = BUILDING_PORTS.get(bt, {'inputs': [(0, 0, 0, 'W')], 'outputs': [(0, 0, 0, 'E')]})
 
+    # Get building dimensions for proper rotation
+    spec = BUILDING_SPECS.get(bt)
+    base_w = spec.width if spec else 1
+    base_h = spec.height if spec else 1
+
     output_cells = []
     for port in ports.get('outputs', [(0, 0, 0, 'E')]):
         if len(port) == 4:
@@ -207,13 +227,44 @@ def get_machine_output_cells(
         else:
             rel_x, rel_y, rel_z = port
 
-        # Rotate the internal cell position to get the machine cell
-        rot_x, rot_y = rotate_offset(rel_x, rel_y, rot)
+        # Rotate the internal cell position to get the machine cell (accounting for building size)
+        rot_x, rot_y = rotate_offset(rel_x, rel_y, rot, base_w, base_h)
 
         # The machine cell is at (x + rot_x, y + rot_y) - NOT the adjacent cell
         output_cells.append((x + rot_x, y + rot_y, floor + rel_z))
 
     return output_cells
+
+
+def get_machine_input_cells(
+    bt: BuildingType, x: int, y: int, floor: int, rot: Rotation
+) -> List[Tuple[int, int, int]]:
+    """Get the machine cells that receive each input port.
+
+    Returns list of (x, y, floor) tuples - the machine cell positions (not adjacent cells).
+    These are useful for output_hints when routing TO machine inputs.
+    """
+    ports = BUILDING_PORTS.get(bt, {'inputs': [(0, 0, 0, 'W')], 'outputs': [(0, 0, 0, 'E')]})
+
+    # Get building dimensions for proper rotation
+    spec = BUILDING_SPECS.get(bt)
+    base_w = spec.width if spec else 1
+    base_h = spec.height if spec else 1
+
+    input_cells = []
+    for port in ports.get('inputs', [(0, 0, 0, 'W')]):
+        if len(port) == 4:
+            rel_x, rel_y, rel_z, direction = port
+        else:
+            rel_x, rel_y, rel_z = port
+
+        # Rotate the internal cell position to get the machine cell (accounting for building size)
+        rot_x, rot_y = rotate_offset(rel_x, rel_y, rot, base_w, base_h)
+
+        # The machine cell is at (x + rot_x, y + rot_y) - NOT the adjacent cell
+        input_cells.append((x + rot_x, y + rot_y, floor + rel_z))
+
+    return input_cells
 
 
 def _rotate_direction_str(direction: str, rotation: Rotation) -> str:
@@ -2107,10 +2158,12 @@ class CPSATFullSolver:
         machine_outputs = []  # List of (x, y, floor) for each machine's first output
         all_machine_outputs = []  # List of lists: machine_outputs[machine_idx][output_idx] = (x, y, floor)
         all_output_cells = []  # List of lists: output_cells[machine_idx][output_idx] = (x, y, floor) machine cell
+        all_input_cells = []  # List of lists: input_cells[machine_idx][input_idx] = (x, y, floor) machine cell
 
         for bt, mx, my, mfloor, rot in machines:
             input_positions, output_positions = get_machine_port_positions(bt, mx, my, mfloor, rot)
             output_cells = get_machine_output_cells(bt, mx, my, mfloor, rot)
+            input_cells = get_machine_input_cells(bt, mx, my, mfloor, rot)
 
             # First input/output for simple routing
             machine_inputs.append(input_positions[0] if input_positions else (mx - 1, my, mfloor))
@@ -2119,6 +2172,7 @@ class CPSATFullSolver:
             # All outputs for multi-output machines
             all_machine_outputs.append(output_positions)
             all_output_cells.append(output_cells)
+            all_input_cells.append(input_cells)
 
         # Determine tree structure
         # With N inputs, M outputs, and K machines:
@@ -2347,12 +2401,12 @@ class CPSATFullSolver:
                     else:
                         path = router.find_path(start, goal, allow_belt_ports=True)
                         if path:
-                            # If path ends with a belt_port, add machine position as hint
-                            # so receiver knows where to output
+                            # Add machine input cell as output hint so final belt faces the machine
                             bt, mx, my, mfloor, rot = machines[root_machine]
-                            if len(path) >= 2 and path[-1][3] == 'belt_port':
-                                # Add machine center as output hint
-                                path.append((mx, my, mfloor, 'output_hint'))
+                            # Get the actual machine input cell (not adjacent position)
+                            input_cells = all_input_cells[root_machine]
+                            hint_cell = input_cells[0] if input_cells else (mx, my, mfloor)
+                            path.append((hint_cell[0], hint_cell[1], hint_cell[2], 'output_hint'))
                             belts = router.path_to_belts(path)
                             all_belts.extend(belts)
                             for bx, by, bf, _, _ in belts:
@@ -2421,6 +2475,7 @@ class CPSATFullSolver:
                 root_outputs = all_machine_outputs[root_machine]
 
                 # Route root to child machines
+                root_output_cells = all_output_cells[root_machine]
                 for i, child_idx in enumerate(tree_machines[1:], start=1):
                     if i - 1 >= len(root_outputs):
                         break
@@ -2434,11 +2489,16 @@ class CPSATFullSolver:
                     path = router.find_path(start, goal, allow_belt_ports=True)
                     if path:
                         # Add input hint at start so sender knows where items come from
-                        path.insert(0, (mx_root, my_root, mfloor_root, 'input_hint'))
-                        # If path ends with belt_port, add child machine position as hint
+                        # Use the specific output cell, not the machine origin
+                        hint = root_output_cells[i - 1] if i - 1 < len(root_output_cells) else (mx_root, my_root, mfloor_root)
+                        path.insert(0, (hint[0], hint[1], hint[2], 'input_hint'))
+                        # If path ends with belt_port, add child machine input CELL as hint
+                        # This tells the belt port receiver which direction to face
                         if len(path) >= 2 and path[-1][3] == 'belt_port':
-                            bt_c, mx_c, my_c, mfloor_c, _ = machines[child_idx]
-                            path.append((mx_c, my_c, mfloor_c, 'output_hint'))
+                            # Use the machine's input cell, not origin, for correct belt direction
+                            child_input_cells = all_input_cells[child_idx]
+                            hint_cell = child_input_cells[0] if child_input_cells else machine_inputs[child_idx]
+                            path.append((hint_cell[0], hint_cell[1], hint_cell[2], 'output_hint'))
                         belts = router.path_to_belts(path)
                         all_belts.extend(belts)
                         for bx, by, bf, _, _ in belts:
@@ -2451,13 +2511,15 @@ class CPSATFullSolver:
                             print(f"      FAILED")
 
                 # Route child machines to output ports using smart matching
-                # Collect all child output ports with their machine positions
-                all_child_outputs = []  # List of (output_pos, machine_pos)
+                # Collect all child output ports with their machine output cells
+                all_child_outputs = []  # List of (output_pos, output_cell)
                 for child_machine_idx in tree_machines[1:]:
-                    bt_c, mx_c, my_c, mfloor_c, _ = machines[child_machine_idx]
                     child_outputs = all_machine_outputs[child_machine_idx]
-                    for out_pos in child_outputs:
-                        all_child_outputs.append((out_pos, (mx_c, my_c, mfloor_c)))
+                    child_output_cells = all_output_cells[child_machine_idx]
+                    for idx, out_pos in enumerate(child_outputs):
+                        # Use the specific output cell for this output port
+                        out_cell = child_output_cells[idx] if idx < len(child_output_cells) else out_pos
+                        all_child_outputs.append((out_pos, out_cell))
 
                 # Match all child outputs to foundation outputs
                 output_positions_only = [pos for pos, _ in all_child_outputs]
