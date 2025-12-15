@@ -10,6 +10,8 @@ Usage:
 
 import argparse
 import json
+import pickle
+import sqlite3
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -100,19 +102,220 @@ class ComparisonReport:
         return "\n".join(lines)
 
 
+class TrainingSampleDB:
+    """SQLite database for storing training samples with checkpointing."""
+
+    def __init__(self, db_path: str = "training_samples.db"):
+        self.db_path = db_path
+        self._init_db()
+
+    def _init_db(self):
+        """Initialize the database schema."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS training_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem_name TEXT,
+                foundation TEXT,
+                grid_width INTEGER,
+                grid_height INTEGER,
+                num_floors INTEGER,
+                machines BLOB,
+                input_positions BLOB,
+                output_positions BLOB,
+                routing_success INTEGER,
+                is_test INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS run_progress (
+                id INTEGER PRIMARY KEY,
+                run_id TEXT,
+                total_problems INTEGER,
+                problems_processed INTEGER,
+                solved_count INTEGER,
+                routed_count INTEGER,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_is_test ON training_samples(is_test)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_routing_success ON training_samples(routing_success)')
+
+        conn.commit()
+        conn.close()
+
+    def add_sample(self, sample: Dict[str, Any], is_test: bool = False):
+        """Add a training sample to the database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Serialize complex objects
+        machines_blob = pickle.dumps(sample['machines'])
+        input_pos_blob = pickle.dumps(sample['input_positions'])
+        output_pos_blob = pickle.dumps(sample['output_positions'])
+
+        cursor.execute('''
+            INSERT INTO training_samples
+            (problem_name, foundation, grid_width, grid_height, num_floors,
+             machines, input_positions, output_positions, routing_success, is_test)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            sample.get('problem_name', ''),
+            sample.get('foundation', ''),
+            sample['grid_width'],
+            sample['grid_height'],
+            sample['num_floors'],
+            machines_blob,
+            input_pos_blob,
+            output_pos_blob,
+            1 if sample['routing_success'] else 0,
+            1 if is_test else 0,
+        ))
+
+        conn.commit()
+        conn.close()
+
+    def get_samples(self, is_test: bool = False) -> List[Dict[str, Any]]:
+        """Retrieve samples from the database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT problem_name, foundation, grid_width, grid_height, num_floors,
+                   machines, input_positions, output_positions, routing_success
+            FROM training_samples
+            WHERE is_test = ?
+        ''', (1 if is_test else 0,))
+
+        samples = []
+        for row in cursor.fetchall():
+            sample = {
+                'problem_name': row[0],
+                'foundation': row[1],
+                'grid_width': row[2],
+                'grid_height': row[3],
+                'num_floors': row[4],
+                'machines': pickle.loads(row[5]),
+                'input_positions': pickle.loads(row[6]),
+                'output_positions': pickle.loads(row[7]),
+                'routing_success': bool(row[8]),
+            }
+            samples.append(sample)
+
+        conn.close()
+        return samples
+
+    def get_sample_count(self, is_test: Optional[bool] = None) -> int:
+        """Get count of samples."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        if is_test is None:
+            cursor.execute('SELECT COUNT(*) FROM training_samples')
+        else:
+            cursor.execute('SELECT COUNT(*) FROM training_samples WHERE is_test = ?',
+                          (1 if is_test else 0,))
+
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+
+    def update_progress(self, run_id: str, total: int, processed: int, solved: int, routed: int):
+        """Update run progress for checkpointing."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            INSERT OR REPLACE INTO run_progress
+            (id, run_id, total_problems, problems_processed, solved_count, routed_count, last_updated)
+            VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (run_id, total, processed, solved, routed))
+
+        conn.commit()
+        conn.close()
+
+    def get_progress(self, run_id: str) -> Optional[Dict[str, int]]:
+        """Get run progress for resuming."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT total_problems, problems_processed, solved_count, routed_count
+            FROM run_progress WHERE run_id = ?
+        ''', (run_id,))
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return {
+                'total_problems': row[0],
+                'problems_processed': row[1],
+                'solved_count': row[2],
+                'routed_count': row[3],
+            }
+        return None
+
+    def clear_samples(self):
+        """Clear all samples (for fresh start)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM training_samples')
+        cursor.execute('DELETE FROM run_progress')
+        conn.commit()
+        conn.close()
+
+    def assign_test_split(self, test_ratio: float = 0.2, seed: int = 42):
+        """Randomly assign samples to test set."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Get all sample IDs
+        cursor.execute('SELECT id FROM training_samples')
+        ids = [row[0] for row in cursor.fetchall()]
+
+        if not ids:
+            conn.close()
+            return
+
+        # Randomly select test samples
+        np.random.seed(seed)
+        np.random.shuffle(ids)
+        test_count = int(len(ids) * test_ratio)
+        test_ids = ids[:test_count]
+
+        # Reset all to training
+        cursor.execute('UPDATE training_samples SET is_test = 0')
+
+        # Mark test samples
+        if test_ids:
+            placeholders = ','.join('?' * len(test_ids))
+            cursor.execute(f'UPDATE training_samples SET is_test = 1 WHERE id IN ({placeholders})', test_ids)
+
+        conn.commit()
+        conn.close()
+
+
 class ModelComparer:
     """Compares multiple ML models for placement evaluation."""
 
     def __init__(
         self,
         db_path: str = "comparison_training.db",
+        samples_db_path: str = "training_samples.db",
         model_dir: str = "models/comparison",
     ):
         self.db_path = db_path
+        self.samples_db = TrainingSampleDB(samples_db_path)
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
 
-        # Training data storage
+        # In-memory cache (loaded from DB)
         self.training_samples: List[Dict[str, Any]] = []
         self.test_samples: List[Dict[str, Any]] = []
 
@@ -122,8 +325,59 @@ class ModelComparer:
         time_limit: float = 60.0,
         seed: Optional[int] = None,
         verbose: bool = True,
+        resume: bool = True,
+        fresh_start: bool = False,
     ) -> Dict[str, Any]:
-        """Generate problems and collect training data."""
+        """Generate problems and collect training data with database checkpointing.
+
+        Args:
+            num_problems: Number of problems to generate
+            time_limit: Time limit per problem solve
+            seed: Random seed for reproducibility
+            verbose: Print progress
+            resume: Resume from previous run if available
+            fresh_start: Clear existing samples and start fresh
+        """
+        run_id = f"run_{num_problems}_{seed or 'none'}"
+
+        if fresh_start:
+            if verbose:
+                print("Fresh start requested - clearing existing samples...")
+            self.samples_db.clear_samples()
+
+        # Check for existing progress
+        existing_samples = self.samples_db.get_sample_count()
+        if existing_samples > 0 and resume and not fresh_start:
+            if verbose:
+                print(f"Found {existing_samples} existing samples in database")
+                print("Use --fresh to start over, or continuing with existing data...")
+            # Just load existing data and proceed to training
+            self.samples_db.assign_test_split(test_ratio=0.2, seed=seed or 42)
+            self.training_samples = self.samples_db.get_samples(is_test=False)
+            self.test_samples = self.samples_db.get_samples(is_test=True)
+
+            # Get stats from existing data
+            total_samples = len(self.training_samples) + len(self.test_samples)
+            routed = sum(1 for s in self.training_samples + self.test_samples if s['routing_success'])
+
+            stats = {
+                "total_problems": total_samples,
+                "solved": total_samples,
+                "routed": routed,
+                "solve_rate": 1.0,
+                "routing_rate": routed / total_samples if total_samples > 0 else 0,
+                "train_samples": len(self.training_samples),
+                "test_samples": len(self.test_samples),
+                "resumed": True,
+            }
+
+            if verbose:
+                print(f"Loaded {total_samples} samples from database")
+                print(f"  Training: {len(self.training_samples)}, Test: {len(self.test_samples)}")
+                print(f"  Routing success rate: {stats['routing_rate']*100:.1f}%")
+
+            return stats
+
         generator = ProblemGenerator(seed=seed)
 
         if verbose:
@@ -134,17 +388,19 @@ class ModelComparer:
             ensure_coverage=True,
         )
 
+        actual_problems = len(problems)
         if verbose:
-            print(f"Generated {len(problems)} problems (coverage ensures min ~25)")
-            print(f"Solving problems to collect training data...")
+            print(f"Generated {actual_problems} problems (coverage ensures min ~25)")
+            print(f"Solving problems and saving to database...")
 
-        all_samples = []
         solved_count = 0
         routed_count = 0
 
         for i, problem in enumerate(problems):
             if verbose and (i + 1) % 10 == 0:
-                print(f"  [{i+1}/{num_problems}] Solved: {solved_count}, Routed: {routed_count}")
+                print(f"  [{i+1}/{actual_problems}] Solved: {solved_count}, Routed: {routed_count}")
+                # Update progress in database
+                self.samples_db.update_progress(run_id, actual_problems, i + 1, solved_count, routed_count)
 
             try:
                 foundation_name = problem.get("foundation", "2x2")
@@ -204,23 +460,27 @@ class ModelComparer:
                         'output_positions': output_positions,
                         'routing_success': solution.routing_success,
                         'problem_name': problem.get('name', f'problem_{i}'),
+                        'foundation': foundation_name,
                     }
-                    all_samples.append(sample)
+
+                    # Save to database immediately
+                    self.samples_db.add_sample(sample)
 
             except Exception as e:
                 if verbose:
                     print(f"  Error on problem {i}: {e}")
                 continue
 
-        # Split into train/test (80/20)
-        np.random.seed(seed or 42)
-        np.random.shuffle(all_samples)
+        # Final progress update
+        self.samples_db.update_progress(run_id, actual_problems, actual_problems, solved_count, routed_count)
 
-        split_idx = int(len(all_samples) * 0.8)
-        self.training_samples = all_samples[:split_idx]
-        self.test_samples = all_samples[split_idx:]
+        # Assign train/test split in database
+        self.samples_db.assign_test_split(test_ratio=0.2, seed=seed or 42)
 
-        actual_problems = len(problems)
+        # Load samples from database
+        self.training_samples = self.samples_db.get_samples(is_test=False)
+        self.test_samples = self.samples_db.get_samples(is_test=True)
+
         stats = {
             "total_problems": actual_problems,
             "solved": solved_count,
@@ -229,6 +489,7 @@ class ModelComparer:
             "routing_rate": routed_count / solved_count if solved_count > 0 else 0,
             "train_samples": len(self.training_samples),
             "test_samples": len(self.test_samples),
+            "resumed": False,
         }
 
         if verbose:
@@ -237,6 +498,7 @@ class ModelComparer:
             print(f"  Routed: {routed_count}/{solved_count} ({stats['routing_rate']*100:.1f}%)")
             print(f"  Train samples: {len(self.training_samples)}")
             print(f"  Test samples: {len(self.test_samples)}")
+            print(f"  Samples saved to: {self.samples_db.db_path}")
 
         return stats
 
@@ -435,6 +697,7 @@ class ModelComparer:
         time_limit: float = 60.0,
         seed: Optional[int] = None,
         verbose: bool = True,
+        fresh_start: bool = False,
     ) -> ComparisonReport:
         """Run full model comparison."""
 
@@ -444,6 +707,7 @@ class ModelComparer:
             time_limit=time_limit,
             seed=seed,
             verbose=verbose,
+            fresh_start=fresh_start,
         )
 
         if len(self.training_samples) < 10:
@@ -522,9 +786,12 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--output", type=str, default=None, help="Output JSON file for report")
     parser.add_argument("--quiet", action="store_true", help="Less verbose output")
+    parser.add_argument("--fresh", action="store_true", help="Clear existing samples and start fresh")
+    parser.add_argument("--samples-db", type=str, default="training_samples.db",
+                       help="Database file for training samples")
     args = parser.parse_args()
 
-    comparer = ModelComparer()
+    comparer = ModelComparer(samples_db_path=args.samples_db)
 
     report = comparer.run_comparison(
         num_problems=args.problems,
@@ -532,6 +799,7 @@ def main():
         time_limit=args.time_limit,
         seed=args.seed,
         verbose=not args.quiet,
+        fresh_start=args.fresh,
     )
 
     if args.output:
