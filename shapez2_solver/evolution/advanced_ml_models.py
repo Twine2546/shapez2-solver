@@ -186,7 +186,8 @@ def encode_graph_for_gnn(
     for i, m in enumerate(machines):
         # Node features: [type_onehot(10), rotation_onehot(4), norm_x, norm_y, norm_floor]
         type_onehot = [0.0] * 10
-        type_idx = min(m.building_type.value, 9) if hasattr(m.building_type, 'value') else 0
+        # Use BUILDING_CHANNELS mapping since BuildingType.value is a string
+        type_idx = BUILDING_CHANNELS.get(m.building_type, 0)
         type_onehot[type_idx] = 1.0
 
         rot_onehot = [0.0] * 4
@@ -300,8 +301,8 @@ def encode_sequence_for_transformer(
         if idx >= max_seq_len:
             break
 
-        # Type one-hot
-        type_idx = min(m.building_type.value, 9) if hasattr(m.building_type, 'value') else 0
+        # Type one-hot (use BUILDING_CHANNELS since BuildingType.value is a string)
+        type_idx = BUILDING_CHANNELS.get(m.building_type, 0)
         sequence[idx, type_idx] = 1.0
 
         # Rotation one-hot
