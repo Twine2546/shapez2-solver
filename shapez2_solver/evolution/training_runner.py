@@ -7,9 +7,10 @@ for the ML evaluators.
 
 import json
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable
 import traceback
 
 from .problem_generator import ProblemGenerator, ProblemType
@@ -17,6 +18,93 @@ from .foundation_config import FOUNDATION_SPECS, FoundationConfig, Side, PortTyp
 from .cpsat_solver import CPSATFullSolver
 from .ml_evaluators import MLEvaluatorSystem
 from .evaluation import DefaultSolutionEvaluator
+
+
+@dataclass
+class SolveResult:
+    """Result of solving a single problem."""
+    problem_name: str
+    foundation: str
+    solved: bool
+    time: float
+    machines: int = 0
+    belts: int = 0
+    routing_success: bool = False
+    fitness: float = 0.0
+    error: Optional[str] = None
+
+
+@dataclass
+class BatchProgress:
+    """Progress update during batch training."""
+    current: int
+    total: int
+    solved_so_far: int
+    failed_so_far: int
+    current_result: Optional[SolveResult] = None
+    elapsed_time: float = 0.0
+
+    @property
+    def success_rate(self) -> float:
+        completed = self.solved_so_far + self.failed_so_far
+        return self.solved_so_far / completed if completed > 0 else 0.0
+
+    @property
+    def percent_complete(self) -> float:
+        return self.current / self.total * 100 if self.total > 0 else 0.0
+
+
+@dataclass
+class ComparisonResult:
+    """Result of comparing default vs ML evaluators."""
+    num_problems: int
+    default_stats: Dict[str, Any]
+    ml_stats: Dict[str, Any]
+    per_problem: List[Dict[str, Any]] = field(default_factory=list)
+
+    def summary(self) -> str:
+        """Generate human-readable comparison summary."""
+        lines = [
+            "=" * 60,
+            "EVALUATOR COMPARISON RESULTS",
+            "=" * 60,
+            f"Problems tested: {self.num_problems}",
+            "",
+            f"{'Metric':<25} {'Default':>12} {'ML':>12} {'Diff':>12}",
+            "-" * 60,
+        ]
+
+        metrics = [
+            ("Success Rate", "success_rate", lambda x: f"{x*100:.1f}%"),
+            ("Routing Success", "routing_rate", lambda x: f"{x*100:.1f}%"),
+            ("Avg Solve Time", "avg_time", lambda x: f"{x:.2f}s"),
+            ("Avg Machines", "avg_machines", lambda x: f"{x:.1f}"),
+            ("Avg Belts", "avg_belts", lambda x: f"{x:.1f}"),
+            ("Avg Fitness", "avg_fitness", lambda x: f"{x:.2f}"),
+        ]
+
+        for name, key, fmt in metrics:
+            d_val = self.default_stats.get(key, 0)
+            m_val = self.ml_stats.get(key, 0)
+            diff = m_val - d_val
+            diff_str = f"+{fmt(diff)}" if diff > 0 else fmt(diff)
+            lines.append(f"{name:<25} {fmt(d_val):>12} {fmt(m_val):>12} {diff_str:>12}")
+
+        lines.append("-" * 60)
+
+        # Highlight winner
+        d_score = self.default_stats.get("success_rate", 0)
+        m_score = self.ml_stats.get("success_rate", 0)
+        if m_score > d_score:
+            improvement = (m_score - d_score) * 100
+            lines.append(f"ML IMPROVES success rate by {improvement:.1f} percentage points")
+        elif d_score > m_score:
+            decline = (d_score - m_score) * 100
+            lines.append(f"ML DECREASES success rate by {decline:.1f} percentage points")
+        else:
+            lines.append("No difference in success rate")
+
+        return "\n".join(lines)
 
 
 def extract_specs_from_problem(problem: dict) -> tuple:
@@ -122,27 +210,26 @@ class TrainingRunner:
         self,
         problem: dict,
         time_limit: float = 60.0,
-        verbose: bool = False
-    ) -> Dict[str, Any]:
-        """Solve a single problem and collect training data.
+        verbose: bool = False,
+        collect_data: bool = True
+    ) -> SolveResult:
+        """Solve a single problem and optionally collect training data.
 
         Args:
             problem: Problem JSON dict
             time_limit: Solver time limit in seconds
             verbose: Print progress
+            collect_data: Whether to record training data (set False for comparison runs)
 
         Returns:
-            Dict with solution results and statistics
+            SolveResult with solution details
         """
-        result = {
-            "problem_name": problem.get("name", "Unknown"),
-            "foundation": problem.get("foundation", "Unknown"),
-            "solved": False,
-            "time": 0.0,
-            "buildings": 0,
-            "routing_success": False,
-            "error": None
-        }
+        result = SolveResult(
+            problem_name=problem.get("name", "Unknown"),
+            foundation=problem.get("foundation", "Unknown"),
+            solved=False,
+            time=0.0
+        )
 
         try:
             # Extract input/output specs from problem
@@ -157,7 +244,7 @@ class TrainingRunner:
 
             # Skip if no valid inputs/outputs
             if not input_specs or not output_specs:
-                result["error"] = "No valid inputs or outputs"
+                result.error = "No valid inputs or outputs"
                 if verbose:
                     print(f"  Skipping: no valid I/O ports")
                 return result
@@ -198,32 +285,34 @@ class TrainingRunner:
             solution = solver.solve(verbose=verbose)
             elapsed = time.time() - start_time
 
-            result["time"] = elapsed
+            result.time = elapsed
 
             if solution:
-                result["solved"] = True
-                # CPSATSolution is a dataclass with machines, belts, routing_success attributes
-                result["buildings"] = len(solution.machines) + len(solution.belts)
-                result["routing_success"] = solution.routing_success
+                result.solved = True
+                result.machines = len(solution.machines)
+                result.belts = len(solution.belts)
+                result.routing_success = solution.routing_success
+                result.fitness = getattr(solution, 'fitness', 1.0)
 
                 if verbose:
                     print(f"  Solved in {elapsed:.2f}s")
-                    print(f"  Machines: {len(solution.machines)}, Belts: {len(solution.belts)}")
-                    print(f"  Routing: {'Success' if result['routing_success'] else 'Failed'}")
+                    print(f"  Machines: {result.machines}, Belts: {result.belts}")
+                    print(f"  Routing: {'Success' if result.routing_success else 'Failed'}")
 
-                # Record training data for ML evaluators
-                self._record_training_data(
-                    solution=solution,
-                    foundation_name=foundation_name,
-                    input_specs=input_specs,
-                    output_specs=output_specs
-                )
+                # Record training data for ML evaluators (only if requested)
+                if collect_data:
+                    self._record_training_data(
+                        solution=solution,
+                        foundation_name=foundation_name,
+                        input_specs=input_specs,
+                        output_specs=output_specs
+                    )
             else:
                 if verbose:
                     print(f"  No solution found in {elapsed:.2f}s")
 
         except Exception as e:
-            result["error"] = str(e)
+            result.error = str(e)
             if verbose:
                 print(f"  Error: {e}")
                 traceback.print_exc()
@@ -304,7 +393,10 @@ class TrainingRunner:
         seed: Optional[int] = None,
         verbose: bool = True,
         save_solutions: bool = False,
-        solutions_dir: Optional[Path] = None
+        solutions_dir: Optional[Path] = None,
+        progress_callback: Optional[Callable[[BatchProgress], None]] = None,
+        problems: Optional[List[dict]] = None,
+        collect_data: bool = True
     ) -> Dict[str, Any]:
         """Run a batch of training problems.
 
@@ -315,37 +407,44 @@ class TrainingRunner:
             verbose: Print progress
             save_solutions: Save solved problems to files
             solutions_dir: Directory for saved solutions
+            progress_callback: Optional callback called after each problem
+            problems: Optional pre-generated problems (skips generation)
+            collect_data: Whether to record training data
 
         Returns:
             Batch statistics
         """
-        generator = ProblemGenerator(seed=seed)
+        if problems is None:
+            generator = ProblemGenerator(seed=seed)
 
-        if verbose:
-            print(f"Generating {num_problems} training problems...")
+            if verbose:
+                print(f"Generating {num_problems} training problems...")
 
-        problems = generator.generate_training_set(
-            num_problems=num_problems,
-            ensure_coverage=True
-        )
+            problems = generator.generate_training_set(
+                num_problems=num_problems,
+                ensure_coverage=True
+            )
 
         if save_solutions and solutions_dir:
             solutions_dir = Path(solutions_dir)
             solutions_dir.mkdir(parents=True, exist_ok=True)
 
-        results = []
+        results: List[SolveResult] = []
         batch_start = time.time()
+        solved_count = 0
+        failed_count = 0
 
         for i, problem in enumerate(problems):
             if verbose:
                 print(f"\n[{i+1}/{len(problems)}]")
 
-            result = self.solve_problem(problem, time_limit, verbose)
+            result = self.solve_problem(problem, time_limit, verbose, collect_data=collect_data)
             results.append(result)
 
             self.stats["problems_attempted"] += 1
-            if result["solved"]:
+            if result.solved:
                 self.stats["problems_solved"] += 1
+                solved_count += 1
 
                 if save_solutions and solutions_dir:
                     # Save successful solution
@@ -354,15 +453,31 @@ class TrainingRunner:
                         json.dump(problem, f, indent=2)
             else:
                 self.stats["problems_failed"] += 1
+                failed_count += 1
+
+            # Call progress callback
+            if progress_callback:
+                progress = BatchProgress(
+                    current=i + 1,
+                    total=len(problems),
+                    solved_so_far=solved_count,
+                    failed_so_far=failed_count,
+                    current_result=result,
+                    elapsed_time=time.time() - batch_start
+                )
+                progress_callback(progress)
 
         batch_time = time.time() - batch_start
         self.stats["total_time"] += batch_time
 
         # Compute batch statistics
-        solved = sum(1 for r in results if r["solved"])
-        routed = sum(1 for r in results if r["routing_success"])
-        avg_time = sum(r["time"] for r in results) / len(results) if results else 0
-        avg_buildings = sum(r["buildings"] for r in results if r["solved"]) / solved if solved else 0
+        solved = sum(1 for r in results if r.solved)
+        routed = sum(1 for r in results if r.routing_success)
+        avg_time = sum(r.time for r in results) / len(results) if results else 0
+        solved_results = [r for r in results if r.solved]
+        avg_machines = sum(r.machines for r in solved_results) / len(solved_results) if solved_results else 0
+        avg_belts = sum(r.belts for r in solved_results) / len(solved_results) if solved_results else 0
+        avg_fitness = sum(r.fitness for r in solved_results) / len(solved_results) if solved_results else 0
 
         batch_stats = {
             "total_problems": len(problems),
@@ -371,8 +486,11 @@ class TrainingRunner:
             "routing_success": routed,
             "routing_rate": routed / solved if solved else 0,
             "avg_time": avg_time,
-            "avg_buildings": avg_buildings,
-            "total_time": batch_time
+            "avg_machines": avg_machines,
+            "avg_belts": avg_belts,
+            "avg_fitness": avg_fitness,
+            "total_time": batch_time,
+            "results": results  # Include individual results
         }
 
         if verbose:
@@ -382,17 +500,20 @@ class TrainingRunner:
             print(f"  Solved: {batch_stats['solved']} ({batch_stats['success_rate']*100:.1f}%)")
             print(f"  Routing Success: {batch_stats['routing_success']} ({batch_stats['routing_rate']*100:.1f}%)")
             print(f"  Avg Time: {batch_stats['avg_time']:.2f}s")
-            print(f"  Avg Buildings: {batch_stats['avg_buildings']:.1f}")
+            print(f"  Avg Machines: {batch_stats['avg_machines']:.1f}")
+            print(f"  Avg Belts: {batch_stats['avg_belts']:.1f}")
+            print(f"  Avg Fitness: {batch_stats['avg_fitness']:.2f}")
             print(f"  Total Time: {batch_stats['total_time']:.1f}s")
 
         # Print training data statistics
-        data_stats = self.ml_system.get_stats()
-        if verbose:
-            print(f"\nTraining Data Collected:")
-            print(f"  Solution samples: {data_stats['solution_samples']}")
-            print(f"  Placement samples: {data_stats['placement_samples']}")
-            print(f"  Routing samples: {data_stats['routing_samples']}")
-            print(f"  Move cost samples: {data_stats['move_cost_samples']}")
+        if collect_data:
+            data_stats = self.ml_system.get_stats()
+            if verbose:
+                print(f"\nTraining Data Collected:")
+                print(f"  Solution samples: {data_stats['solution_samples']}")
+                print(f"  Placement samples: {data_stats['placement_samples']}")
+                print(f"  Routing samples: {data_stats['routing_samples']}")
+                print(f"  Move cost samples: {data_stats['move_cost_samples']}")
 
         return batch_stats
 
@@ -476,6 +597,125 @@ class TrainingRunner:
 
         return all_stats
 
+    def compare_evaluators(
+        self,
+        num_problems: int = 20,
+        time_limit: float = 60.0,
+        seed: Optional[int] = None,
+        verbose: bool = True,
+        progress_callback: Optional[Callable[[str, BatchProgress], None]] = None
+    ) -> ComparisonResult:
+        """Compare default evaluators vs ML evaluators on same problems.
+
+        Runs the same set of problems twice:
+        1. First with default evaluators
+        2. Then with ML evaluators
+
+        Args:
+            num_problems: Number of problems to test
+            time_limit: Per-problem time limit
+            seed: Random seed for reproducibility
+            verbose: Print progress
+            progress_callback: Optional callback(phase: str, progress: BatchProgress)
+                               phase is "default" or "ml"
+
+        Returns:
+            ComparisonResult with detailed comparison statistics
+        """
+        generator = ProblemGenerator(seed=seed)
+
+        if verbose:
+            print(f"Generating {num_problems} comparison problems...")
+
+        problems = generator.generate_training_set(
+            num_problems=num_problems,
+            ensure_coverage=True
+        )
+
+        # Wrap progress callback to add phase
+        def make_wrapped_callback(phase: str):
+            if progress_callback:
+                return lambda p: progress_callback(phase, p)
+            return None
+
+        # --- Run with DEFAULT evaluators ---
+        if verbose:
+            print(f"\n{'='*60}")
+            print("PHASE 1: Running with DEFAULT evaluators")
+            print(f"{'='*60}")
+
+        # Save state
+        original_use_ml = self.use_ml_evaluators
+        self.use_ml_evaluators = False
+
+        default_stats = self.run_training_batch(
+            problems=problems,
+            time_limit=time_limit,
+            verbose=verbose,
+            progress_callback=make_wrapped_callback("default"),
+            collect_data=False  # Don't pollute training data
+        )
+        default_results = default_stats.pop("results", [])
+
+        # --- Run with ML evaluators ---
+        if verbose:
+            print(f"\n{'='*60}")
+            print("PHASE 2: Running with ML evaluators")
+            print(f"{'='*60}")
+
+        self.use_ml_evaluators = True
+
+        ml_stats = self.run_training_batch(
+            problems=problems,
+            time_limit=time_limit,
+            verbose=verbose,
+            progress_callback=make_wrapped_callback("ml"),
+            collect_data=False  # Don't pollute training data
+        )
+        ml_results = ml_stats.pop("results", [])
+
+        # Restore state
+        self.use_ml_evaluators = original_use_ml
+
+        # Build per-problem comparison
+        per_problem = []
+        for i, (problem, d_res, m_res) in enumerate(zip(problems, default_results, ml_results)):
+            per_problem.append({
+                "problem_name": problem.get("name", f"Problem_{i}"),
+                "foundation": problem.get("foundation", "Unknown"),
+                "default": {
+                    "solved": d_res.solved,
+                    "time": d_res.time,
+                    "machines": d_res.machines,
+                    "belts": d_res.belts,
+                    "routing_success": d_res.routing_success,
+                    "fitness": d_res.fitness,
+                },
+                "ml": {
+                    "solved": m_res.solved,
+                    "time": m_res.time,
+                    "machines": m_res.machines,
+                    "belts": m_res.belts,
+                    "routing_success": m_res.routing_success,
+                    "fitness": m_res.fitness,
+                },
+                "winner": "ml" if m_res.solved and not d_res.solved else
+                         "default" if d_res.solved and not m_res.solved else
+                         "tie" if d_res.solved == m_res.solved else "neither"
+            })
+
+        result = ComparisonResult(
+            num_problems=num_problems,
+            default_stats=default_stats,
+            ml_stats=ml_stats,
+            per_problem=per_problem
+        )
+
+        if verbose:
+            print(f"\n{result.summary()}")
+
+        return result
+
 
 def main():
     """Run training data collection."""
@@ -487,12 +727,32 @@ def main():
     parser.add_argument("--time-limit", type=float, default=30.0, help="Per-problem time limit")
     parser.add_argument("--db", type=str, default="training_data.db", help="Database path")
     parser.add_argument("--progressive", action="store_true", help="Use progressive training")
+    parser.add_argument("--compare", action="store_true", help="Compare default vs ML evaluators")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
     parser.add_argument("--quiet", action="store_true", help="Less verbose output")
     args = parser.parse_args()
 
     runner = TrainingRunner(db_path=args.db, use_ml_evaluators=False)
 
-    if args.progressive:
+    if args.compare:
+        # Compare default vs ML evaluators
+        result = runner.compare_evaluators(
+            num_problems=args.problems,
+            time_limit=args.time_limit,
+            seed=args.seed,
+            verbose=not args.quiet
+        )
+        # Print per-problem breakdown if not quiet
+        if not args.quiet:
+            print("\nPer-problem breakdown:")
+            print(f"{'Problem':<30} {'Default':>10} {'ML':>10} {'Winner':>10}")
+            print("-" * 62)
+            for p in result.per_problem:
+                d_status = "OK" if p["default"]["solved"] else "FAIL"
+                m_status = "OK" if p["ml"]["solved"] else "FAIL"
+                winner = p["winner"].upper()
+                print(f"{p['problem_name'][:30]:<30} {d_status:>10} {m_status:>10} {winner:>10}")
+    elif args.progressive:
         runner.run_progressive_training(
             rounds=args.rounds,
             problems_per_round=args.problems,
@@ -503,6 +763,7 @@ def main():
         runner.run_training_batch(
             num_problems=args.problems,
             time_limit=args.time_limit,
+            seed=args.seed,
             verbose=not args.quiet
         )
 
