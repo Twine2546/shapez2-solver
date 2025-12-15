@@ -124,6 +124,11 @@ class BeltRouter:
         self._custom_heuristic = heuristic_fn
         self._custom_move_cost = move_cost_fn
 
+        # Routing context for ML functions (set during route_all)
+        self._all_connections: List[Connection] = []
+        self._remaining_connections: List[Connection] = []
+        self._current_connection_index: int = 0
+
         # === Conflict tracking for ML analysis ===
         # Track which connection placed which belts (for conflict analysis)
         self.belt_owner: Dict[Tuple[int, int, int], int] = {}  # cell -> connection_index
@@ -335,6 +340,23 @@ class BeltRouter:
         else:
             return 1.0
 
+    def _build_context(self, goal: Tuple[int, int, int]) -> Dict[str, Any]:
+        """Build context dict for ML heuristic/cost functions."""
+        # Get all connection endpoints for global awareness
+        all_goals = [c.to_pos for c in self._all_connections]
+
+        return {
+            'occupied': self.occupied,
+            'belt_positions': self.belt_positions,
+            'grid_width': self.grid_width,
+            'grid_height': self.grid_height,
+            'num_floors': self.num_floors,
+            'remaining_connections': self._remaining_connections,
+            'connection_index': self._current_connection_index,
+            'all_goals': all_goals,
+            'current_goal': goal,
+        }
+
     def find_path(self, start: Tuple[int, int, int], goal: Tuple[int, int, int],
                    allow_belt_ports: bool = True,
                    shape_code: Optional[str] = None,
@@ -379,7 +401,8 @@ class BeltRouter:
         nodes_explored = 0
         came_from: Dict[Tuple[int, int, int], Tuple[Tuple[int, int, int], str]] = {}
         g_score: Dict[Tuple[int, int, int], float] = {start: 0}
-        f_score: Dict[Tuple[int, int, int], float] = {start: self.heuristic(start, goal)}
+        context = self._build_context(goal)
+        f_score: Dict[Tuple[int, int, int], float] = {start: self.heuristic(start, goal, context)}
 
         while open_set:
             _, current = heapq.heappop(open_set)
@@ -425,14 +448,14 @@ class BeltRouter:
                 neighbor = (nx, ny, nf)
 
                 # Use pluggable move cost function
-                cost = self.move_cost(current, neighbor, move_type)
+                cost = self.move_cost(current, neighbor, move_type, context)
 
                 tentative_g = g_score.get(current, float('inf')) + cost
 
                 if tentative_g < g_score.get(neighbor, float('inf')):
                     came_from[neighbor] = (current, move_type)
                     g_score[neighbor] = tentative_g
-                    f_score[neighbor] = tentative_g + self.heuristic(neighbor, goal)
+                    f_score[neighbor] = tentative_g + self.heuristic(neighbor, goal, context)
                     heapq.heappush(open_set, (f_score[neighbor], neighbor))
 
         if self.debug:
@@ -469,7 +492,8 @@ class BeltRouter:
         open_set = [(0, start)]
         came_from: Dict[Tuple[int, int, int], Tuple[Tuple[int, int, int], str]] = {}
         g_score: Dict[Tuple[int, int, int], float] = {start: 0}
-        f_score: Dict[Tuple[int, int, int], float] = {start: self.heuristic(start, goal)}
+        context = self._build_context(goal)
+        f_score: Dict[Tuple[int, int, int], float] = {start: self.heuristic(start, goal, context)}
         closed_set: Set[Tuple[int, int, int]] = set()
 
         while open_set:
@@ -517,13 +541,13 @@ class BeltRouter:
                     continue
 
                 # Use pluggable move cost function
-                cost = self.move_cost(current, neighbor, move_type)
+                cost = self.move_cost(current, neighbor, move_type, context)
                 tentative_g = g_score.get(current, float('inf')) + cost
 
                 if tentative_g < g_score.get(neighbor, float('inf')):
                     came_from[neighbor] = (current, move_type)
                     g_score[neighbor] = tentative_g
-                    f_score[neighbor] = tentative_g + self.heuristic(neighbor, goal)
+                    f_score[neighbor] = tentative_g + self.heuristic(neighbor, goal, context)
                     heapq.heappush(open_set, (f_score[neighbor], neighbor))
 
             # Track blocked neighbors (positions we couldn't expand to)
@@ -1655,10 +1679,18 @@ class BeltRouter:
         # Sort by priority (higher first)
         sorted_connections = sorted(connections, key=lambda c: -c.priority)
 
+        # Store for context building (ML functions can use this)
+        self._all_connections = sorted_connections
+        self._remaining_connections = list(sorted_connections)
+
         results = []
-        for conn in sorted_connections:
+        for i, conn in enumerate(sorted_connections):
+            self._current_connection_index = i
             result = self.route_connection(conn)
             results.append(result)
+            # Remove from remaining after routing
+            if conn in self._remaining_connections:
+                self._remaining_connections.remove(conn)
 
         return results
 
@@ -1673,6 +1705,10 @@ class BeltRouter:
         # Clear conflict tracking
         self.belt_owner.clear()
         self.connection_belts.clear()
+        # Clear ML context
+        self._all_connections = []
+        self._remaining_connections = []
+        self._current_connection_index = 0
         self.connection_paths.clear()
         self.failed_connections.clear()
         # Note: doesn't clear occupied - call set_occupied to reset
@@ -1810,7 +1846,8 @@ class BeltRouter:
         open_set = [(0, start)]
         came_from: Dict[Tuple[int, int, int], Tuple[Tuple[int, int, int], str]] = {}
         g_score: Dict[Tuple[int, int, int], float] = {start: 0}
-        f_score: Dict[Tuple[int, int, int], float] = {start: self.heuristic(start, goal)}
+        context = self._build_context(goal)
+        f_score: Dict[Tuple[int, int, int], float] = {start: self.heuristic(start, goal, context)}
 
         while open_set:
             _, current = heapq.heappop(open_set)
@@ -1839,18 +1876,18 @@ class BeltRouter:
                 if move_type == 'belt_port':
                     # For belt ports, use smart cost calculation if no custom function
                     if self._custom_move_cost is not None:
-                        cost = self._custom_move_cost(current, neighbor, move_type, None)
+                        cost = self._custom_move_cost(current, neighbor, move_type, context)
                     else:
                         cost = self.get_smart_belt_port_cost(current, neighbor, goal)
                 else:
-                    cost = self.move_cost(current, neighbor, move_type)
+                    cost = self.move_cost(current, neighbor, move_type, context)
 
                 tentative_g = g_score.get(current, float('inf')) + cost
 
                 if tentative_g < g_score.get(neighbor, float('inf')):
                     came_from[neighbor] = (current, move_type)
                     g_score[neighbor] = tentative_g
-                    f_score[neighbor] = tentative_g + self.heuristic(neighbor, goal)
+                    f_score[neighbor] = tentative_g + self.heuristic(neighbor, goal, context)
                     heapq.heappush(open_set, (f_score[neighbor], neighbor))
 
         return None
