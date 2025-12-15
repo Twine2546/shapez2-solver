@@ -55,6 +55,21 @@ except ImportError:
     PlacementTransformerModel = None
     PlacementSample = None
 
+# Evaluation functions (for pluggable ML evaluation)
+from .evaluation import (
+    SolutionEvaluator,
+    PlacementEvaluator,
+    RoutingHeuristic,
+    MoveCostFunction,
+    DefaultSolutionEvaluator,
+    DefaultPlacementEvaluator,
+    DefaultRoutingHeuristic,
+    DefaultMoveCostFunction,
+    SolutionInfo,
+    PlacementInfo,
+    RoutingInfo,
+)
+
 
 # Machine types available for solving
 SOLVER_MACHINES = [
@@ -810,6 +825,11 @@ class CPSATFullSolver:
         enable_transformer_logging: bool = True,  # Log to transformer database
         transformer_db_path: str = "placement_transformer.db",
         transformer_model_path: str = "models/placement_transformer.pt",
+        # Pluggable evaluation functions (for ML-based evaluation)
+        solution_evaluator: Optional[SolutionEvaluator] = None,
+        placement_evaluator: Optional[PlacementEvaluator] = None,
+        routing_heuristic: Optional[RoutingHeuristic] = None,
+        move_cost_function: Optional[MoveCostFunction] = None,
     ):
         self.foundation_type = foundation_type
         self.input_specs = input_specs
@@ -859,6 +879,12 @@ class CPSATFullSolver:
                 model_path=transformer_model_path,
                 db_path=transformer_db_path,
             )
+
+        # Pluggable evaluation functions (use defaults if not provided)
+        self.solution_evaluator = solution_evaluator or DefaultSolutionEvaluator()
+        self.placement_evaluator = placement_evaluator or DefaultPlacementEvaluator()
+        self.routing_heuristic = routing_heuristic or DefaultRoutingHeuristic()
+        self.move_cost_function = move_cost_function or DefaultMoveCostFunction()
 
         # Get foundation dimensions
         self.spec = FOUNDATION_SPECS.get(foundation_type)
@@ -1167,27 +1193,40 @@ class CPSATFullSolver:
                         import traceback
                         traceback.print_exc()
 
-            # Calculate fitness for this solution
-            fitness = 0.0
-
-            # Throughput score (0-50 points based on throughput)
+            # Calculate fitness using the pluggable evaluator
+            throughput_per_output = 0.0
             if machines:
                 throughput_per_output = self._calculate_throughput(machines, verbose and iteration == 0)
 
-                # For N outputs, theoretical max is 180/N items/min (perfect splitting)
-                # But with cutters, max is limited by root machine max_rate / N
-                # Scale: 0 items/min = 0 points, theoretical_max = 50 points
-                num_outputs = len(self.output_positions)
-                theoretical_max = 180.0 / max(1, num_outputs)  # Perfect splitting
-                throughput_ratio = throughput_per_output / theoretical_max if theoretical_max > 0 else 0
-                fitness += min(50.0, throughput_ratio * 50.0)
+            # Build solution info for evaluator
+            solution_info = SolutionInfo(
+                machines=[
+                    PlacementInfo(
+                        building_type=bt,
+                        x=mx, y=my, floor=mfloor,
+                        rotation=rot
+                    )
+                    for bt, mx, my, mfloor, rot in machines
+                ],
+                routing=RoutingInfo(
+                    belts=belts,
+                    success=routing_success,
+                    total_length=len(belts),
+                ),
+                grid_width=self.grid_width,
+                grid_height=self.grid_height,
+                num_floors=self.num_floors,
+                num_inputs=len(self.input_positions),
+                num_outputs=len(self.output_positions),
+                throughput_per_output=throughput_per_output,
+            )
 
-            # Routing success (hard constraint) - 50 points
+            # Use pluggable evaluator for fitness
+            fitness = self.solution_evaluator.evaluate(solution_info)
+
+            # Notify evaluator of successful solutions (for ML training data collection)
             if routing_success:
-                fitness += 50.0
-
-                # Compactness bonus (fewer belts = better) - up to 20 points
-                fitness += max(0, 20.0 - len(belts) * 0.5)
+                self.solution_evaluator.on_solution_found(solution_info, fitness)
 
             # Store solution
             current_solution = CPSATSolution(
@@ -3862,6 +3901,11 @@ def solve_with_cpsat(
     # Placement transformer learning
     enable_transformer_logging: bool = True,
     transformer_db_path: str = "placement_transformer.db",
+    # Pluggable evaluation functions (for ML-based evaluation)
+    solution_evaluator: Optional[SolutionEvaluator] = None,
+    placement_evaluator: Optional[PlacementEvaluator] = None,
+    routing_heuristic: Optional[RoutingHeuristic] = None,
+    move_cost_function: Optional[MoveCostFunction] = None,
 ):
     """
     Convenience function to solve using CP-SAT.
@@ -3875,6 +3919,10 @@ def solve_with_cpsat(
         reject_bad_placements: Use ML to reject likely-failing placements
         enable_transformer_logging: Log rich placement data for transformer training
         transformer_db_path: Path to transformer database
+        solution_evaluator: Custom solution evaluator (for ML-based fitness)
+        placement_evaluator: Custom placement evaluator (for early rejection)
+        routing_heuristic: Custom A* heuristic function
+        move_cost_function: Custom move cost function for A*
 
     Returns:
         If nogood_placements is None: Candidate solution or None
@@ -3892,6 +3940,10 @@ def solve_with_cpsat(
         reject_bad_placements=reject_bad_placements,
         enable_transformer_logging=enable_transformer_logging,
         transformer_db_path=transformer_db_path,
+        solution_evaluator=solution_evaluator,
+        placement_evaluator=placement_evaluator,
+        routing_heuristic=routing_heuristic,
+        move_cost_function=move_cost_function,
     )
     solver.debug_routing = debug_routing  # Pass to solver for router creation
 

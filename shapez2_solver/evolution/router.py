@@ -8,13 +8,17 @@ places the actual belt paths.
 
 import heapq
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Tuple, Set, Callable, Any
 from enum import Enum
 
 from ..blueprint.building_types import (
     BuildingType, Rotation, BUILDING_SPECS, BuildingSpec,
     BELT_THROUGHPUT_TIER5, get_throughput_per_second
 )
+
+# Type aliases for pluggable functions
+HeuristicFn = Callable[[Tuple[int, int, int], Tuple[int, int, int], Optional[Dict[str, Any]]], float]
+MoveCostFn = Callable[[Tuple[int, int, int], Tuple[int, int, int], str, Optional[Dict[str, Any]]], float]
 
 
 @dataclass
@@ -73,7 +77,9 @@ class BeltRouter:
                  use_belt_ports: bool = True, max_belt_ports: int = 4,
                  allow_shape_merging: bool = False,
                  max_belt_throughput: float = None,
-                 valid_cells: Optional[Set[Tuple[int, int]]] = None):
+                 valid_cells: Optional[Set[Tuple[int, int]]] = None,
+                 heuristic_fn: Optional[HeuristicFn] = None,
+                 move_cost_fn: Optional[MoveCostFn] = None):
         """
         Initialize the belt router.
 
@@ -86,7 +92,8 @@ class BeltRouter:
             allow_shape_merging: Allow routes with same shape to share belts
             max_belt_throughput: Max items/second per belt (default: 3.0 for tier 5)
             valid_cells: For irregular foundations, set of valid (x, y) positions
-            debug: Enable debug logging
+            heuristic_fn: Custom heuristic function for A* (default: Manhattan distance)
+            move_cost_fn: Custom move cost function (default: 1.0 for horizontal, 1.5 for lifts)
         """
         # Use actual belt throughput from game data (180 ops/min = 3 items/sec)
         if max_belt_throughput is None:
@@ -112,6 +119,10 @@ class BeltRouter:
         self.max_belt_capacity = max_belt_throughput  # Max throughput (items/second) per belt
         # For irregular foundations (L, T, Cross, etc.)
         self.valid_cells = valid_cells
+
+        # Pluggable evaluation functions
+        self._custom_heuristic = heuristic_fn
+        self._custom_move_cost = move_cost_fn
 
         # === Conflict tracking for ML analysis ===
         # Track which connection placed which belts (for conflict analysis)
@@ -294,9 +305,35 @@ class BeltRouter:
 
         return neighbors
 
-    def heuristic(self, pos: Tuple[int, int, int], goal: Tuple[int, int, int]) -> float:
-        """Manhattan distance heuristic."""
+    def heuristic(self, pos: Tuple[int, int, int], goal: Tuple[int, int, int],
+                  context: Optional[Dict[str, Any]] = None) -> float:
+        """
+        A* heuristic function.
+
+        Uses custom heuristic if provided, otherwise defaults to Manhattan distance.
+        """
+        if self._custom_heuristic is not None:
+            return self._custom_heuristic(pos, goal, context)
+        # Default: Manhattan distance with floor weight of 2
         return abs(pos[0] - goal[0]) + abs(pos[1] - goal[1]) + abs(pos[2] - goal[2]) * 2
+
+    def move_cost(self, current: Tuple[int, int, int], neighbor: Tuple[int, int, int],
+                  move_type: str, context: Optional[Dict[str, Any]] = None) -> float:
+        """
+        Calculate the cost of moving from current to neighbor.
+
+        Uses custom move cost if provided, otherwise defaults to standard costs.
+        """
+        if self._custom_move_cost is not None:
+            return self._custom_move_cost(current, neighbor, move_type, context)
+        # Default costs
+        if move_type in ('lift_up', 'lift_down'):
+            return 1.5
+        elif move_type == 'belt_port':
+            distance = abs(neighbor[0] - current[0]) + abs(neighbor[1] - current[1])
+            return 2.0 + distance * 0.1
+        else:
+            return 1.0
 
     def find_path(self, start: Tuple[int, int, int], goal: Tuple[int, int, int],
                    allow_belt_ports: bool = True,
@@ -387,13 +424,10 @@ class BeltRouter:
                                                                 allow_port, shape_code, throughput):
                 neighbor = (nx, ny, nf)
 
-                # Belt ports have a cost penalty to prefer regular belts
-                if move_type == 'belt_port':
-                    move_cost = 3  # Higher cost to discourage overuse
-                else:
-                    move_cost = 1
+                # Use pluggable move cost function
+                cost = self.move_cost(current, neighbor, move_type)
 
-                tentative_g = g_score.get(current, float('inf')) + move_cost
+                tentative_g = g_score.get(current, float('inf')) + cost
 
                 if tentative_g < g_score.get(neighbor, float('inf')):
                     came_from[neighbor] = (current, move_type)
@@ -482,9 +516,9 @@ class BeltRouter:
                 if neighbor in closed_set:
                     continue
 
-                # Belt ports have a cost penalty
-                move_cost = 3 if move_type == 'belt_port' else 1
-                tentative_g = g_score.get(current, float('inf')) + move_cost
+                # Use pluggable move cost function
+                cost = self.move_cost(current, neighbor, move_type)
+                tentative_g = g_score.get(current, float('inf')) + cost
 
                 if tentative_g < g_score.get(neighbor, float('inf')):
                     came_from[neighbor] = (current, move_type)
@@ -1801,13 +1835,17 @@ class BeltRouter:
             ):
                 neighbor = (nx, ny, nf)
 
-                # Smart cost calculation
+                # Smart cost calculation - use custom move cost or smart belt port cost
                 if move_type == 'belt_port':
-                    move_cost = self.get_smart_belt_port_cost(current, neighbor, goal)
+                    # For belt ports, use smart cost calculation if no custom function
+                    if self._custom_move_cost is not None:
+                        cost = self._custom_move_cost(current, neighbor, move_type, None)
+                    else:
+                        cost = self.get_smart_belt_port_cost(current, neighbor, goal)
                 else:
-                    move_cost = 1.0
+                    cost = self.move_cost(current, neighbor, move_type)
 
-                tentative_g = g_score.get(current, float('inf')) + move_cost
+                tentative_g = g_score.get(current, float('inf')) + cost
 
                 if tentative_g < g_score.get(neighbor, float('inf')):
                     came_from[neighbor] = (current, move_type)
@@ -2168,16 +2206,14 @@ class MLEnhancedRouter(BeltRouter):
             scored_neighbors.sort(key=lambda x: -x[2])
 
             for neighbor, move_type, ml_score in scored_neighbors:
-                if move_type == 'belt_port':
-                    move_cost = 3
-                else:
-                    move_cost = 1
+                # Use pluggable move cost function
+                cost = self.move_cost(current, neighbor, move_type)
 
                 # Slight bonus for following ML prediction
                 if ml_score > 0.5:
-                    move_cost *= (1 - 0.1 * ml_score)
+                    cost *= (1 - 0.1 * ml_score)
 
-                tentative_g = g_score.get(current, float('inf')) + move_cost
+                tentative_g = g_score.get(current, float('inf')) + cost
 
                 if tentative_g < g_score.get(neighbor, float('inf')):
                     came_from[neighbor] = (current, move_type)
