@@ -18,14 +18,84 @@ Usage:
 
 import argparse
 import json
+import os
 import pickle
 import sqlite3
+import sys
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
+
+
+class InsufficientMemoryError(Exception):
+    """Raised when available memory drops below threshold."""
+    pass
+
+
+def check_memory(min_available_mb: int = 500, verbose: bool = False) -> bool:
+    """
+    Check if there's sufficient available memory.
+
+    Args:
+        min_available_mb: Minimum required available memory in MB
+        verbose: Print memory stats
+
+    Returns:
+        True if sufficient memory, False otherwise
+
+    Raises:
+        InsufficientMemoryError: If memory is critically low
+    """
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            meminfo = {}
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    key = parts[0].rstrip(':')
+                    value_kb = int(parts[1])
+                    meminfo[key] = value_kb
+
+        # Get available memory (MemAvailable is more accurate than MemFree)
+        available_kb = meminfo.get('MemAvailable', meminfo.get('MemFree', 0))
+        available_mb = available_kb // 1024
+        total_mb = meminfo.get('MemTotal', 0) // 1024
+
+        if verbose:
+            print(f"  Memory: {available_mb}MB available / {total_mb}MB total")
+
+        if available_mb < min_available_mb:
+            raise InsufficientMemoryError(
+                f"Insufficient memory: {available_mb}MB available, "
+                f"minimum {min_available_mb}MB required. "
+                f"Consider reducing --problems or freeing memory."
+            )
+
+        return True
+
+    except FileNotFoundError:
+        # Not on Linux, skip memory check
+        return True
+    except Exception as e:
+        if isinstance(e, InsufficientMemoryError):
+            raise
+        # Other errors, skip memory check
+        return True
+
+
+def get_memory_usage_mb() -> int:
+    """Get current process memory usage in MB."""
+    try:
+        with open(f'/proc/{os.getpid()}/status', 'r') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return 0
 
 from .problem_generator import ProblemGenerator
 from .training_runner import TrainingRunner, extract_specs_from_problem, SolveResult
@@ -921,7 +991,12 @@ class ABTester:
 
         for i, problem in enumerate(problems):
             if verbose and (i + 1) % 10 == 0:
-                print(f"  [{i+1}/{len(problems)}] Solved: {solved_count}, Routed: {routed_count}")
+                mem_mb = get_memory_usage_mb()
+                print(f"  [{i+1}/{len(problems)}] Solved: {solved_count}, Routed: {routed_count} (Mem: {mem_mb}MB)")
+
+            # Check memory every 100 problems
+            if (i + 1) % 100 == 0:
+                check_memory(min_available_mb=500, verbose=verbose)
 
             try:
                 foundation_name = problem.get("foundation", "2x2")
@@ -1191,59 +1266,87 @@ def main():
                        help="Run A/B test comparing placement vs routing ML")
     parser.add_argument("--test-problems", type=int, default=50,
                        help="Number of test problems for A/B testing")
+    parser.add_argument("--min-memory-mb", type=int, default=500,
+                       help="Minimum available memory (MB) before stopping")
     args = parser.parse_args()
 
-    if args.ab_test:
-        # Run A/B test comparing placement vs routing vs both
-        tester = ABTester()
+    # Initial memory check
+    try:
+        check_memory(min_available_mb=args.min_memory_mb, verbose=not args.quiet)
+    except InsufficientMemoryError as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        sys.exit(1)
 
-        print("=" * 60)
-        print("PHASE 1: Collecting training data and training models")
-        print("=" * 60)
+    try:
+        if args.ab_test:
+            # Run A/B test comparing placement vs routing vs both
+            tester = ABTester()
 
-        train_stats = tester.collect_and_train(
-            num_problems=args.problems,
-            epochs=args.epochs,
-            time_limit=args.time_limit,
-            seed=args.seed,
-            verbose=not args.quiet,
-        )
+            print("=" * 60)
+            print("PHASE 1: Collecting training data and training models")
+            print("=" * 60)
 
-        print("\n" + "=" * 60)
-        print("PHASE 2: A/B Testing configurations")
-        print("=" * 60)
+            train_stats = tester.collect_and_train(
+                num_problems=args.problems,
+                epochs=args.epochs,
+                time_limit=args.time_limit,
+                seed=args.seed,
+                verbose=not args.quiet,
+            )
 
-        report = tester.run_ab_test(
-            num_test_problems=args.test_problems,
-            time_limit=args.time_limit,
-            seed=args.seed + 10000,  # Different seed for test problems
-            verbose=not args.quiet,
-        )
+            # Check memory before phase 2
+            check_memory(min_available_mb=args.min_memory_mb, verbose=not args.quiet)
 
-        report.training_problems = train_stats["problems"]
+            print("\n" + "=" * 60)
+            print("PHASE 2: A/B Testing configurations")
+            print("=" * 60)
 
-        if args.output:
-            with open(args.output, 'w') as f:
-                json.dump(asdict(report), f, indent=2, default=str)
-            print(f"\nReport saved to {args.output}")
+            report = tester.run_ab_test(
+                num_test_problems=args.test_problems,
+                time_limit=args.time_limit,
+                seed=args.seed + 10000,  # Different seed for test problems
+                verbose=not args.quiet,
+            )
 
-    else:
-        # Original placement model comparison
-        comparer = ModelComparer(samples_db_path=args.samples_db)
+            report.training_problems = train_stats["problems"]
 
-        report = comparer.run_comparison(
-            num_problems=args.problems,
-            epochs=args.epochs,
-            time_limit=args.time_limit,
-            seed=args.seed,
-            verbose=not args.quiet,
-            fresh_start=args.fresh,
-        )
+            if args.output:
+                with open(args.output, 'w') as f:
+                    json.dump(asdict(report), f, indent=2, default=str)
+                print(f"\nReport saved to {args.output}")
 
-        if args.output:
-            with open(args.output, 'w') as f:
-                json.dump(report.to_dict(), f, indent=2)
-            print(f"\nReport saved to {args.output}")
+        else:
+            # Original placement model comparison
+            comparer = ModelComparer(samples_db_path=args.samples_db)
+
+            report = comparer.run_comparison(
+                num_problems=args.problems,
+                epochs=args.epochs,
+                time_limit=args.time_limit,
+                seed=args.seed,
+                verbose=not args.quiet,
+                fresh_start=args.fresh,
+            )
+
+            if args.output:
+                with open(args.output, 'w') as f:
+                    json.dump(report.to_dict(), f, indent=2)
+                print(f"\nReport saved to {args.output}")
+
+    except InsufficientMemoryError as e:
+        print(f"\n{'='*60}", file=sys.stderr)
+        print("CRITICAL: OUT OF MEMORY", file=sys.stderr)
+        print(f"{'='*60}", file=sys.stderr)
+        print(f"\n{e}", file=sys.stderr)
+        print("\nProgress has been saved. You can resume later.", file=sys.stderr)
+        sys.exit(1)
+    except MemoryError as e:
+        print(f"\n{'='*60}", file=sys.stderr)
+        print("CRITICAL: PYTHON MEMORY ERROR", file=sys.stderr)
+        print(f"{'='*60}", file=sys.stderr)
+        print(f"\nSystem ran out of memory: {e}", file=sys.stderr)
+        print("Consider reducing --problems or freeing system memory.", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

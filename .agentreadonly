@@ -1,0 +1,7 @@
+# Locked folders - read-only access
+# shapez2_solver/simulation/
+
+# Locked files - core solver components
+shapez2_solver/evolution/cpsat_solver.py
+shapez2_solver/evolution/router.py
+shapez2_solver/evolution/training_runner.py
