@@ -35,7 +35,7 @@ def run_parse(args):
 
 def run_foundations():
     """List available foundation types."""
-    from shapez2_solver.evolution.foundation_config import FOUNDATION_SPECS
+    from shapez2_solver.solver.foundation_config import FOUNDATION_SPECS
 
     print("Available foundation types:")
     print()
@@ -46,7 +46,7 @@ def run_foundations():
 
 def run_solve(args):
     """Solve using CP-SAT."""
-    from shapez2_solver.evolution.cpsat_solver import solve_with_cpsat
+    from shapez2_solver.solver.cpsat_solver import solve_with_cpsat
 
     # Parse input/output specifications
     inputs = []

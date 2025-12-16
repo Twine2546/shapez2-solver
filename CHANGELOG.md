@@ -12,30 +12,30 @@ algorithms and other search methods have been archived.
 
 ### Kept Functionality
 
-1. **CP-SAT Solver** (`shapez2_solver/evolution/cpsat_solver.py`)
+1. **CP-SAT Solver** (`shapez2_solver/solver/cpsat_solver.py`)
    - Constraint programming solver using Google OR-Tools
    - Port-aware placement heuristics
    - Flow direction optimization
    - Automatic machine selection based on input/output requirements
 
-2. **A* Belt Router** (`shapez2_solver/evolution/router.py`)
+2. **A* Belt Router** (`shapez2_solver/solver/router.py`)
    - Pathfinding-based belt routing
    - Multi-floor support
    - Belt port (teleporter) support
    - Collision avoidance
 
-3. **ML Training** (`shapez2_solver/evolution/model_comparison.py`)
+3. **ML Training** (`shapez2_solver/solver/model_comparison.py`)
    - A/B testing framework for heuristic comparison
    - Problem generation for training
-   - Heuristic evolution for placement optimization
-   - Usage: `python -m shapez2_solver.evolution.model_comparison --ab-test --problems 20 --test-problems 10 --epochs 10`
+   - Heuristic optimization for placement
+   - Usage: `python -m shapez2_solver.solver.model_comparison --ab-test --problems 20 --test-problems 10 --epochs 10`
 
-4. **Core Data Structures** (`shapez2_solver/evolution/core.py`)
+4. **Core Data Structures** (`shapez2_solver/solver/core.py`)
    - `PlacedBuilding` - Building placement on grid
    - `Candidate` - Solution with buildings and fitness
-   - `SolverResult` / `FoundationEvolution` - Interface for visualization
+   - `SolverResult` - Interface for visualization
 
-5. **Foundation Configuration** (`shapez2_solver/evolution/foundation_config.py`)
+5. **Foundation Configuration** (`shapez2_solver/solver/foundation_config.py`)
    - All foundation specifications (1x1 to 3x3, T, L, S, Cross shapes)
    - Grid dimensions and port configurations
 
@@ -92,7 +92,7 @@ python run_cpsat_gui.py
 
 **ML Training**:
 ```bash
-python -m shapez2_solver.evolution.model_comparison --ab-test --problems 20 --test-problems 10 --epochs 10
+python -m shapez2_solver.solver.model_comparison --ab-test --problems 20 --test-problems 10 --epochs 10
 ```
 
 ### Algorithm Focus
@@ -110,7 +110,7 @@ The solver now supports four main approaches:
 shapez2_solver/
 ├── archive/           # Archived old code
 ├── blueprint/         # Blueprint export
-├── evolution/         # Solver module
+├── solver/            # Main solver module (renamed from evolution)
 │   ├── __init__.py
 │   ├── core.py        # Core data structures
 │   ├── cpsat_solver.py

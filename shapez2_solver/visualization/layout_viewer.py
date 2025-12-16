@@ -9,8 +9,8 @@ from tkinter import ttk
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-from ..evolution.foundation_config import FoundationConfig, FoundationSpec, Side, PortType
-from ..evolution.core import Candidate, PlacedBuilding, FoundationEvolution
+from ..solver.foundation_config import FoundationConfig, FoundationSpec, Side, PortType
+from ..solver.core import Candidate, PlacedBuilding, FoundationEvolution
 from ..blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS
 
 

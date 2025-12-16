@@ -6,7 +6,7 @@ This module provides tools for training and comparing ML-enhanced heuristics
 for the CP-SAT solver and A* router.
 
 Usage:
-    python -m shapez2_solver.evolution.model_comparison --ab-test --problems 20 --test-problems 10 --epochs 10
+    python -m shapez2_solver.solver.model_comparison --ab-test --problems 20 --test-problems 10 --epochs 10
 """
 
 import argparse

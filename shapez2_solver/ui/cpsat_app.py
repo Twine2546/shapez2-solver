@@ -17,7 +17,7 @@ try:
 except ImportError as e:
     _PYGAME_ERROR = str(e)
 
-from ..evolution.cpsat_solver import solve_with_cpsat
+from ..solver.cpsat_solver import solve_with_cpsat
 
 
 class CPSATSolverApp:
@@ -683,7 +683,7 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
 
         try:
             from ..visualization.pygame_layout_viewer import show_layout_pygame
-            from ..evolution.foundation_config import FOUNDATION_SPECS, FoundationConfig
+            from ..solver.foundation_config import FOUNDATION_SPECS, FoundationConfig
 
             # Create a proper FoundationConfig for the viewer
             spec = FOUNDATION_SPECS.get(self.foundation_type)
@@ -869,7 +869,7 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
         if not self._foundation_visual_rect:
             return
 
-        from ..evolution.foundation_config import FOUNDATION_SPECS, Side
+        from ..solver.foundation_config import FOUNDATION_SPECS, Side
 
         # Get foundation spec
         spec = FOUNDATION_SPECS.get(self.foundation_type)
@@ -965,7 +965,7 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
 
     def _draw_io_ports_on_foundation(self, spec, start_x, start_y, cell_size):
         """Draw I/O port markers on the foundation."""
-        from ..evolution.foundation_config import Side
+        from ..solver.foundation_config import Side
 
         # Read current text from UI elements
         current_inputs_text = self.inputs_text
@@ -1032,7 +1032,7 @@ The solver tried {len(tried_foundations)} foundation size(s) but couldn't comple
 
     def _draw_port_marker_enhanced(self, side, pos, spec, start_x, start_y, cell_size, color):
         """Draw a port marker on the foundation edge (enhanced version)."""
-        from ..evolution.foundation_config import Side
+        from ..solver.foundation_config import Side
 
         ports_per_side = spec.ports_per_side
         marker_size = 8  # Larger markers
