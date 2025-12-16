@@ -41,3 +41,8 @@ htmlcov/
 .DS_Store
 Thumbs.db
 placement_feedback.db
+
+# ML training artifacts
+training_samples.db
+comparison_training.db
+models/
