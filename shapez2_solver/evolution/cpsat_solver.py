@@ -19,7 +19,7 @@ from ..blueprint.building_types import (
     BuildingType, Rotation, BUILDING_SPECS, BUILDING_PORTS,
     BELT_THROUGHPUT_TIER5
 )
-from .foundation_evolution import PlacedBuilding, Candidate
+from .core_types import PlacedBuilding, Candidate
 from .foundation_config import FOUNDATION_SPECS, FoundationSpec, Side
 from .router import BeltRouter, Connection
 
