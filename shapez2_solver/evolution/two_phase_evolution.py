@@ -74,7 +74,7 @@ class TwoPhaseEvolution:
         output_specs: List[Tuple[str, int, int, str]],
         grid_width: int,
         grid_height: int,
-        num_floors: int = 4,
+        num_floors: int = 3,
         system_population: int = 30,
         layout_population: int = 50,
         max_machines: int = 10,

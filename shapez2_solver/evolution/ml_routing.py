@@ -84,7 +84,7 @@ class RoutingOutcome:
 class CellValueCNN(nn.Module):
     """CNN to predict cell value (importance for future routing)."""
 
-    def __init__(self, num_floors: int = 4, hidden_dim: int = 32):
+    def __init__(self, num_floors: int = 3, hidden_dim: int = 32):
         super().__init__()
 
         # Input: 3 channels per floor (occupancy, current_goal, remaining_goals)
@@ -129,7 +129,7 @@ class CellValuePredictor:
         model_path: Optional[str] = None,
         db_path: str = "routing_ml.db",
         hidden_dim: int = 32,
-        num_floors: int = 4,
+        num_floors: int = 3,
         collect_training_data: bool = True,
     ):
         if not HAS_TORCH:
@@ -1265,7 +1265,7 @@ class RoutingTrainer:
         connections: List[Tuple[Tuple[int, int, int], Tuple[int, int, int], Any, Any]],
         grid_width: int,
         grid_height: int,
-        num_floors: int = 4,
+        num_floors: int = 3,
         valid_cells: Optional[Set[Tuple[int, int]]] = None,
     ) -> Dict[str, Any]:
         """
@@ -1346,7 +1346,7 @@ class RoutingTrainer:
         output_positions: List[Tuple[int, int, int]],
         grid_width: int,
         grid_height: int,
-        num_floors: int = 4,
+        num_floors: int = 3,
         valid_cells: Optional[Set[Tuple[int, int]]] = None,
     ) -> Dict[str, Any]:
         """

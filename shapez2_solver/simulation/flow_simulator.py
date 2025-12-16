@@ -175,7 +175,7 @@ class FlowSimulator:
     - Final output shapes
     """
 
-    def __init__(self, width: int = 14, height: int = 14, num_floors: int = 4,
+    def __init__(self, width: int = 14, height: int = 14, num_floors: int = 3,
                  foundation_spec: Optional[FoundationSpec] = None,
                  validate_io: bool = True):
         self.width = width

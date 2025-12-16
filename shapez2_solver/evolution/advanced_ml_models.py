@@ -352,7 +352,7 @@ class CNNModel(nn.Module):
     def __init__(
         self,
         in_channels: int = NUM_TOTAL_CHANNELS,
-        num_floors: int = 4,
+        num_floors: int = 3,
         hidden_dim: int = 64,
         num_classes: int = 1,  # 1 for regression, 2 for classification
     ):

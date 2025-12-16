@@ -72,7 +72,7 @@ class FoundationSpec:
     name: str
     units_x: int  # Number of 1x1 units in X dimension
     units_y: int  # Number of 1x1 units in Y dimension
-    num_floors: int = 4
+    num_floors: int = 3
 
     # For irregular foundations, which cells are present
     # None means all cells present (rectangular), otherwise list of (x, y) tuples

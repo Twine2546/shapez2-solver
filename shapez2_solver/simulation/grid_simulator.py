@@ -224,7 +224,7 @@ class GridSimulator:
     3. Shapes move one cell per simulation step
     """
 
-    def __init__(self, width: int = 32, height: int = 32, num_floors: int = 4):
+    def __init__(self, width: int = 32, height: int = 32, num_floors: int = 3):
         self.width = width
         self.height = height
         self.num_floors = num_floors

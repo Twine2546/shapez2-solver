@@ -68,7 +68,7 @@ def example_feature_extraction():
     features = extract_solution_features(
         grid_width=14,
         grid_height=14,
-        num_floors=4,
+        num_floors=3,
         machines=machines,
         belts=belts,
         input_positions=input_positions,
@@ -111,7 +111,7 @@ def example_logging():
         foundation_type="2x2",
         grid_width=34,
         grid_height=34,
-        num_floors=4,
+        num_floors=3,
         routing_mode="hybrid",
         input_positions=[(0, 10, 0), (0, 20, 0)],
         output_positions=[(33, 10, 0), (33, 20, 0)],
@@ -209,7 +209,7 @@ def example_evaluation():
     result = evaluator.evaluate_placement(
         grid_width=34,
         grid_height=34,
-        num_floors=4,
+        num_floors=3,
         machines=machines,
         input_positions=[(0, 17, 0), (0, 25, 0)],
         output_positions=[(33, 10, 0), (33, 17, 0), (33, 25, 0), (33, 30, 0)],
@@ -303,7 +303,7 @@ def example_compare_foundations():
         result = evaluator.evaluate_placement(
             grid_width=width,
             grid_height=height,
-            num_floors=4,
+            num_floors=3,
             machines=machines,
             input_positions=[(0, cy, 0)],
             output_positions=[

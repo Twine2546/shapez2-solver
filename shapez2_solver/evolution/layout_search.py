@@ -59,7 +59,7 @@ class LayoutSearch:
         system_design: SystemDesign,
         grid_width: int,
         grid_height: int,
-        num_floors: int = 4,
+        num_floors: int = 3,
         population_size: int = 50,
         mutation_rate: float = 0.3,
     ):
@@ -490,7 +490,7 @@ class LayoutSearchSA(LayoutSearch):
         system_design: SystemDesign,
         grid_width: int,
         grid_height: int,
-        num_floors: int = 4,
+        num_floors: int = 3,
         initial_temp: float = 50.0,
         cooling_rate: float = 0.995,
         min_temp: float = 0.1,
@@ -561,7 +561,7 @@ class LayoutSearchHybrid(LayoutSearch):
         system_design: SystemDesign,
         grid_width: int,
         grid_height: int,
-        num_floors: int = 4,
+        num_floors: int = 3,
         population_size: int = 50,
         sa_fraction: float = 0.5,
     ):
@@ -646,7 +646,7 @@ def layout_system_design(
     system: SystemDesign,
     grid_width: int,
     grid_height: int,
-    num_floors: int = 4,
+    num_floors: int = 3,
     max_generations: int = 100,
     algorithm: str = 'evolution',
     verbose: bool = False

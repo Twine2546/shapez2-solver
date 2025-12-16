@@ -26,7 +26,7 @@ class SolutionFeatures:
     foundation_type: str = ""
     grid_width: int = 0
     grid_height: int = 0
-    num_floors: int = 4
+    num_floors: int = 3
     total_cells: int = 0  # available cells (excluding blocked)
 
     # === Machine Placement Features ===

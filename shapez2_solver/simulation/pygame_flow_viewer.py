@@ -79,7 +79,7 @@ SHAPE_COLORS = {
 
 
 class FlowViewer:
-    def __init__(self, width: int = 14, height: int = 14, num_floors: int = 4):
+    def __init__(self, width: int = 14, height: int = 14, num_floors: int = 3):
         pygame.init()
 
         self.grid_width = width

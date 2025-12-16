@@ -33,7 +33,7 @@ class RoutingAttempt:
     foundation_type: str = ""
     grid_width: int = 0
     grid_height: int = 0
-    num_floors: int = 4
+    num_floors: int = 3
     routing_mode: str = ""  # 'astar', 'global', 'hybrid'
 
     # Input specification
@@ -497,7 +497,7 @@ def create_sample_data(db_path: str = "routing_data.db", num_samples: int = 100)
             foundation_type=foundation,
             grid_width=width,
             grid_height=height,
-            num_floors=4,
+            num_floors=3,
             total_cells=width * height * 4,
             num_machines=random.randint(1, 5),
             machine_density=random.uniform(0.01, 0.1),
@@ -521,7 +521,7 @@ def create_sample_data(db_path: str = "routing_data.db", num_samples: int = 100)
             foundation_type=foundation,
             grid_width=width,
             grid_height=height,
-            num_floors=4,
+            num_floors=3,
             routing_mode=random.choice(routing_modes),
             num_inputs=random.randint(1, 4),
             num_outputs=random.randint(1, 8),

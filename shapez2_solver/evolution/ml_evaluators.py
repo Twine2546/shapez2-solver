@@ -197,7 +197,7 @@ class RoutingFeatures:
 class FeatureExtractor:
     """Extracts features from placements, solutions, and routing states."""
 
-    def __init__(self, grid_width: int, grid_height: int, num_floors: int = 4):
+    def __init__(self, grid_width: int, grid_height: int, num_floors: int = 3):
         self.grid_width = grid_width
         self.grid_height = grid_height
         self.num_floors = num_floors
@@ -837,7 +837,7 @@ class MLRoutingHeuristic(RoutingHeuristic):
         else:
             self.collector = None
 
-    def set_grid_size(self, width: int, height: int, num_floors: int = 4):
+    def set_grid_size(self, width: int, height: int, num_floors: int = 3):
         """Set grid size for feature extraction."""
         self._grid_width = width
         self._grid_height = height
