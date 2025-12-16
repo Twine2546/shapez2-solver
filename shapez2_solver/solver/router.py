@@ -73,7 +73,7 @@ class RouteResult:
 class BeltRouter:
     """Routes belts between buildings using A* pathfinding."""
 
-    def __init__(self, grid_width: int, grid_height: int, num_floors: int = 4,
+    def __init__(self, grid_width: int, grid_height: int, num_floors: int = 3,
                  use_belt_ports: bool = True, max_belt_ports: int = 4,
                  allow_shape_merging: bool = False,
                  max_belt_throughput: float = None,
@@ -2115,7 +2115,7 @@ class MLEnhancedRouter(BeltRouter):
         self,
         grid_width: int,
         grid_height: int,
-        num_floors: int = 4,
+        num_floors: int = 3,
         use_belt_ports: bool = True,
         max_belt_ports: int = 4,
         ml_router=None,
@@ -2332,7 +2332,7 @@ class MLEnhancedRouter(BeltRouter):
 def create_ml_router(
     grid_width: int,
     grid_height: int,
-    num_floors: int = 4,
+    num_floors: int = 3,
     model_dir: str = None,
 ) -> MLEnhancedRouter:
     """

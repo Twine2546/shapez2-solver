@@ -50,7 +50,7 @@ class ConveyorRouter:
     TURN_COST = 1.5
     LIFT_COST = 2.0  # Floor changes cost more
 
-    def __init__(self, placer: GridPlacer, num_floors: int = 4):
+    def __init__(self, placer: GridPlacer, num_floors: int = 3):
         """
         Initialize the router.
 

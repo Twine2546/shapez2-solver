@@ -365,7 +365,7 @@ def test_belt_turn():
 def test_lift_up():
     """Test: Lift moves shapes between floors."""
     tester = SimulationTester()
-    sim = GridSimulator(width=10, height=10, num_floors=4)
+    sim = GridSimulator(width=10, height=10, num_floors=3)
 
     # Floor 0: Input -> Belt -> Lift
     sim.add_belt(1, 0, 0, BuildingType.BELT_FORWARD, Rotation.EAST)

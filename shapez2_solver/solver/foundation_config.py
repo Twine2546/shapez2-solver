@@ -72,7 +72,7 @@ class FoundationSpec:
     name: str
     units_x: int  # Number of 1x1 units in X dimension
     units_y: int  # Number of 1x1 units in Y dimension
-    num_floors: int = 4
+    num_floors: int = 3
 
     # For irregular foundations, which cells are present
     # None means all cells present (rectangular), otherwise list of (x, y) tuples
@@ -322,13 +322,13 @@ class FoundationConfig:
 
     For a 1x1 foundation (14×14 internal grid):
     - Each side has 4 port positions (centered on the 1x1 unit)
-    - Each position has 4 floors
-    - Total: 4 sides × 4 positions × 4 floors = 64 I/O points
+    - Each position has 3 floors
+    - Total: 4 sides × 4 positions × 3 floors = 48 I/O points
 
     For a 2x1 foundation (34×14 internal grid):
     - N/S sides have 8 positions (4 per 1x1 unit)
     - E/W sides have 4 positions
-    - Each position has 4 floors
+    - Each position has 3 floors
     """
     spec: FoundationSpec
     ports: Dict[Side, List[List[PortConfig]]] = field(default_factory=dict)

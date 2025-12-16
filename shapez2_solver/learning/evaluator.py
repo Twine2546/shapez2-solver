@@ -363,7 +363,7 @@ def quick_evaluate(
     connections: List[Tuple],
     grid_width: int,
     grid_height: int,
-    num_floors: int = 4,
+    num_floors: int = 3,
 ) -> float:
     """
     Quick evaluation without full feature extraction.
@@ -426,7 +426,7 @@ def compare_solutions(
         result = evaluator.evaluate_solution(
             grid_width=sol['grid_width'],
             grid_height=sol['grid_height'],
-            num_floors=sol.get('num_floors', 4),
+            num_floors=sol.get('num_floors', 3),
             machines=sol.get('machines', []),
             belts=sol.get('belts', []),
             input_positions=sol.get('input_positions', []),

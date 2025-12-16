@@ -26,7 +26,7 @@ class ParallelGroup:
 class ThroughputPlacer:
     """Places operations with throughput-optimized parallel buildings."""
 
-    def __init__(self, width: int = 64, height: int = 64, num_floors: int = 4):
+    def __init__(self, width: int = 64, height: int = 64, num_floors: int = 3):
         self.width = width
         self.height = height
         self.num_floors = num_floors

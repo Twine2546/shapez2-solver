@@ -166,7 +166,7 @@ def export_throughput_blueprint(
     design: Design,
     grid_width: int = 64,
     grid_height: int = 64,
-    num_floors: int = 4,
+    num_floors: int = 3,
     include_belts: bool = True
 ) -> str:
     """
@@ -209,7 +209,7 @@ def export_throughput_blueprint_verbose(
     design: Design,
     grid_width: int = 64,
     grid_height: int = 64,
-    num_floors: int = 4,
+    num_floors: int = 3,
     include_belts: bool = True
 ) -> dict:
     """
