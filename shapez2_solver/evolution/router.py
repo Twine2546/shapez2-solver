@@ -1674,8 +1674,17 @@ class BeltRouter:
             cost=len(simple_path)
         )
 
-    def route_all(self, connections: List[Connection]) -> List[RouteResult]:
-        """Route all connections, prioritizing by priority value."""
+    def route_all(self, connections: List[Connection], track_paths: bool = True) -> List[RouteResult]:
+        """Route all connections, prioritizing by priority value.
+
+        Args:
+            connections: List of connections to route
+            track_paths: If True, use indexed routing to track paths and ownership
+                        for ML training. Default True.
+
+        Returns:
+            List of RouteResult for each connection
+        """
         # Sort by priority (higher first)
         sorted_connections = sorted(connections, key=lambda c: -c.priority)
 
@@ -1686,7 +1695,11 @@ class BeltRouter:
         results = []
         for i, conn in enumerate(sorted_connections):
             self._current_connection_index = i
-            result = self.route_connection(conn)
+            # Use indexed routing to track paths/ownership for ML training
+            if track_paths:
+                result = self.route_connection_indexed(conn, i)
+            else:
+                result = self.route_connection(conn)
             results.append(result)
             # Remove from remaining after routing
             if conn in self._remaining_connections:
@@ -1712,6 +1725,51 @@ class BeltRouter:
         self.connection_paths.clear()
         self.failed_connections.clear()
         # Note: doesn't clear occupied - call set_occupied to reset
+
+    def export_routing_outcome(self) -> Dict[str, Any]:
+        """
+        Export complete routing outcome for ML training.
+
+        Call this after route_all() or route_all_with_retry() to get
+        detailed routing data for ML training.
+
+        Returns:
+            Dict with:
+            - grid_size: (width, height, floors)
+            - connections: List of (from_pos, to_pos) tuples
+            - paths: Dict mapping connection_index -> path
+            - belts: Dict mapping connection_index -> belt cells
+            - failed_connections: List of failed connection info
+            - conflict_analysis: Detailed conflict analysis
+            - success: Overall routing success
+            - cells_used: Set of all cells used by belts
+        """
+        # Collect all cells used
+        cells_used = set()
+        for cells in self.connection_belts.values():
+            cells_used.update(cells)
+
+        # Build connection list from stored data
+        connections = []
+        for conn in self._all_connections:
+            connections.append((conn.from_pos, conn.to_pos))
+
+        # Determine overall success
+        all_success = len(self.failed_connections) == 0 and len(self.connection_paths) > 0
+
+        return {
+            'grid_size': (self.grid_width, self.grid_height, self.num_floors),
+            'connections': connections,
+            'paths': dict(self.connection_paths),
+            'belts': dict(self.connection_belts),
+            'belt_owner': dict(self.belt_owner),
+            'failed_connections': list(self.failed_connections),
+            'conflict_analysis': self.get_conflict_analysis(),
+            'success': all_success,
+            'cells_used': cells_used,
+            'num_routed': len(self.connection_paths),
+            'num_failed': len(self.failed_connections),
+        }
 
     # =========================================================================
     # Smart Belt Port Methods

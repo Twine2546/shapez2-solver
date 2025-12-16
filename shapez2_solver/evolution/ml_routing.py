@@ -853,3 +853,590 @@ def create_ml_router_functions(
     )
 
     return ml_system.heuristic, ml_system.move_cost, ml_system
+
+
+# =============================================================================
+# Helper function to extract RoutingOutcome from router
+# =============================================================================
+
+def extract_routing_outcome_from_router(
+    router,
+    connections: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]],
+    routing_success: bool,
+) -> RoutingOutcome:
+    """
+    Extract a RoutingOutcome from a router after route_all completes.
+
+    This function reads the router's internal state to build a complete
+    training sample without modifying the router itself.
+
+    Args:
+        router: BeltRouter instance after routing
+        connections: List of (start, goal) tuples that were routed
+        routing_success: Whether all connections were successfully routed
+
+    Returns:
+        RoutingOutcome with full routing data for ML training
+    """
+    # Get paths for each connection (in order they were routed)
+    paths = []
+    connection_order = []
+
+    # Router stores paths by connection index
+    for i in range(len(connections)):
+        if i in router.connection_paths:
+            paths.append(router.connection_paths[i])
+            connection_order.append(i)
+        else:
+            paths.append([])  # Failed connection
+
+    # Determine which connection failed (if any)
+    failed_at = None
+    if not routing_success and router.failed_connections:
+        # First failed connection
+        failed_at = router.failed_connections[0].get('index', 0)
+
+    # Collect all cells used by successful paths
+    cells_used = set()
+    for path in paths:
+        cells_used.update(path)
+
+    return RoutingOutcome(
+        grid_width=router.grid_width,
+        grid_height=router.grid_height,
+        num_floors=router.num_floors,
+        connections=connections,
+        connection_order=connection_order,
+        paths=paths,
+        success=routing_success,
+        failed_at_connection=failed_at,
+        cells_used=cells_used,
+    )
+
+
+# =============================================================================
+# Routing Data Storage
+# =============================================================================
+
+class RoutingDataStore:
+    """
+    Stores routing outcomes for ML training.
+
+    Provides methods to:
+    - Store full routing outcomes with conflict analysis
+    - Query training data by success/failure
+    - Generate training samples for cell value and path ordering
+    """
+
+    def __init__(self, db_path: str = "routing_ml.db"):
+        self.db_path = db_path
+        self._init_db()
+
+    def _init_db(self):
+        """Initialize database tables for routing data."""
+        conn = sqlite3.connect(self.db_path)
+
+        # Full routing outcomes table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS routing_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                grid_width INTEGER,
+                grid_height INTEGER,
+                num_floors INTEGER,
+                connections_json TEXT NOT NULL,
+                connection_order_json TEXT NOT NULL,
+                paths_json TEXT NOT NULL,
+                success INTEGER,
+                failed_at_connection INTEGER,
+                cells_used_json TEXT NOT NULL,
+                conflict_analysis_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Cell blocking data - which cells blocked which connections
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS cell_blocking_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                outcome_id INTEGER,
+                cell_x INTEGER,
+                cell_y INTEGER,
+                cell_floor INTEGER,
+                placed_by_connection INTEGER,
+                blocked_connections_json TEXT,
+                FOREIGN KEY (outcome_id) REFERENCES routing_outcomes(id)
+            )
+        """)
+
+        conn.commit()
+        conn.close()
+
+    def store_outcome(
+        self,
+        outcome: RoutingOutcome,
+        conflict_analysis: Optional[Dict] = None,
+    ) -> int:
+        """
+        Store a routing outcome.
+
+        Args:
+            outcome: RoutingOutcome to store
+            conflict_analysis: Optional conflict analysis from router.get_conflict_analysis()
+
+        Returns:
+            ID of the stored outcome
+        """
+        conn = sqlite3.connect(self.db_path)
+
+        # Serialize data
+        connections_json = json.dumps([
+            [list(start), list(goal)]
+            for start, goal in outcome.connections
+        ])
+        paths_json = json.dumps([
+            [list(pos) for pos in path]
+            for path in outcome.paths
+        ])
+        cells_used_json = json.dumps([list(cell) for cell in outcome.cells_used])
+        conflict_json = json.dumps(conflict_analysis) if conflict_analysis else None
+
+        cursor = conn.execute("""
+            INSERT INTO routing_outcomes (
+                grid_width, grid_height, num_floors,
+                connections_json, connection_order_json, paths_json,
+                success, failed_at_connection, cells_used_json,
+                conflict_analysis_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            outcome.grid_width, outcome.grid_height, outcome.num_floors,
+            connections_json, json.dumps(outcome.connection_order), paths_json,
+            1 if outcome.success else 0, outcome.failed_at_connection,
+            cells_used_json, conflict_json,
+        ))
+
+        outcome_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        return outcome_id
+
+    def store_cell_blocking(
+        self,
+        outcome_id: int,
+        blocking_info: Dict[Tuple[int, int, int], Dict],
+    ):
+        """
+        Store cell blocking information for conflict analysis.
+
+        Args:
+            outcome_id: ID of the routing outcome
+            blocking_info: Dict mapping cell -> {'placed_by': int, 'blocked': [int, ...]}
+        """
+        conn = sqlite3.connect(self.db_path)
+
+        for cell, info in blocking_info.items():
+            x, y, floor = cell
+            placed_by = info.get('placed_by', -1)
+            blocked = info.get('blocked', [])
+
+            conn.execute("""
+                INSERT INTO cell_blocking_data (
+                    outcome_id, cell_x, cell_y, cell_floor,
+                    placed_by_connection, blocked_connections_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            """, (outcome_id, x, y, floor, placed_by, json.dumps(blocked)))
+
+        conn.commit()
+        conn.close()
+
+    def load_outcomes(
+        self,
+        success_only: bool = False,
+        failure_only: bool = False,
+        limit: int = 1000,
+    ) -> List[RoutingOutcome]:
+        """Load routing outcomes from database."""
+        conn = sqlite3.connect(self.db_path)
+
+        query = "SELECT * FROM routing_outcomes"
+        conditions = []
+
+        if success_only:
+            conditions.append("success = 1")
+        elif failure_only:
+            conditions.append("success = 0")
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        query += f" ORDER BY id DESC LIMIT {limit}"
+
+        cursor = conn.execute(query)
+        rows = cursor.fetchall()
+        conn.close()
+
+        outcomes = []
+        for row in rows:
+            (id_, gw, gh, nf, conn_json, order_json, paths_json,
+             success, failed_at, cells_json, conflict_json, created) = row
+
+            connections = [
+                (tuple(start), tuple(goal))
+                for start, goal in json.loads(conn_json)
+            ]
+            paths = [
+                [tuple(pos) for pos in path]
+                for path in json.loads(paths_json)
+            ]
+            cells_used = {tuple(cell) for cell in json.loads(cells_json)}
+
+            outcomes.append(RoutingOutcome(
+                grid_width=gw,
+                grid_height=gh,
+                num_floors=nf,
+                connections=connections,
+                connection_order=json.loads(order_json),
+                paths=paths,
+                success=bool(success),
+                failed_at_connection=failed_at,
+                cells_used=cells_used,
+            ))
+
+        return outcomes
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get statistics about stored routing data."""
+        conn = sqlite3.connect(self.db_path)
+
+        total = conn.execute("SELECT COUNT(*) FROM routing_outcomes").fetchone()[0]
+        successful = conn.execute(
+            "SELECT COUNT(*) FROM routing_outcomes WHERE success = 1"
+        ).fetchone()[0]
+        failed = conn.execute(
+            "SELECT COUNT(*) FROM routing_outcomes WHERE success = 0"
+        ).fetchone()[0]
+        blocking_records = conn.execute(
+            "SELECT COUNT(*) FROM cell_blocking_data"
+        ).fetchone()[0]
+
+        conn.close()
+
+        return {
+            "total_outcomes": total,
+            "successful": successful,
+            "failed": failed,
+            "success_rate": successful / max(total, 1),
+            "blocking_records": blocking_records,
+        }
+
+
+# =============================================================================
+# Enhanced RoutingMLSystem with data storage
+# =============================================================================
+
+class EnhancedRoutingMLSystem(RoutingMLSystem):
+    """
+    Extended RoutingMLSystem with full routing data storage.
+
+    Adds:
+    - Storage of complete routing outcomes
+    - Conflict analysis recording
+    - Cell blocking pattern learning
+    """
+
+    def __init__(
+        self,
+        model_dir: str = "models",
+        db_path: str = "routing_ml.db",
+        collect_training_data: bool = True,
+    ):
+        super().__init__(model_dir, db_path, collect_training_data)
+        self.data_store = RoutingDataStore(db_path)
+
+    def record_full_outcome(
+        self,
+        router,
+        connections: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]],
+        routing_success: bool,
+    ) -> int:
+        """
+        Record a complete routing outcome from a router instance.
+
+        This extracts all relevant data from the router and stores it
+        for ML training.
+
+        Args:
+            router: BeltRouter instance after routing
+            connections: List of (start, goal) tuples
+            routing_success: Whether routing succeeded
+
+        Returns:
+            ID of the stored outcome
+        """
+        if not self.collect_training_data:
+            return -1
+
+        # Extract outcome
+        outcome = extract_routing_outcome_from_router(
+            router, connections, routing_success
+        )
+
+        # Get conflict analysis
+        conflict_analysis = None
+        if hasattr(router, 'get_conflict_analysis'):
+            conflict_analysis = router.get_conflict_analysis()
+
+        # Store outcome
+        outcome_id = self.data_store.store_outcome(outcome, conflict_analysis)
+
+        # Store cell blocking info
+        if conflict_analysis and not routing_success:
+            blocking_info = {}
+            for cell, owner in router.belt_owner.items():
+                # Check if this cell blocked any failed connections
+                blocked = []
+                for failed in router.failed_connections:
+                    if cell in failed.get('blocked_positions', []):
+                        blocked.append(failed['index'])
+
+                if blocked:
+                    blocking_info[cell] = {
+                        'placed_by': owner,
+                        'blocked': blocked,
+                    }
+
+            if blocking_info:
+                self.data_store.store_cell_blocking(outcome_id, blocking_info)
+
+        # Also record to component-specific stores
+        self.record_outcome(outcome)
+
+        return outcome_id
+
+    def get_routing_stats(self) -> Dict[str, Any]:
+        """Get statistics about stored routing data."""
+        return self.data_store.get_stats()
+
+
+# =============================================================================
+# Routing Trainer - Direct routing training without cpsat_solver
+# =============================================================================
+
+class RoutingTrainer:
+    """
+    Trains routing ML by running routing directly on placement data.
+
+    This bypasses cpsat_solver to get detailed routing data for ML training.
+    Takes machine placements and connections, runs routing, records outcomes.
+    """
+
+    def __init__(
+        self,
+        ml_system: Optional[EnhancedRoutingMLSystem] = None,
+        db_path: str = "routing_ml.db",
+    ):
+        """
+        Initialize routing trainer.
+
+        Args:
+            ml_system: Optional ML system to use (creates one if not provided)
+            db_path: Database path for training data
+        """
+        # Import router here to avoid circular imports
+        from .router import BeltRouter, Connection
+
+        self.BeltRouter = BeltRouter
+        self.Connection = Connection
+
+        if ml_system is None:
+            self.ml_system = EnhancedRoutingMLSystem(db_path=db_path)
+        else:
+            self.ml_system = ml_system
+
+        self.stats = {
+            'total_trained': 0,
+            'routing_success': 0,
+            'routing_failed': 0,
+        }
+
+    def train_from_placement(
+        self,
+        machines: List[Tuple[Any, int, int, int, Any]],  # (type, x, y, floor, rotation)
+        connections: List[Tuple[Tuple[int, int, int], Tuple[int, int, int], Any, Any]],
+        grid_width: int,
+        grid_height: int,
+        num_floors: int = 4,
+        valid_cells: Optional[Set[Tuple[int, int]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Train routing ML from a single placement.
+
+        Args:
+            machines: List of (building_type, x, y, floor, rotation)
+            connections: List of (from_pos, to_pos, from_dir, to_dir)
+            grid_width: Grid width
+            grid_height: Grid height
+            num_floors: Number of floors
+            valid_cells: Valid cells for irregular foundations
+
+        Returns:
+            Training result with routing success and stats
+        """
+        # Create router with ML functions
+        router = self.BeltRouter(
+            grid_width, grid_height, num_floors,
+            use_belt_ports=True, max_belt_ports=4,
+            valid_cells=valid_cells,
+            heuristic_fn=self.ml_system.heuristic,
+            move_cost_fn=self.ml_system.move_cost,
+        )
+
+        # Set occupied positions from machines
+        occupied = set()
+        for building_type, x, y, floor, rotation in machines:
+            occupied.add((x, y, floor))
+        router.set_occupied(occupied)
+
+        # Convert to Connection objects
+        conn_objects = []
+        for from_pos, to_pos, from_dir, to_dir in connections:
+            conn_objects.append(self.Connection(
+                from_pos=from_pos,
+                to_pos=to_pos,
+                from_direction=from_dir,
+                to_direction=to_dir,
+            ))
+
+        # Route all connections using indexed routing (tracks ownership)
+        results = []
+        simple_connections = []
+
+        for i, conn in enumerate(conn_objects):
+            result = router.route_connection_indexed(conn, i)
+            results.append(result)
+            simple_connections.append((conn.from_pos, conn.to_pos))
+
+        # Check overall success
+        routing_success = all(r.success for r in results)
+
+        # Record to ML system
+        outcome_id = self.ml_system.record_full_outcome(
+            router, simple_connections, routing_success
+        )
+
+        # Update stats
+        self.stats['total_trained'] += 1
+        if routing_success:
+            self.stats['routing_success'] += 1
+        else:
+            self.stats['routing_failed'] += 1
+
+        return {
+            'routing_success': routing_success,
+            'connections_routed': sum(1 for r in results if r.success),
+            'connections_total': len(connections),
+            'outcome_id': outcome_id,
+            'conflict_analysis': router.get_conflict_analysis() if not routing_success else None,
+        }
+
+    def train_from_solution(
+        self,
+        solution,
+        input_positions: List[Tuple[int, int, int]],
+        output_positions: List[Tuple[int, int, int]],
+        grid_width: int,
+        grid_height: int,
+        num_floors: int = 4,
+        valid_cells: Optional[Set[Tuple[int, int]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Train routing ML from a CPSATSolution.
+
+        Extracts machines and reconstructs connections from the solution.
+
+        Args:
+            solution: CPSATSolution with machines and belts
+            input_positions: List of input positions
+            output_positions: List of output positions
+            grid_width: Grid width
+            grid_height: Grid height
+            num_floors: Number of floors
+            valid_cells: Valid cells for irregular foundations
+
+        Returns:
+            Training result
+        """
+        # We need to reconstruct connections from belt paths
+        # For now, store the solution's success and belt positions
+        # Full connection reconstruction requires more solution data
+
+        from .router import Rotation
+
+        # Build simple connections from inputs to outputs via machines
+        # This is approximate - full reconstruction would need flow analysis
+
+        machines = solution.machines
+        routing_success = solution.routing_success
+
+        # Store outcome with available data
+        outcome = RoutingOutcome(
+            grid_width=grid_width,
+            grid_height=grid_height,
+            num_floors=num_floors,
+            connections=[],  # Not available without reconstruction
+            connection_order=[],
+            paths=[],  # Belt positions are available but not as paths
+            success=routing_success,
+            failed_at_connection=None,
+            cells_used={tuple(b[:3]) for b in solution.belts} if solution.belts else set(),
+        )
+
+        self.ml_system.data_store.store_outcome(outcome)
+
+        self.stats['total_trained'] += 1
+        if routing_success:
+            self.stats['routing_success'] += 1
+        else:
+            self.stats['routing_failed'] += 1
+
+        return {
+            'routing_success': routing_success,
+            'belts_count': len(solution.belts) if solution.belts else 0,
+        }
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get training statistics."""
+        total = self.stats['total_trained']
+        return {
+            **self.stats,
+            'success_rate': self.stats['routing_success'] / max(total, 1),
+            **self.ml_system.get_routing_stats(),
+        }
+
+
+# =============================================================================
+# Integration with training_runner.py
+# =============================================================================
+
+def create_routing_trainer(db_path: str = "routing_ml.db") -> RoutingTrainer:
+    """
+    Create a routing trainer for use with training_runner.py.
+
+    Usage in training_runner.py:
+        from .ml_routing import create_routing_trainer
+
+        routing_trainer = create_routing_trainer(db_path=self.db_path)
+
+        # After solving:
+        if solution:
+            routing_trainer.train_from_solution(
+                solution=solution,
+                input_positions=input_positions,
+                output_positions=output_positions,
+                grid_width=spec.grid_width,
+                grid_height=spec.grid_height,
+                num_floors=spec.num_floors,
+                valid_cells=valid_cells,
+            )
+    """
+    return RoutingTrainer(db_path=db_path)
