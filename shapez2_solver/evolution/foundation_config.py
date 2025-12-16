@@ -274,37 +274,37 @@ class FoundationSpec:
 # Format: FoundationSpec(name, units_x, units_y, num_floors)
 FOUNDATION_SPECS = {
     # Line foundations
-    "1x1": FoundationSpec("1x1", 1, 1, 4),
-    "2x1": FoundationSpec("2x1", 2, 1, 4),
-    "3x1": FoundationSpec("3x1", 3, 1, 4),
-    "4x1": FoundationSpec("4x1", 4, 1, 4),
-    "1x2": FoundationSpec("1x2", 1, 2, 4),
-    "1x3": FoundationSpec("1x3", 1, 3, 4),
-    "1x4": FoundationSpec("1x4", 1, 4, 4),
+    "1x1": FoundationSpec("1x1", 1, 1, 3),
+    "2x1": FoundationSpec("2x1", 2, 1, 3),
+    "3x1": FoundationSpec("3x1", 3, 1, 3),
+    "4x1": FoundationSpec("4x1", 4, 1, 3),
+    "1x2": FoundationSpec("1x2", 1, 2, 3),
+    "1x3": FoundationSpec("1x3", 1, 3, 3),
+    "1x4": FoundationSpec("1x4", 1, 4, 3),
 
     # Rectangular foundations
-    "2x2": FoundationSpec("2x2", 2, 2, 4),
-    "3x2": FoundationSpec("3x2", 3, 2, 4),
-    "4x2": FoundationSpec("4x2", 4, 2, 4),
-    "2x3": FoundationSpec("2x3", 2, 3, 4),
-    "2x4": FoundationSpec("2x4", 2, 4, 4),
-    "3x3": FoundationSpec("3x3", 3, 3, 4),
+    "2x2": FoundationSpec("2x2", 2, 2, 3),
+    "3x2": FoundationSpec("3x2", 3, 2, 3),
+    "4x2": FoundationSpec("4x2", 4, 2, 3),
+    "2x3": FoundationSpec("2x3", 2, 3, 3),
+    "2x4": FoundationSpec("2x4", 2, 4, 3),
+    "3x3": FoundationSpec("3x3", 3, 3, 3),
 
     # Irregular foundations (with present_cells defining shape)
     # T-shape: 3 on top, 1 centered below
-    "T": FoundationSpec("T", 3, 2, 4, present_cells=[(0, 0), (1, 0), (2, 0), (1, 1)]),
+    "T": FoundationSpec("T", 3, 2, 3, present_cells=[(0, 0), (1, 0), (2, 0), (1, 1)]),
 
     # L-shape (small): 2x2 with one corner missing
-    "L": FoundationSpec("L", 2, 2, 4, present_cells=[(0, 0), (1, 0), (0, 1)]),
+    "L": FoundationSpec("L", 2, 2, 3, present_cells=[(0, 0), (1, 0), (0, 1)]),
 
     # L-shape (large): 2 down, 3 across
-    "L4": FoundationSpec("L4", 3, 2, 4, present_cells=[(0, 0), (0, 1), (1, 1), (2, 1)]),
+    "L4": FoundationSpec("L4", 3, 2, 3, present_cells=[(0, 0), (0, 1), (1, 1), (2, 1)]),
 
     # S/Z-shape: 2 across top-left, 2 across bottom-right
-    "S4": FoundationSpec("S4", 3, 2, 4, present_cells=[(0, 0), (1, 0), (1, 1), (2, 1)]),
+    "S4": FoundationSpec("S4", 3, 2, 3, present_cells=[(0, 0), (1, 0), (1, 1), (2, 1)]),
 
     # Cross: 3x3 with corners missing
-    "Cross": FoundationSpec("Cross", 3, 3, 4, present_cells=[
+    "Cross": FoundationSpec("Cross", 3, 3, 3, present_cells=[
         (1, 0),          # Top
         (0, 1), (1, 1), (2, 1),  # Middle row
         (1, 2)           # Bottom
@@ -322,13 +322,13 @@ class FoundationConfig:
 
     For a 1x1 foundation (14×14 internal grid):
     - Each side has 4 port positions (centered on the 1x1 unit)
-    - Each position has 4 floors
-    - Total: 4 sides × 4 positions × 4 floors = 64 I/O points
+    - Each position has 3 floors
+    - Total: 4 sides × 4 positions × 3 floors = 48 I/O points
 
     For a 2x1 foundation (34×14 internal grid):
     - N/S sides have 8 positions (4 per 1x1 unit)
     - E/W sides have 4 positions
-    - Each position has 4 floors
+    - Each position has 3 floors
     """
     spec: FoundationSpec
     ports: Dict[Side, List[List[PortConfig]]] = field(default_factory=dict)
