@@ -1,56 +1,70 @@
-"""Evolution module for genetic algorithm-based solution search."""
+"""Solver module for Shapez 2.
 
-from .algorithm import EvolutionaryAlgorithm, EvolutionConfig
-from .fitness import FitnessFunction, ShapeMatchFitness
-from .operators import MutationOperator, CrossoverOperator
-from .candidate import Candidate
+This module provides constraint-programming and pathfinding based solvers for
+finding optimal machine layouts on foundations.
 
-# Two-phase evolution imports
-from .system_search import (
-    SystemSearch, SystemDesign, MachineNode,
-    find_system_for_transformation, evaluate_system
-)
-from .layout_search import (
-    LayoutSearch, LayoutCandidate, PlacedMachine,
-    layout_system_design
-)
-from .two_phase_evolution import (
-    TwoPhaseEvolution, TwoPhaseResult,
-    create_two_phase_evolution, solve_transformation
+Main components:
+- cpsat_solver: CP-SAT constraint programming solver (Google OR-Tools)
+- router: A* pathfinding for belt routing
+- core: Core data structures (Candidate, PlacedBuilding, etc.)
+- foundation_config: Foundation specifications and configurations
+"""
+
+from .core import (
+    Candidate, PlacedBuilding, LogicalConnection,
+    CellType, GridCell, SolverResult, FoundationEvolution,
+    OPERATION_BUILDINGS, BELT_TYPES, ROUTING_BUILDINGS,
+    EVOLVABLE_BUILDINGS, CONVEYOR_TYPES, DUAL_INPUT_BUILDINGS,
 )
 
-# CP-SAT solver imports
+from .foundation_config import (
+    FoundationConfig, FoundationSpec, Side, PortType, PortConfig,
+    FOUNDATION_SPECS,
+)
+
 from .cpsat_solver import (
     CPSATFullSolver, CPSATLayoutSolver, CPSATSystemSolver,
-    CPSATSolution, solve_with_cpsat
+    CPSATSolution, solve_with_cpsat,
+)
+
+from .router import (
+    BeltRouter, Connection, RouteResult, GridNode,
+    route_candidate_connections,
 )
 
 __all__ = [
-    "EvolutionaryAlgorithm",
-    "EvolutionConfig",
-    "FitnessFunction",
-    "ShapeMatchFitness",
-    "MutationOperator",
-    "CrossoverOperator",
+    # Core data structures
     "Candidate",
-    # Two-phase evolution
-    "SystemSearch",
-    "SystemDesign",
-    "MachineNode",
-    "find_system_for_transformation",
-    "evaluate_system",
-    "LayoutSearch",
-    "LayoutCandidate",
-    "PlacedMachine",
-    "layout_system_design",
-    "TwoPhaseEvolution",
-    "TwoPhaseResult",
-    "create_two_phase_evolution",
-    "solve_transformation",
+    "PlacedBuilding",
+    "LogicalConnection",
+    "CellType",
+    "GridCell",
+    "SolverResult",
+    "FoundationEvolution",
+    # Building lists
+    "OPERATION_BUILDINGS",
+    "BELT_TYPES",
+    "ROUTING_BUILDINGS",
+    "EVOLVABLE_BUILDINGS",
+    "CONVEYOR_TYPES",
+    "DUAL_INPUT_BUILDINGS",
+    # Foundation config
+    "FoundationConfig",
+    "FoundationSpec",
+    "Side",
+    "PortType",
+    "PortConfig",
+    "FOUNDATION_SPECS",
     # CP-SAT solver
     "CPSATFullSolver",
     "CPSATLayoutSolver",
     "CPSATSystemSolver",
     "CPSATSolution",
     "solve_with_cpsat",
+    # Router
+    "BeltRouter",
+    "Connection",
+    "RouteResult",
+    "GridNode",
+    "route_candidate_connections",
 ]

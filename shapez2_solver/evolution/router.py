@@ -343,7 +343,7 @@ def route_candidate_connections(
     Returns:
         List of belt placements (x, y, floor, building_type, rotation)
     """
-    from .foundation_evolution import PlacedBuilding
+    from .core import PlacedBuilding
 
     router = BeltRouter(config.spec.grid_width, config.spec.grid_height, config.spec.num_floors)
 

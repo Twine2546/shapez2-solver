@@ -14,7 +14,7 @@ except ImportError:
     PYGAME_AVAILABLE = False
 
 from ..evolution.foundation_config import FoundationConfig, FoundationSpec, Side, PortType
-from ..evolution.foundation_evolution import Candidate, PlacedBuilding, FoundationEvolution
+from ..evolution.core import Candidate, PlacedBuilding, FoundationEvolution
 from ..blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS
 from ..blueprint.encoder import BlueprintEncoder
 

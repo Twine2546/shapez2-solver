@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from ..evolution.foundation_config import FoundationConfig, FoundationSpec, Side, PortType
-from ..evolution.foundation_evolution import Candidate, PlacedBuilding, FoundationEvolution
+from ..evolution.core import Candidate, PlacedBuilding, FoundationEvolution
 from ..blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS
 
 

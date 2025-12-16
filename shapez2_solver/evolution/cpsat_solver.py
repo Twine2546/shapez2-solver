@@ -16,7 +16,7 @@ from ortools.sat.python import cp_model
 
 from ..shapes.shape import Shape
 from ..blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS, BUILDING_PORTS
-from .foundation_evolution import PlacedBuilding, Candidate
+from .core import PlacedBuilding, Candidate
 from .foundation_config import FOUNDATION_SPECS, FoundationSpec, Side
 from .router import BeltRouter, Connection
 

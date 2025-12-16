@@ -1,5 +1,5 @@
 """UI module for the solver application."""
 
-from .app import SolverApp
+from .cpsat_app import CPSATSolverApp
 
-__all__ = ["SolverApp"]
+__all__ = ["CPSATSolverApp"]
