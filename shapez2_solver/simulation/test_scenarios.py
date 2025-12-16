@@ -11,7 +11,7 @@ I/O positions must be on external walls at valid port positions:
 """
 
 from shapez2_solver.simulation.flow_simulator import FlowSimulator, BuildingType, Rotation
-from shapez2_solver.evolution.foundation_config import FOUNDATION_SPECS
+from shapez2_solver.solver.foundation_config import FOUNDATION_SPECS
 
 
 def create_scenario(name: str, description: str, setup_func, foundation: str = "1x1") -> dict:

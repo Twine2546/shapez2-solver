@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from typing import List, Tuple, Optional
 from shapez2_solver.simulation.flow_simulator import FlowSimulator, FlowReport
 from shapez2_solver.blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS
-from shapez2_solver.evolution.foundation_config import FOUNDATION_SPECS, Side
+from shapez2_solver.solver.foundation_config import FOUNDATION_SPECS, Side
 
 
 def validate_solution(
@@ -95,7 +95,7 @@ def validate_solution(
 
 def test_with_solver():
     """Test validation with actual solver output."""
-    from shapez2_solver.evolution.cpsat_solver import solve_with_cpsat
+    from shapez2_solver.solver.cpsat_solver import solve_with_cpsat
     
     print("Running solver...")
     

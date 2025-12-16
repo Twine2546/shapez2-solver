@@ -1,7 +1,6 @@
 """Core types for the solver system.
 
-This module contains the essential data structures used across the solver,
-extracted from the evolution system for cleaner architecture.
+This module contains the essential data structures used across the solver.
 """
 
 import copy

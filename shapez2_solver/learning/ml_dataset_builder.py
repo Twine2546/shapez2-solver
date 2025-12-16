@@ -45,7 +45,7 @@ from shapez2_solver.learning.blueprint_analyzer import (
 
 # Try to import solver components
 try:
-    from shapez2_solver.evolution.cpsat_solver import GlobalBeltRouter
+    from shapez2_solver.solver.cpsat_solver import GlobalBeltRouter
     from shapez2_solver.blueprint.building_types import BuildingType, Rotation
     HAS_SOLVER = True
 except ImportError as e:

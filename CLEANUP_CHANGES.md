@@ -12,7 +12,7 @@ The codebase has been restructured to focus on:
 
 ## Kept Functionality
 
-### Core Solver (shapez2_solver/evolution/)
+### Core Solver (shapez2_solver/solver/)
 - `cpsat_solver.py` - CP-SAT constraint programming solver
 - `router.py` - A* pathfinding router with ML-enhanced variants
 - `foundation_config.py` - Foundation specifications and configurations
@@ -75,7 +75,7 @@ The following files have been moved to the `archive/` folder for reference:
 ## New File Structure
 
 ```
-shapez2_solver/evolution/
+shapez2_solver/solver/
 ├── __init__.py           # Updated exports
 ├── core_types.py         # NEW: Core data types extracted
 ├── databases.py          # NEW: Database utilities extracted
@@ -95,8 +95,14 @@ shapez2_solver/evolution/
 
 ### ML Training
 ```bash
-python -m shapez2_solver.evolution.model_comparison --ab-test --problems 20 --test-problems 10 --epochs 10
+python -m shapez2_solver.solver.model_comparison --ab-test --problems 20 --test-problems 10 --epochs 10
 ```
+
+### Generate Training Database
+```bash
+python -m shapez2_solver.solver.model_comparison --problems 10000 --epochs 30 --time-limit 30
+```
+This creates `training_samples.db` with all the training problems.
 
 ### Simulation Tests
 ```bash
@@ -105,7 +111,7 @@ python test_simulation.py
 
 ### CP-SAT Solver
 ```python
-from shapez2_solver.evolution import CPSATFullSolver, FOUNDATION_SPECS
+from shapez2_solver.solver import CPSATFullSolver, FOUNDATION_SPECS
 
 solver = CPSATFullSolver(
     foundation_type="2x2",

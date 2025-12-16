@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from typing import Dict, List, Optional, Tuple
 from shapez2_solver.simulation.flow_simulator import FlowSimulator, MACHINE_THROUGHPUT, BELT_THROUGHPUT
 from shapez2_solver.blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS, BUILDING_PORTS
-from shapez2_solver.evolution.foundation_config import FOUNDATION_SPECS
+from shapez2_solver.solver.foundation_config import FOUNDATION_SPECS
 from shapez2_solver.simulation.test_scenarios import ALL_SCENARIOS, get_scenario_count, get_scenario
 
 

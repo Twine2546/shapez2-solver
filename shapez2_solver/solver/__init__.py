@@ -1,4 +1,4 @@
-"""Evolution module - CP-SAT solver and ML-enhanced routing.
+"""Solver module - CP-SAT solver and ML-enhanced routing.
 
 This module provides:
 - CP-SAT constraint programming solver for optimal machine placement

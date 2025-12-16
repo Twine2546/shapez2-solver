@@ -10,8 +10,8 @@ import random
 import time
 from typing import List, Tuple
 
-from shapez2_solver.evolution.cpsat_solver import CPSATFullSolver
-from shapez2_solver.evolution.foundation_config import FOUNDATION_SPECS, Side
+from shapez2_solver.solver.cpsat_solver import CPSATFullSolver
+from shapez2_solver.solver.foundation_config import FOUNDATION_SPECS, Side
 
 
 # Define test scenarios with different shapes and foundation types

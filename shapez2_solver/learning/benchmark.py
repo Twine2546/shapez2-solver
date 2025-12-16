@@ -29,7 +29,7 @@ from .synthetic_generator import (
     _solve_with_ml_data,
 )
 from .features import extract_connection_features
-from ..evolution.router import BeltRouter, Connection
+from ..solver.router import BeltRouter, Connection
 from ..blueprint.building_types import Rotation
 
 

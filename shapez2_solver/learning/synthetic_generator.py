@@ -20,7 +20,7 @@ import gc
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from shapez2_solver.evolution.foundation_config import FOUNDATION_SPECS, FoundationSpec, Side
+from shapez2_solver.solver.foundation_config import FOUNDATION_SPECS, FoundationSpec, Side
 from shapez2_solver.blueprint.building_types import BuildingType, Rotation, BUILDING_SPECS, BUILDING_PORTS
 
 
@@ -1720,7 +1720,7 @@ def _solve_with_partial_tracking(
     Returns:
         (partial_belts, all_success, failed_indices)
     """
-    from ..evolution.router import BeltRouter, Connection
+    from ..solver.router import BeltRouter, Connection
 
     router = BeltRouter(
         problem.grid_width,
@@ -1778,7 +1778,7 @@ def _solve_with_ml_data(
         - blocking_scores: how many connections each route blocks
         - reroute_suggestions: which routes should be reconsidered
     """
-    from ..evolution.router import BeltRouter, Connection
+    from ..solver.router import BeltRouter, Connection
     from .features import extract_connection_features
 
     router = BeltRouter(

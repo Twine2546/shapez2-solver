@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from shapez2_solver.blueprint.building_types import (
     BuildingType, Rotation, BUILDING_SPECS, BUILDING_PORTS
 )
-from shapez2_solver.evolution.foundation_config import FoundationSpec, FOUNDATION_SPECS, Side
+from shapez2_solver.solver.foundation_config import FoundationSpec, FOUNDATION_SPECS, Side
 
 
 # Throughput constants (items per minute)
